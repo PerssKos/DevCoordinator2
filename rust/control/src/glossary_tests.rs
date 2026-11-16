@@ -7,7 +7,7 @@ fn world() -> (TempDir, Database, GlossaryService) {
     let temporary = tempfile::tempdir().unwrap();
     let database = Database::open(temporary.path().join("glossary.sqlite3")).unwrap();
     database.transaction(|connection| {
-        connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/glossary-fixture','Vocabulary project','now',1000,'now')", [PROJECT])?;
+        connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,'/glossary-fixture','Vocabulary project','now',1000,'now')", [PROJECT])?;
         Ok(())
     }).unwrap();
     let service = GlossaryService::new(database.clone());
@@ -565,7 +565,7 @@ fn glossary_schema_upgrade_preserves_existing_rows_and_archive_blocks_writes() {
     database
         .call(|connection| {
             connection.execute(
-                "UPDATE repositories SET archived_at='now' WHERE repository_id=?1",
+                "UPDATE repositories SET archived_at='now' WHERE repository_id=$1",
                 [PROJECT],
             )?;
             Ok(())

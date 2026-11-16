@@ -163,21 +163,21 @@ impl ReviewService {
         purpose: EvidenceUse,
     ) -> Result<Option<InputIdentity>, ProtocolError> {
         let repository_id = repository_id.to_owned();
-        self.database.call(move |connection| {
+        self.database.read(move |connection| {
             match reference.kind {
                 EvidenceKind::Usage => Err(invalid("Unexpected usage reference").into()),
                 EvidenceKind::Outcome | EvidenceKind::Decision => {
                     let query = if reference.kind == EvidenceKind::Outcome {
-                        "SELECT EXISTS(SELECT 1 FROM tasks WHERE repository_id=?1 AND task_id=?2)"
+                        "SELECT EXISTS(SELECT 1 FROM tasks WHERE repository_id=$1 AND task_id=$2)"
                     } else {
-                        "SELECT EXISTS(SELECT 1 FROM decisions WHERE repository_id=?1 AND (decision_id=?2 OR ref=?2))"
+                        "SELECT EXISTS(SELECT 1 FROM decisions WHERE repository_id=$1 AND (decision_id=$2 OR ref=$2))"
                     };
-                    let exists: bool = connection.query_row(query, rusqlite::params![repository_id, reference.reference], |row| row.get(0))?;
+                    let exists: bool = connection.query_row(query, crate::database::params![repository_id, reference.reference], |row| row.get(0))?;
                     if !exists { return Err(invalid("Evidence is missing or belongs to another repository").into()); }
                     Ok(None)
                 }
                 EvidenceKind::Release => {
-                    let encoded = connection.query_row("SELECT receipt_json FROM release_evidence WHERE repository_id=?1 AND receipt_id=?2", rusqlite::params![repository_id,reference.reference], |row| row.get::<_, String>(0)).optional()?
+                    let encoded = connection.query_row("SELECT receipt_json FROM release_evidence WHERE repository_id=$1 AND receipt_id=$2", crate::database::params![repository_id,reference.reference], |row| row.get::<_, String>(0)).optional()?
                         .ok_or_else(|| invalid("Release evidence is missing or belongs to another repository"))?;
                     let receipt: devcoordinator2_api::delivery::Receipt = serde_json::from_str(&encoded).map_err(|_| invalid("Invalid delivery receipt"))?;
                     check_time(purpose, receipt.verified_at_ms)?;
@@ -189,7 +189,7 @@ impl ReviewService {
                 }
                 EvidenceKind::Run => {
                     let (worktree, run_id) = reference.reference.split_once('/').ok_or_else(|| invalid("Run reference must be worktree_id/run_id"))?;
-                    let path = connection.query_row("SELECT worktree_path FROM worktrees WHERE repository_id=?1 AND worktree_id=?2", rusqlite::params![repository_id,worktree], |row| row.get::<_, String>(0)).optional()?
+                    let path = connection.query_row("SELECT worktree_path FROM worktrees WHERE repository_id=$1 AND worktree_id=$2", crate::database::params![repository_id,worktree], |row| row.get::<_, String>(0)).optional()?
                         .ok_or_else(|| invalid("Run worktree belongs to another repository"))?;
                     let run = TestRunStore
                         .find_history(std::path::Path::new(&path), run_id)

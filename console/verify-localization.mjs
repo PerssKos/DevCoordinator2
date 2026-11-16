@@ -24,8 +24,14 @@ export async function verifyLocalization({ page, daemon, check, baseUrl, output,
   });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(`${baseUrl}#/bugs`);
-  await page.waitForSelector('#language-toggle');
-  await page.waitForSelector('#bug-form');
+  try {
+    await page.waitForSelector('#language-toggle');
+    await page.waitForSelector('#bug-form');
+  } catch (error) {
+    await fs.writeFile(path.join(output, `localization-startup-${theme}-${viewport.width}.json`), JSON.stringify({ errors, state: await page.evaluate(() => ({ lang: document.documentElement.lang, main: document.querySelector('main')?.textContent, resources: performance.getEntriesByType('resource').map(entry => ({ name: new URL(entry.name).pathname, status: entry.responseStatus, start: entry.startTime, duration: entry.duration })) })) }, null, 2));
+    await page.screenshot({ path: path.join(output, `localization-startup-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
+    throw error;
+  }
   verify('initial language matches browser preference', await page.locator('html').getAttribute('lang') === 'uk');
   verify('only active namespaces loaded', !loads.some(value => /performance|glossary/.test(value)));
   await page.locator('#bug-form input[name=summary]').fill('Repositories <script>user content</script>');
@@ -84,6 +90,10 @@ export async function verifyLocalization({ page, daemon, check, baseUrl, output,
   await page.keyboard.press('Escape');
   fail = false;
   await page.goto(`${baseUrl}#/plan/r0123456789abcdef`);
+  const estimate = page.locator('[data-task-row="p1111111111111101"] .plan-task-meta');
+  await estimate.waitFor();
+  const estimateBefore = await estimate.innerText();
+  await estimate.evaluate(node => { node.dataset.identityProof = 'retained'; });
   await page.locator('#repository-presentation').click();
   const dialog = page.locator('dialog[open]');
   await dialog.locator('input[name=display_name]').fill('Unsaved name 日本語');
@@ -93,9 +103,16 @@ export async function verifyLocalization({ page, daemon, check, baseUrl, output,
   await page.waitForFunction(() => document.documentElement.lang === 'de');
   verify('language selector remains usable in a native modal', await dialog.locator('#language-toggle').isVisible());
   verify('modal draft survives rendered language selection', await dialog.locator('input[name=display_name]').inputValue() === 'Unsaved name 日本語');
+  verify('Plan computed estimate text and title change language on the retained element', await estimate.getAttribute('data-identity-proof') === 'retained' && (await estimate.innerText()).includes('[de]') && (await estimate.getAttribute('title')).includes('[de]') && await estimate.innerText() !== estimateBefore);
   await dialog.locator('[data-presentation-cancel]').click();
   await page.locator('.who #language-toggle').waitFor();
   verify('selector returns to header after modal closes', await page.locator('#language-toggle').count() === 1);
+  await page.locator('[data-plan-zoom="fit"]').click();
+  const taskBar = page.locator('[data-hover-task="p1111111111111104"]');
+  await taskBar.focus();
+  await page.locator('#plan-tooltip:not([hidden])').waitFor();
+  await page.evaluate(() => window.DevCoordinatorI18n.setLocale('fr'));
+  verify('focused task tooltip and cached estimate change language without replacing the task bar', await taskBar.evaluate(node => node === document.activeElement) && (await page.locator('#plan-tooltip').innerText()).includes('[fr]') && (await estimate.innerText()).includes('[fr]'));
   await page.goto(`${baseUrl}#/deployments`);
   const firstDeployment = page.locator('.deployment-record').first();
   await firstDeployment.waitFor();

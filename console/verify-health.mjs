@@ -1,4 +1,4 @@
-// Extends the real Console/SQLite acceptance fixture used by Glossary.
+// Extends the real Console/PostgreSQL acceptance fixture used by Glossary.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -7,7 +7,7 @@ import {promisify} from 'node:util';
 import {createHash} from 'node:crypto';
 
 // Deterministic resource samples isolate the incident acceptance from host
-// load. Incident reads/writes/permissions and SQLite are never mocked here.
+// load. Incident reads/writes/permissions and PostgreSQL are never mocked here.
 export function healthReadFixture(operation) {
   const host={cpu_percent:28.6,ncpu:32,memory_used:156*2**30,memory_total:252*2**30,fs_used:1.8*2**40,fs_free:.1*2**40,fs_size:1.9*2**40,load_1:8.54,reconciliation:{managed_cpu_percent:20,other_cpu_percent:8.6,managed_memory:80*2**30,other_memory:76*2**30}};
   if(operation==='health.summary')return {host,alerts:[],unhealthy_deployments:[],active_tests:[],container_counts:{}};
@@ -19,10 +19,88 @@ export function healthReadFixture(operation) {
   return null;
 }
 
+async function holdHealthReads(page, operations) {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; }), pending = new Set(), errors = [];
+  const hold = route => {
+    const work = gate.then(() => route.continue()).catch(error => {
+      if (!/already handled|Target page.*closed|Request.*aborted/i.test(error.message)) errors.push(error);
+    }).finally(() => pending.delete(work));
+    pending.add(work); return work;
+  };
+  for (const operation of operations) await page.route(`**/api/v3/${operation}`, hold);
+  return async () => {
+    release(); await Promise.all([...pending]);
+    for (const operation of operations) await page.unroute(`**/api/v3/${operation}`, hold);
+    if (errors.length) throw errors[0];
+  };
+}
+
 export async function verifyHealth({ page, browser, base, call, request, check, cookieFor, out, root }) {
   const list = view => call('health.incidents', {view, limit:50});
   const response = {agent_response:'Restarted once; the health check still failed.',escalation_reason:'The agent needs your decision on whether to roll back.',next_step:'Review the previous working version.'};
   let web; let disk;
+  for (const width of [390, 1440]) {
+    await check(`Health ${width}: ready sections do not wait for unrelated reads`, async () => {
+      const release = await holdHealthReads(page, ['health.repositories', 'health.incidents', 'health.history']);
+      try {
+        await page.setViewportSize({ width, height: width === 390 ? 844 : 1024 });
+        await page.goto('about:blank');
+        const summary = page.waitForResponse(response => response.url().endsWith('/api/v3/health.summary'));
+        await page.goto(`${base}#/health`); await summary;
+        await page.locator('.hi-host').waitFor({ timeout: 1500 });
+        assert.equal(await page.locator('.hi-capacity-cell').count(), 4);
+        assert.equal(await page.locator('.hi-repo-row').count(), 0);
+        assert.equal(await page.locator('#hi-incidents-toggle').count(), 0);
+      } finally {
+        await release();
+      }
+    }, page);
+    await check(`Health ${width}: repository and incident data do not wait for host summary`, async () => {
+      const release = await holdHealthReads(page, ['health.summary']);
+      try {
+        await page.goto('about:blank'); await page.goto(`${base}#/health`);
+        await page.locator('.hi-repo-row').first().waitFor({ timeout: 1500 });
+        await page.locator('#hi-incidents-toggle').waitFor({ timeout: 1500 });
+        assert.equal(await page.locator('.hi-host').count(), 0);
+        assert.ok((await page.locator('.hi-host-pending .hi-capacity-cell strong').allTextContents()).every(value => value === '—'));
+      } finally { await release(); }
+    }, page);
+    await check(`Health ${width}: history starts before summary but renders only after authorized host data`, async () => {
+      const release = await holdHealthReads(page, ['health.summary']);
+      try {
+        await page.goto('about:blank');
+        const historyResponses = ['cpu_percent', 'memory_used', 'storage_bytes'].map(metric => page.waitForResponse(response => {
+          if (!response.url().endsWith('/api/v3/health.history')) return false;
+          try { return response.request().postDataJSON()?.metric === metric; } catch { return false; }
+        }));
+        await page.goto(`${base}#/health`);
+        const responses = await Promise.all(historyResponses);
+        await Promise.all(responses.map(response => response.finished()));
+        assert.equal(await page.locator('.hi-host').count(), 0);
+        assert.equal(await page.locator('#hi-history svg').count(), 0);
+        await release();
+        await page.locator('.hi-host').waitFor();
+        await page.locator('#hi-history svg').first().waitFor();
+      } finally { await release(); }
+    }, page);
+    await check(`Health ${width}: history arrival keeps the chart and repository layout stable`, async () => {
+      const release = await holdHealthReads(page, ['health.history']);
+      try {
+        await page.goto('about:blank');
+        await page.goto(`${base}#/health`);
+        await page.locator('.hi-host').waitFor();
+        const geometry = () => page.evaluate(() => ({ historyHeight: document.querySelector('#hi-history').getBoundingClientRect().height, repositoryTop: document.querySelector('#hi-repositories-heading').getBoundingClientRect().top, trendsHeight: document.querySelector('.hi-trends').getBoundingClientRect().height }));
+        const before = await geometry();
+        await release(); await page.locator('#hi-history svg').first().waitFor();
+        const after = await geometry();
+        await fs.writeFile(path.join(out, `health-history-layout-${width}.json`), JSON.stringify({ before, after }));
+        assert.ok(Math.abs(after.historyHeight - before.historyHeight) <= 1, JSON.stringify({ before, after }));
+        assert.ok(Math.abs(after.repositoryTop - before.repositoryTop) <= 1, JSON.stringify({ before, after }));
+      } finally { await release(); }
+    }, page);
+  }
+  await page.goto('about:blank');
   await check('Automatic observations are not owner escalations', async()=>{
     const a=await list('attention'); assert.equal(a.attention_count,0); assert.equal(a.incidents.length,0);
     const all=await list('all'); assert.equal(all.incidents.length,4);
@@ -102,13 +180,13 @@ export async function verifyHealth({ page, browser, base, call, request, check, 
   },page);
   await check('Failure to persist never hides the incident or reports success',async()=>{
     await page.reload();await page.locator('#hi-incidents-toggle').click();await page.locator(`[data-hi-select="${web.incident_id}"]`).click();
-    await page.route('**/api/v2/health.incident.update',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'configuration_conflict',message:'Incident changed; refresh'}})}));
+    await page.route('**/api/v3/health.incident.update',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'configuration_conflict',message:'Incident changed; refresh'}})}));
     await page.locator('[data-hi-disposition]').click();
     const failure=page.locator('#hi-selected-detail .hi-action-result');
     await failure.filter({hasText:'[configuration_conflict]: Incident changed; refresh'}).waitFor();
     const expected=await page.evaluate(()=>window.DevCoordinatorI18n.t('common.error_conflict'));
     assert.equal(await failure.innerText(),`Could not save: ${expected} [configuration_conflict]: Incident changed; refresh`);
-    assert.equal((await list('attention')).attention_count,2);assert.equal(await page.locator('[data-hi-disposition]').isEnabled(),true);await page.unroute('**/api/v2/health.incident.update');
+    assert.equal((await list('attention')).attention_count,2);assert.equal(await page.locator('[data-hi-disposition]').isEnabled(),true);await page.unroute('**/api/v3/health.incident.update');
   },page);
   await check('Paging, recovery and recurrence keep exact incident identities',async()=>{
     const first=await call('health.incidents',{view:'attention',limit:1});assert.equal(first.incidents.length,1);assert.ok(first.next_before);const second=await call('health.incidents',{view:'attention',limit:1,before:first.next_before});assert.notEqual(first.incidents[0].incident_id,second.incidents[0].incident_id);

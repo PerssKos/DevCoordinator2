@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::agent_routing::{Action, Capabilities, Role, Rule, RuleInput, Scope};
 use devcoordinator2_api::{ClientKind, ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
@@ -51,12 +51,13 @@ impl AgentRoutingService {
         let now = now_text();
         self.database
             .transaction(move |tx| {
+                tx.execute_batch("LOCK TABLE agent_roles IN SHARE ROW EXCLUSIVE MODE")?;
                 let count: i64 = tx.query_row("SELECT COUNT(*) FROM agent_roles", [], |r| r.get(0))?;
                 if count == 0 {
                     for (position, (role_id, title)) in DEFAULT_ROLES.iter().enumerate() {
                         tx.execute(
-                            "INSERT INTO agent_roles(role_id,title,position,retired,revision,created_at,updated_at) VALUES(?1,?2,?3,0,1,?4,?4)",
-                            rusqlite::params![role_id, title, position as i64, now],
+                            "INSERT INTO agent_roles(role_id,title,position,retired,revision,created_at,updated_at) VALUES($1,$2,$3,0,1,$4,$4)",
+                            crate::database::params![role_id, title, position as i64, now],
                         )?;
                     }
                 }
@@ -73,7 +74,7 @@ impl AgentRoutingService {
     ) -> Result<Capabilities, ProtocolError> {
         let current = self
             .database
-            .call(move |c| read_capability(c, harness, now_ms))
+            .read(move |c| read_capability(c, harness, now_ms))
             .map_err(db_error)?;
         if current.reported_at_ms.is_some() && current.fresh {
             return Ok(current);
@@ -84,7 +85,7 @@ impl AgentRoutingService {
             .map_err(|_| invalid("agent capability discovery lock unavailable"))?;
         let latest = self
             .database
-            .call(move |c| read_capability(c, harness, now_ms))
+            .read(move |c| read_capability(c, harness, now_ms))
             .map_err(db_error)?;
         if latest.reported_at_ms.is_some() && latest.fresh {
             drop(guard);
@@ -118,7 +119,7 @@ impl AgentRoutingService {
             .remove(&key);
         drop(guard);
         self.database
-            .call(move |c| read_capability(c, harness, now_ms))
+            .read(move |c| read_capability(c, harness, now_ms))
             .map_err(db_error)
     }
 
@@ -130,7 +131,7 @@ impl AgentRoutingService {
         for harness in [ClientKind::Codex, ClientKind::Antigravity] {
             let current = self
                 .database
-                .call(move |c| read_capability(c, harness, now_ms))
+                .read(move |c| read_capability(c, harness, now_ms))
                 .map_err(db_error)?;
             let due = current.reported_at_ms.is_none_or(|reported| {
                 now_ms.saturating_sub(reported) >= DISCOVERY_REFRESH_INTERVAL_MS
@@ -161,6 +162,9 @@ impl AgentRoutingService {
                     .map_err(|_| invalid("agent capability discovery state unavailable"))?
                     .remove(&key);
             }
+            // Discovery owns an external timeout; one source is the bounded
+            // unit of work for a scheduler turn.
+            break;
         }
         Ok(())
     }
@@ -183,8 +187,8 @@ impl AgentRoutingService {
         self.database
             .call(move |c| {
                 c.execute(
-                    "INSERT INTO agent_capabilities(harness,models_json,efforts_json,pairs_json,reported_at_ms,expires_at_ms,reported_by) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(harness) DO UPDATE SET models_json=excluded.models_json,efforts_json=excluded.efforts_json,pairs_json=excluded.pairs_json,reported_at_ms=excluded.reported_at_ms,expires_at_ms=excluded.expires_at_ms,reported_by=excluded.reported_by",
-                    rusqlite::params![harness, models_json, efforts_json, pairs_json, now_ms as i64, expires_at_ms.map(|value| value as i64), source],
+                    "INSERT INTO agent_capabilities(harness,models_json,efforts_json,pairs_json,reported_at_ms,expires_at_ms,reported_by) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(harness) DO UPDATE SET models_json=excluded.models_json,efforts_json=excluded.efforts_json,pairs_json=excluded.pairs_json,reported_at_ms=excluded.reported_at_ms,expires_at_ms=excluded.expires_at_ms,reported_by=excluded.reported_by",
+                    crate::database::params![harness, models_json, efforts_json, pairs_json, now_ms as i64, expires_at_ms.map(|value| value as i64), source],
                 )?;
                 Ok(())
             })
@@ -211,7 +215,7 @@ impl AgentRoutingService {
             capability,
         ) = self
             .database
-            .call(move |c| {
+            .read(move |c| {
                 let roles = read_roles(c)?;
                 let roles_revision: u32 = c.query_row(
                     "SELECT COALESCE(MAX(revision),0) FROM agent_roles",
@@ -314,7 +318,7 @@ impl AgentRoutingService {
         let harness_text = harness_text(input.harness);
         let capability = self
             .database
-            .call(move |c| read_capability(c, input.harness, now_ms))
+            .read(move |c| read_capability(c, input.harness, now_ms))
             .map_err(db_error)?;
         validate_rules(&input.rules, &capability, &self.roles()?)?;
         let rules_json = serde_json::to_string(&input.rules)
@@ -325,10 +329,15 @@ impl AgentRoutingService {
         let now = now_text();
         self.database
             .transaction(move |tx| {
+                tx.query_row(
+                    "SELECT pg_advisory_xact_lock(hashtextextended('routing:'||$1||':'||$2||':'||$3,0))",
+                    crate::database::params![scope_text, repo_for_write, harness_text],
+                    |_| Ok(()),
+                )?;
                 let current: Option<u32> = tx
                     .query_row(
-                        "SELECT revision FROM agent_routing_settings WHERE scope=?1 AND repository_id=?2 AND harness=?3",
-                        rusqlite::params![scope_text, repo_for_write, harness_text],
+                        "SELECT revision FROM agent_routing_settings WHERE scope=$1 AND repository_id=$2 AND harness=$3",
+                        crate::database::params![scope_text, repo_for_write, harness_text],
                         |r| r.get(0),
                     )
                     .optional()?;
@@ -337,12 +346,12 @@ impl AgentRoutingService {
                 }
                 let revision = input.expected_revision + 1;
                 tx.execute(
-                    "INSERT INTO agent_routing_settings(scope,repository_id,harness,revision,rules_json,updated_at,updated_by) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(scope,repository_id,harness) DO UPDATE SET revision=excluded.revision,rules_json=excluded.rules_json,updated_at=excluded.updated_at,updated_by=excluded.updated_by",
-                    rusqlite::params![scope_text, repo_for_write, harness_text, revision, rules_json, now, actor],
+                    "INSERT INTO agent_routing_settings(scope,repository_id,harness,revision,rules_json,updated_at,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(scope,repository_id,harness) DO UPDATE SET revision=excluded.revision,rules_json=excluded.rules_json,updated_at=excluded.updated_at,updated_by=excluded.updated_by",
+                    crate::database::params![scope_text, repo_for_write, harness_text, revision, rules_json, now, actor],
                 )?;
                 tx.execute(
-                    "INSERT INTO agent_routing_history(scope,repository_id,harness,revision,rules_json,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    rusqlite::params![scope_text, repo_for_write, harness_text, revision, rules_json, actor, now],
+                    "INSERT INTO agent_routing_history(scope,repository_id,harness,revision,rules_json,actor,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                    crate::database::params![scope_text, repo_for_write, harness_text, revision, rules_json, actor, now],
                 )?;
                 Ok(())
             })
@@ -356,7 +365,7 @@ impl AgentRoutingService {
     }
 
     pub fn roles(&self) -> Result<Vec<Role>, ProtocolError> {
-        self.database.call(|c| read_roles(c)).map_err(db_error)
+        self.database.read(|c| read_roles(c)).map_err(db_error)
     }
 
     pub fn save_roles(
@@ -381,6 +390,7 @@ impl AgentRoutingService {
         let actor = actor.to_owned();
         let now = now_text();
         let result = self.database.transaction(move |tx| {
+            tx.execute_batch("LOCK TABLE agent_roles IN SHARE ROW EXCLUSIVE MODE")?;
             let current: u32 = tx.query_row("SELECT COALESCE(MAX(revision),0) FROM agent_roles", [], |r| r.get(0))?;
             if current != input.expected_revision {
                 return Err(invalid("agent role revision conflict").into());
@@ -388,12 +398,12 @@ impl AgentRoutingService {
             let revision = current + 1;
             for role in &input.roles {
                 tx.execute(
-                    "INSERT INTO agent_roles(role_id,title,position,retired,revision,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?6) ON CONFLICT(role_id) DO UPDATE SET title=excluded.title,position=excluded.position,retired=excluded.retired,revision=excluded.revision,updated_at=excluded.updated_at",
-                    rusqlite::params![role.role_id, role.title, role.position, role.retired, revision, now],
+                    "INSERT INTO agent_roles(role_id,title,position,retired,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$6) ON CONFLICT(role_id) DO UPDATE SET title=excluded.title,position=excluded.position,retired=excluded.retired,revision=excluded.revision,updated_at=excluded.updated_at",
+                    crate::database::params![role.role_id, role.title, role.position, role.retired, revision, now],
                 )?;
                 tx.execute(
-                    "INSERT INTO agent_role_history(role_id,title,position,retired,revision,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    rusqlite::params![role.role_id, role.title, role.position, role.retired, revision, actor, now],
+                    "INSERT INTO agent_role_history(role_id,title,position,retired,revision,actor,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                    crate::database::params![role.role_id, role.title, role.position, role.retired, revision, actor, now],
                 )?;
             }
             Ok(revision)
@@ -433,11 +443,11 @@ impl AgentRoutingService {
         let harness = harness_text(input.harness);
         let actor = actor.to_owned();
         self.database.call(move |c| {
-            c.execute("INSERT INTO agent_capabilities(harness,models_json,efforts_json,pairs_json,reported_at_ms,expires_at_ms,reported_by) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(harness) DO UPDATE SET models_json=excluded.models_json,efforts_json=excluded.efforts_json,pairs_json=excluded.pairs_json,reported_at_ms=excluded.reported_at_ms,expires_at_ms=excluded.expires_at_ms,reported_by=excluded.reported_by", rusqlite::params![harness,models_json,efforts_json,pairs_json,now_ms as i64,expires.map(|value| value as i64),actor])?;
+            c.execute("INSERT INTO agent_capabilities(harness,models_json,efforts_json,pairs_json,reported_at_ms,expires_at_ms,reported_by) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(harness) DO UPDATE SET models_json=excluded.models_json,efforts_json=excluded.efforts_json,pairs_json=excluded.pairs_json,reported_at_ms=excluded.reported_at_ms,expires_at_ms=excluded.expires_at_ms,reported_by=excluded.reported_by", crate::database::params![harness,models_json,efforts_json,pairs_json,now_ms as i64,expires.map(|value| value as i64),actor])?;
             Ok(())
         }).map_err(db_error)?;
         self.database
-            .call(move |c| read_capability(c, input.harness, now_ms))
+            .read(move |c| read_capability(c, input.harness, now_ms))
             .map_err(db_error)
     }
 
@@ -643,7 +653,7 @@ fn unique_bounded(
     Ok(values)
 }
 
-fn read_roles(c: &rusqlite::Connection) -> Result<Vec<Role>, DatabaseError> {
+fn read_roles(c: &crate::database::Connection) -> Result<Vec<Role>, DatabaseError> {
     let mut q = c.prepare(
         "SELECT role_id,title,position,retired FROM agent_roles ORDER BY position,role_id",
     )?;
@@ -659,12 +669,12 @@ fn read_roles(c: &rusqlite::Connection) -> Result<Vec<Role>, DatabaseError> {
 }
 
 fn read_rules(
-    c: &rusqlite::Connection,
+    c: &crate::database::Connection,
     scope: &str,
     repository_id: &str,
     harness: &str,
 ) -> Result<(Vec<RuleInput>, u32), DatabaseError> {
-    let row: Option<(u32,String)> = c.query_row("SELECT revision,rules_json FROM agent_routing_settings WHERE scope=?1 AND repository_id=?2 AND harness=?3", rusqlite::params![scope,repository_id,harness], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let row: Option<(u32,String)> = c.query_row("SELECT revision,rules_json FROM agent_routing_settings WHERE scope=$1 AND repository_id=$2 AND harness=$3", crate::database::params![scope,repository_id,harness], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
     match row {
         Some((revision, json)) => Ok((
             serde_json::from_str(&json)
@@ -676,11 +686,11 @@ fn read_rules(
 }
 
 fn read_capability(
-    c: &rusqlite::Connection,
+    c: &crate::database::Connection,
     harness: ClientKind,
     now_ms: u64,
 ) -> Result<Capabilities, DatabaseError> {
-    let row: Option<(String,String,String,i64,Option<i64>)> = c.query_row("SELECT models_json,efforts_json,pairs_json,reported_at_ms,expires_at_ms FROM agent_capabilities WHERE harness=?1", [harness_text(harness)], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    let row: Option<(String,String,String,i64,Option<i64>)> = c.query_row("SELECT models_json,efforts_json,pairs_json,reported_at_ms,expires_at_ms FROM agent_capabilities WHERE harness=$1", [harness_text(harness)], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
     let Some((models, efforts, pairs, reported_at_ms, expires_at_ms)) = row else {
         return Ok(Capabilities {
             harness,

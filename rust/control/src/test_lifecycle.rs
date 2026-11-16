@@ -12,9 +12,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
-use tokio::sync::{Notify, watch};
-use tokio::time::sleep;
+use tokio::sync::Notify;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::ClientKind;
 use devcoordinator2_api::params::{RetryTest, StartTest};
 use devcoordinator2_api::results::{
@@ -28,7 +28,6 @@ use devcoordinator2_executor_protocol::{
     CheckPlan, CheckReport, ExecutionPlan, ExecutionReport, LeafStatus, ProofKind, RunStatus,
     Schema2, ValidationTier,
 };
-use rusqlite::OptionalExtension;
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::Caller;
@@ -43,7 +42,7 @@ use crate::repository_config::{TestSpec, load_composed_test_spec, load_test_spec
 use crate::systemd::{SystemdCli, SystemdControl, TransientUnitSpec, UnitProcess};
 use crate::test_admission::{AdmissionError, TestAdmission};
 use crate::test_command::{HostTestCommand, TestCommand};
-use crate::test_containers::TestContainerService;
+use crate::test_containers::{ContainerProtection, TestContainerService};
 use crate::test_databases::{DatabasePool, FixtureRun, add_shared_phases};
 use crate::test_logs::TestLogService;
 use crate::test_state::{
@@ -284,7 +283,11 @@ impl TestLifecycle {
         );
         let lifecycle = Self {
             inner: Arc::new(Inner {
-                databases: Arc::new(DatabasePool::new(docker.clone(), random.clone())),
+                databases: Arc::new(DatabasePool::new(
+                    docker.clone(),
+                    random.clone(),
+                    container_service.clone(),
+                )),
                 config,
                 database,
                 registry,
@@ -325,57 +328,49 @@ impl TestLifecycle {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
-    pub async fn serve_reconciliation(&self, mut shutdown: watch::Receiver<bool>) {
-        loop {
-            if *shutdown.borrow() {
-                return;
-            }
-            let lifecycle = self.clone();
-            if let Err(error) =
-                tokio::task::spawn_blocking(move || lifecycle.reconcile_orphans()).await
-            {
-                tracing::error!(%error, "test reconciliation worker failed");
-            }
-            tokio::select! {
-                _ = self.inner.reconcile_wake.notified() => {}
-                _ = sleep(Duration::from_secs(30)) => {}
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() { return; }
-                }
-            }
+    pub fn reconciliation_signal(&self) -> Arc<Notify> {
+        self.inner.reconcile_wake.clone()
+    }
+
+    /// Reconcile one registered worktree; continue from its stable identity.
+    pub fn reconcile_orphans_step(
+        &self,
+        after_worktree_id: Option<String>,
+    ) -> Result<(Option<String>, Option<ProtocolError>), ProtocolError> {
+        if after_worktree_id.is_none() {
+            self.inner.databases.prune_idle(false);
         }
+        let worktrees=self.inner.database.read(|connection| {
+            let mut statement=connection.prepare("SELECT w.worktree_id,w.worktree_path,w.repository_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id>$1 ORDER BY w.worktree_id LIMIT 2")?;
+            Ok(statement.query_map([after_worktree_id.as_deref().unwrap_or("")],|row|Ok((row.get::<_,String>(0)?,PathBuf::from(row.get::<_,String>(1)?),row.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?)
+        }).map_err(database_error)?;
+        let has_more = worktrees.len() > 1;
+        let Some((worktree_id, worktree, repository_id)) = worktrees.into_iter().next() else {
+            return Ok((None, None));
+        };
+        let error = self
+            .reconcile_worktree(&worktree_id, &worktree, &repository_id)
+            .err();
+        if let Some(error) = &error {
+            tracing::warn!(code=%error.code,worktree_id,"test reconciliation failed");
+        }
+        Ok((has_more.then_some(worktree_id), error))
     }
 
     pub fn reconcile_orphans(&self) -> Result<(), ProtocolError> {
-        self.inner.databases.prune_idle(false);
-        let worktrees = self.inner.database.call(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT w.worktree_id,w.worktree_path,w.repository_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY w.rowid",
-            )?;
-            Ok(statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        PathBuf::from(row.get::<_, String>(1)?),
-                        row.get::<_, String>(2)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?)
-        }).map_err(database_error)?;
+        let mut cursor = None;
         let mut first_error = None;
-        for (worktree_id, worktree, repository_id) in worktrees {
-            let result = self.reconcile_worktree(&worktree_id, &worktree, &repository_id);
-            if let Err(error) = result {
-                tracing::warn!(code = %error.code, worktree_id, "test reconciliation failed");
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
+        loop {
+            let (next, error) = self.reconcile_orphans_step(cursor)?;
+            if first_error.is_none() {
+                first_error = error;
             }
+            if next.is_none() {
+                break;
+            }
+            cursor = next;
         }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     fn reconcile_worktree(
@@ -465,6 +460,13 @@ impl TestLifecycle {
             return Ok(());
         };
         if summary.status != TestStatus::Running {
+            if !self
+                .inner
+                .container_service
+                .has_pending_run(worktree, &summary.run_id)
+            {
+                return Ok(());
+            }
             if let Ok(Some(current)) = self.inner.store.open_current(worktree)
                 && let Ok((uid, gid)) = self.inner.store.owner(&current)
             {
@@ -517,6 +519,10 @@ impl TestLifecycle {
             return Ok(());
         };
         let (uid, gid) = self.inner.store.owner(&current).map_err(state_error)?;
+        self.inner
+            .store
+            .seal_container_creation(worktree, &current, &summary.run_id, uid, gid)
+            .map_err(state_error)?;
         let cleanup_caller = Caller {
             via_edge: false,
             pid: 0,
@@ -566,7 +572,7 @@ impl TestLifecycle {
             ("devcoordinator2.run".into(), summary.run_id.clone()),
         ]);
         if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
-            self.remove_containers(&containers);
+            self.remove_containers_scoped(&containers, worktree, Some(&summary.run_id));
         }
         let now = self.timestamp()?;
         let elapsed = time::PrimitiveDateTime::parse(&summary.started_at, TIMESTAMP_FORMAT)
@@ -917,7 +923,7 @@ impl TestLifecycle {
             .admission
             .start_guard_for(&registered.worktree_id)
             .map_err(admission_error)?;
-        let superseded_run_id = self.supersede_prior(&registered.worktree_id)?;
+        let superseded_run_id = self.supersede_prior(&worktree, &registered.worktree_id)?;
         let run_id = self.run_id()?;
         let prepared = self
             .inner
@@ -1750,32 +1756,44 @@ impl TestLifecycle {
         let limit = usize::from(params.limit.unwrap_or(50));
         if !(1..=50).contains(&limit)
             || params
+                .repository_id
+                .as_ref()
+                .is_some_and(|id| id.is_empty() || id.len() > 128 || id.contains('\0'))
+            || params
                 .after_worktree_id
                 .as_ref()
-                .is_some_and(|id| id.len() > 128)
+                .is_some_and(|id| id.len() > 128 || id.contains('\0'))
         {
             return Err(ProtocolError::new(
                 ErrorCode::ParamsInvalid,
-                "test list requires limit 1..50 and a bounded worktree cursor",
+                "test list requires limit 1..50 and bounded repository and worktree IDs",
             ));
         }
         let rows = self
             .inner
             .database
-            .call(move |connection| {
-                let mut statement = connection.prepare(
-                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id > ?1 ORDER BY w.worktree_id",
-                )?;
-                Ok(statement
-                    .query_map([params.after_worktree_id.as_deref().unwrap_or("")], |row| {
+            .read(move |connection| {
+                let sql = if params.repository_id.is_some() {
+                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.repository_id=$2 AND w.worktree_id>$1 ORDER BY w.worktree_id LIMIT $3"
+                } else {
+                    "SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL AND w.worktree_id>$1 ORDER BY w.worktree_id LIMIT $2"
+                };
+                let mut statement = connection.prepare(sql)?;
+                let decode = |row: &crate::database::Row<'_>| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
                             row.get::<_, String>(2)?,
                             row.get::<_, String>(3)?,
                         ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?)
+                    };
+                let after = params.after_worktree_id.as_deref().unwrap_or("");
+                let rows = if let Some(repository) = params.repository_id {
+                    statement.query_map(crate::database::params![after, repository, limit + 1], decode)?
+                } else {
+                    statement.query_map(crate::database::params![after, limit + 1], decode)?
+                };
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)?;
         let capacity = self.inner.capacity.snapshot()?;
@@ -1788,8 +1806,10 @@ impl TestLifecycle {
         let mut runs = Vec::new();
         let mut sources = HashMap::new();
         let mut bytes = 0usize;
-        let mut next_worktree_id = None;
-        for (worktree_id, path, repository_id, display_name) in rows {
+        let has_more = rows.len() > limit;
+        let mut next_worktree_id = has_more.then(|| rows[limit - 1].0.clone());
+        let mut last_visited = None;
+        for (worktree_id, path, repository_id, display_name) in rows.into_iter().take(limit) {
             let worktree = PathBuf::from(&path);
             let Some(mut summary) = self
                 .inner
@@ -1797,16 +1817,13 @@ impl TestLifecycle {
                 .read_current_summary(&worktree)
                 .map_err(state_error)?
             else {
+                last_visited = Some(worktree_id);
                 continue;
             };
             if let Some(handle) = active.get(&worktree_id)
                 && summary.status == TestStatus::Running
             {
                 self.project_live(&mut summary, handle)?;
-            }
-            if runs.len() >= limit {
-                next_worktree_id = runs.last().map(|run: &TestListRow| run.worktree_id.clone());
-                break;
             }
             summary.capacity = Some(capacity.clone());
             reconcile_terminal_checks(&mut summary);
@@ -1848,10 +1865,11 @@ impl TestLifecycle {
                 })?
                 .len();
             if !runs.is_empty() && bytes.saturating_add(row_bytes) > 160 * 1024 {
-                next_worktree_id = runs.last().map(|run| run.worktree_id.clone());
+                next_worktree_id = last_visited;
                 break;
             }
             bytes += row_bytes;
+            last_visited = Some(row.worktree_id.clone());
             runs.push(row);
         }
         Ok(TestList {
@@ -1870,6 +1888,7 @@ impl TestLifecycle {
         {
             let _ = self.stop_unit(&unit);
         }
+        let recorded = self.inner.container_service.recover_registered()?;
         let labels = BTreeMap::from([
             (
                 "devcoordinator2.instance".into(),
@@ -1878,7 +1897,7 @@ impl TestLifecycle {
             ("devcoordinator2.purpose".into(), "test".into()),
         ]);
         if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
-            self.remove_containers(&containers);
+            self.remove_containers(&containers, &recorded);
         }
         self.reconcile_orphans()?;
         self.inner.admission.reset().map_err(admission_error)
@@ -1901,10 +1920,10 @@ impl TestLifecycle {
         let requested = path.to_owned();
         self.inner
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT worktree_path FROM worktrees WHERE worktree_path=?1",
+                        "SELECT worktree_path FROM worktrees WHERE worktree_path=$1",
                         [&requested],
                         |row| row.get::<_, String>(0),
                     )
@@ -1928,10 +1947,10 @@ impl TestLifecycle {
             let id = self
                 .inner
                 .database
-                .call(move |connection| {
+                .read(move |connection| {
                     connection
                         .query_row(
-                            "SELECT worktree_id FROM worktrees WHERE worktree_path=?1",
+                            "SELECT worktree_id FROM worktrees WHERE worktree_path=$1",
                             [requested],
                             |row| row.get::<_, String>(0),
                         )
@@ -2302,6 +2321,17 @@ impl TestLifecycle {
         {
             return;
         }
+        let creation_sealed = self
+            .inner
+            .store
+            .seal_container_creation(
+                &handle.worktree,
+                &handle.current,
+                &handle.run_id,
+                handle.caller_uid,
+                handle.caller_gid,
+            )
+            .is_ok();
         let (report, report_issue) = self.report_snapshot(handle, true);
         let properties = self
             .inner
@@ -2370,14 +2400,18 @@ impl TestLifecycle {
         let container_cleanup_complete = container_cleanup
             .as_ref()
             .is_ok_and(|summary| summary.cleanup_completed && summary.failed_operations == 0);
-        if (!fixtures_cleaned || !container_cleanup_complete) && status == TestStatus::Passed {
+        if (!creation_sealed || !fixtures_cleaned || !container_cleanup_complete)
+            && status == TestStatus::Passed
+        {
             status = TestStatus::Failed;
         }
-        self.remove_containers(
+        self.remove_containers_scoped(
             &handle
                 .containers
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &handle.worktree,
+            Some(&handle.run_id),
         );
         let mut summary = initial_summary(
             &handle.run_id,
@@ -2419,6 +2453,10 @@ impl TestLifecycle {
                 Some(devcoordinator2_api::test_containers::ContainerCleanupStatus::Failed);
             summary.container_lifecycle_ref =
                 Some(crate::test_state::CONTAINER_LIFECYCLE_FILE.into());
+        }
+        if !creation_sealed {
+            summary.container_cleanup_status =
+                Some(devcoordinator2_api::test_containers::ContainerCleanupStatus::Failed);
         }
         let mut retry_evidence_written = true;
         if let Some(report) = report
@@ -2557,14 +2595,20 @@ impl TestLifecycle {
                 (Some(report), issue)
             }
             Ok(None) => (None, terminal.then_some(TestReportIssue::Missing)),
-            Err(TestStateError::Filesystem(_)) => (None, Some(TestReportIssue::Unreadable)),
+            Err(TestStateError::Filesystem(_) | TestStateError::Busy) => {
+                (None, Some(TestReportIssue::Unreadable))
+            }
             Err(TestStateError::Json(_) | TestStateError::Invalid(_)) => {
                 (None, Some(TestReportIssue::Invalid))
             }
         }
     }
 
-    fn supersede_prior(&self, worktree_id: &str) -> Result<Option<String>, ProtocolError> {
+    fn supersede_prior(
+        &self,
+        worktree: &Path,
+        worktree_id: &str,
+    ) -> Result<Option<String>, ProtocolError> {
         let mut superseded_run_id = None;
         let previous = self
             .inner
@@ -2622,7 +2666,7 @@ impl TestLifecycle {
         ]);
         if let Ok(mut containers) = self.inner.docker.list_ids_by_labels(&labels) {
             containers.retain(|container| !self.inner.databases.owns(container));
-            self.remove_containers(&containers);
+            self.remove_containers_scoped(&containers, worktree, None);
         }
         Ok(superseded_run_id)
     }
@@ -2647,8 +2691,36 @@ impl TestLifecycle {
         self.inner.systemd.reset_failed(unit).map_err(systemd_error)
     }
 
-    fn remove_containers(&self, containers: &[ExactContainerId]) {
+    fn remove_containers_scoped(
+        &self,
+        containers: &[ExactContainerId],
+        worktree: &Path,
+        run_id: Option<&str>,
+    ) {
+        if containers.is_empty() {
+            return;
+        }
+        if let Ok(protection) = self
+            .inner
+            .container_service
+            .protection_for_scope(worktree, run_id)
+        {
+            self.remove_containers(containers, &protection);
+        }
+    }
+
+    fn remove_containers(&self, containers: &[ExactContainerId], protection: &ContainerProtection) {
         for container in containers {
+            // Typed ownership has its own durable cleanup receipt and lease.
+            // Keep this fallback only for containers from the legacy path.
+            if !matches!(
+                self.inner
+                    .container_service
+                    .is_recorded_container(container, protection),
+                Ok(false)
+            ) {
+                continue;
+            }
             let _ = self.inner.docker.remove_container(container, true);
         }
     }
@@ -2659,7 +2731,7 @@ impl TestLifecycle {
         run_id: &str,
         containers: &[ExactContainerId],
     ) {
-        self.remove_containers(containers);
+        self.remove_containers_scoped(containers, worktree, Some(run_id));
         let _ = self.inner.capacity.unregister_run(run_id);
         let _ = self.inner.admission.finished(run_id);
         self.cleanup_unstarted(worktree, run_id);

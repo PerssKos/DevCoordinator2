@@ -64,10 +64,10 @@ async function scrollCoordinates(page) {
   });
 }
 
-async function measure(page) {
-  await page.evaluate(() => {
-    window.__FORMAL_WEB_UI_CONFIG__ = { rules: { strictTruncation: false }, inspectThemePalette: false };
-  });
+async function measure(page, strictTruncation = false) {
+  await page.evaluate((strictTruncation) => {
+    window.__FORMAL_WEB_UI_CONFIG__ = { rules: { strictTruncation }, inspectThemePalette: false };
+  }, strictTruncation);
   return page.evaluate(pageVerifier);
 }
 
@@ -94,6 +94,83 @@ for (const pattern of ['inset', 'legacy', 'nested', 'focus-revealed', 'ordinary-
       if (pattern === 'covered-visible') assert(failures.some(row => row.severity === 'critical'), 'visible content under a real cover is still checked');
       if (pattern.endsWith('crop')) assert(report.findings.some(row => row.selector === '#probe' && row.severity === 'critical' && row.rule === 'clipped-by-ancestor'), 'ordinary cropped content is not an accessibility-only exception');
       if (pattern === 'focus-revealed') assert(report.metrics.candidateCount > 0, 'focus reveal remains inspected');
+    } finally { await page.close(); }
+  });
+}
+
+for (const width of [390, 1440]) {
+  for (const covered of [false, true]) {
+    test(`wrapped inline metadata samples painted text fragments: width ${width}, covered ${covered}`, async () => {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      try {
+        await page.setContent(`<!doctype html><style>
+          body{margin:0;background:white;color:#111;font:13px/24.8px sans-serif}
+          main{margin:24px 27px;width:334px}
+          .badge{display:inline-block;box-sizing:border-box;height:25px;padding:0 6px;background:#ddd;vertical-align:baseline}
+          .before{width:180px}.after{width:160px}
+          #metadata{font-family:monospace;overflow-wrap:anywhere}
+        </style><main><span class="badge before">Verified record</span> <span id="metadata">saved/decision identifier-fragment</span> <span class="badge after">Review state</span></main>`);
+        const geometry = await page.locator("#metadata").evaluate((element, covered) => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          const fragments = [...range.getClientRects()].filter(rect => rect.width > 0.5 && rect.height > 0.5);
+          const own = point => {
+            const top = document.elementFromPoint(point.x, point.y);
+            return top === element || element.contains(top) || top?.contains(element);
+          };
+          const rect = element.getBoundingClientRect();
+          const insetX = Math.min(8, Math.max(2, rect.width / 4));
+          const insetY = Math.min(8, Math.max(2, rect.height / 4));
+          const unionPoints = [
+            { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+            { x: rect.left + insetX, y: rect.top + insetY },
+            { x: rect.right - insetX, y: rect.top + insetY },
+            { x: rect.left + insetX, y: rect.bottom - insetY },
+            { x: rect.right - insetX, y: rect.bottom - insetY },
+          ];
+          const visibleFragmentCenters = fragments.every(rect => own({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }));
+          const unrelatedUnionPoints = unionPoints.filter(point => !own(point)).length;
+          if (covered) for (const rect of fragments) {
+            const cover = document.createElement("div");
+            cover.className = "text-cover";
+            cover.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;background:#222;z-index:2`;
+            document.body.append(cover);
+          }
+          return { fragmentCount: fragments.length, visibleFragmentCenters, unrelatedUnionPoints, union: {x:rect.x,y:rect.y,width:rect.width,height:rect.height}, hits:unionPoints.map(point=>document.elementFromPoint(point.x,point.y)?.className) };
+        }, covered);
+        assert(geometry.fragmentCount >= 2, "fixture must wrap an inline element");
+        assert(geometry.visibleFragmentCenters, "adjacent badges must leave every painted text fragment visible");
+        assert(geometry.unrelatedUnionPoints >= 3, `fixture must expose the union-rectangle false positive: ${JSON.stringify(geometry)}`);
+        const report = await measure(page);
+        const findings = occlusions(report).filter(finding => finding.selector === "#metadata");
+        if (covered) assert(findings.some(finding => finding.severity === "critical"), "a real cover over the text fragments must remain critical");
+        else assert.deepEqual(findings, [], "adjacent badges in empty union-rectangle space do not cover text");
+      } finally { await page.close(); }
+    });
+  }
+}
+
+for (const tag of ["button", "div"]) {
+  test(`wrapped text does not shrink ${tag} occlusion to its text area`, async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    try {
+      await page.setContent(`<!doctype html><style>
+        body{margin:20px;color:#111;background:white;font:16px/20px sans-serif}
+        #box{box-sizing:border-box;width:220px;height:100px;padding:0 130px 0 10px;font:inherit}
+      </style><${tag} id="box">Wrapped box label</${tag}>`);
+      const geometry = await page.locator("#box").evaluate(element => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const fragments = [...range.getClientRects()];
+        const rect = element.getBoundingClientRect();
+        const cover = document.createElement("div");
+        cover.style.cssText = `position:fixed;left:${rect.left + 100}px;top:${rect.top}px;width:${rect.width - 100}px;height:${rect.height}px;background:#222;z-index:2`;
+        document.body.append(cover);
+        return { fragmentCount: fragments.length, textUncovered: fragments.every(rect => document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === element) };
+      });
+      assert(geometry.fragmentCount >= 2 && geometry.textUncovered);
+      const report = await measure(page);
+      assert(occlusions(report).some(finding => finding.selector === "#box" && finding.severity === "critical"), "controls and block containers must retain box coverage");
     } finally { await page.close(); }
   });
 }
@@ -370,9 +447,52 @@ for (const obstruction of ["oversized-gutter", "absolute-overlay", "fixed-overla
 test("non-scrollable clipped content stays critical", async () => {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   try {
-    await page.setContent('<main style="width:70px;overflow:hidden"><span style="white-space:nowrap;color:#111;background:#fff">source_identifier_that_cannot_be_reached</span></main>');
+    await page.setContent(`<!doctype html><style>
+      body{margin:0;color:#111;background:white;font:11px/14.7px Arial}
+      main{padding:12px}.crop{width:70px;overflow:hidden;white-space:nowrap;margin-bottom:12px}
+      button{width:36px;height:36px;position:relative}
+      .label{position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden;white-space:nowrap}
+    </style><main>
+      <div class="crop"><span id="real-clipped">source_identifier_that_cannot_be_reached</span></div>
+      <button aria-label="Elaborate">?<span class="label"><span id="hidden-label">Elaborate</span></span></button>
+      <div class="crop"><button id="clipped-control" style="width:120px">Visible action</button></div>
+      <div class="crop" style="position:absolute;top:160px;height:18px;clip:rect(0,70px,18px,0)"><span id="partial-legacy-clip">another_identifier_that_is_partially_painted</span></div>
+      <div style="clip:rect(0,0,0,0)"><span id="inactive-clip">Visible sibling label</span></div>
+    </main>`);
     const report = await measure(page);
-    assert(report.findings.some((finding) => finding.severity === "critical" && finding.rule === "clipped-by-ancestor"));
+    for (const selector of ["#real-clipped", "#clipped-control", "#partial-legacy-clip"]) {
+      assert(report.findings.some((finding) => finding.selector === selector && finding.severity === "critical" && finding.rule === "clipped-by-ancestor"));
+    }
+    assert.equal(report.findings.filter((finding) => finding.selector === "#hidden-label").length, 0,
+      "a nested label inside a zero-area CSS clip does not paint");
+    assert(report.metrics.hiddenTextLike.zeroSize >= 2, "hidden parent and child remain counted");
+    assert.equal(report.findings.filter((finding) => finding.selector === "#inactive-clip").length, 0,
+      "clip on a static box does not hide a visible descendant");
+    for (const variant of ["fixed", "absolute", "contents-absolute", "static-absolute"]) {
+      await page.setContent(`<!doctype html><style>
+        body{margin:0;background:white;color:#111}main{position:relative;width:390px;height:340px}
+        .owner{position:${variant === "static-absolute" ? "static" : "absolute"};display:${variant === "contents-absolute" ? "contents" : "block"};width:1px;height:1px;left:10px;top:10px;clip:rect(0,0,0,0);overflow:hidden}
+        button{position:${variant === "fixed" ? "fixed" : "absolute"};left:150px;top:150px;width:150px;height:50px}
+      </style><main><div class="owner"><button id="escaped-control">Visible action</button></div></main>`);
+      const painted = await page.locator("#escaped-control").evaluate(el => {
+        const rect = el.getBoundingClientRect();
+        return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === el;
+      });
+      const escapes = variant === "contents-absolute" || variant === "static-absolute";
+      assert.equal(painted, escapes, `${variant} must agree with actual browser hit-testing`);
+      if (escapes) {
+        await page.locator("#escaped-control").evaluate(el => {
+          const rect = el.getBoundingClientRect();
+          const cover = document.createElement("div");
+          cover.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;background:#ccc;z-index:10`;
+          document.body.append(cover);
+        });
+      }
+      const measured = await measure(page);
+      const failures = measured.findings.filter(item => item.selector === "#escaped-control");
+      if (escapes) assert(failures.some(item => item.rule === "occluded" && item.severity === "critical"), `${variant} stays checked after it visibly escapes`);
+      else assert.equal(failures.length, 0, `${variant} is actually hidden by the ancestor clip`);
+    }
   } finally {
     await page.close();
   }
@@ -462,7 +582,7 @@ test("the gutter itself is not exempt from unrelated occlusion", async () => {
   }
 });
 
-const selectedCases = new Set(["occluded", "partial-overlap", "overlay-in-scroll", "scroll-panel-neighbor", "details-closed-neighbor", "dev-overlay-badge", "modal-active-occlusion", "modal-shadow-occlusion", "modal-scroll-locked", "fixed-unscrollable-cut"]);
+const selectedCases = new Set(["occluded", "partial-overlap", "overlay-in-scroll", "scroll-panel-neighbor", "details-closed-neighbor", "dev-overlay-badge", "modal-active-occlusion", "modal-shadow-occlusion", "modal-scroll-locked", "fixed-unscrollable-cut", "truncate-inner-span"]);
 for (const fixture of matrix.cases.filter((entry) => selectedCases.has(entry.name) || entry.name.startsWith("custom-modal-"))) {
   test(`existing detector guard: ${fixture.name}`, async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -476,6 +596,33 @@ for (const fixture of matrix.cases.filter((entry) => selectedCases.has(entry.nam
         assert(!report.findings.some((finding) => finding.rule === rule), `${fixture.name} falsely reported ${rule}`);
       }
       if (!fixture.critical) assert(!report.findings.some((finding) => finding.severity === "critical"), JSON.stringify(report.findings));
+      if (fixture.name === "truncate-inner-span") {
+        assert(report.metrics.ellipsisTruncations.some(item => item.selector === "#compact-identifier"));
+        const strict = await measure(page, true);
+        assert(strict.findings.some(item => item.selector === "#compact-identifier" && item.rule === "clipped-by-ancestor" && item.severity === "critical"));
+        for (const changed of ["height", "position", "control", "shadow", "decoration", "font-mismatch", "unsupported-metrics"]) {
+          await page.setContent(pages[fixture.path]);
+          await page.evaluate((changed) => {
+            const cell = document.querySelector(".compact-cell");
+            const text = document.querySelector("#compact-identifier");
+            if (changed === "height") cell.style.height = "5px";
+            else if (changed === "position") { text.style.position = "relative"; text.style.top = "-6px"; }
+            else if (changed === "control") { const button = document.createElement("button"); button.id = text.id; button.textContent = text.textContent; text.replaceWith(button); }
+            else if (changed === "shadow") cell.style.textShadow = "0 3px 1px black";
+            else if (changed === "decoration") cell.style.textDecoration = "underline";
+            else if (changed === "font-mismatch") text.style.fontSize = "13px";
+            else {
+              const original = CanvasRenderingContext2D.prototype.measureText;
+              CanvasRenderingContext2D.prototype.measureText = function (...args) {
+                const metrics = original.apply(this, args);
+                return new Proxy(metrics, { get(target, key) { return key === "actualBoundingBoxAscent" ? Number.NaN : Reflect.get(target, key, target); } });
+              };
+            }
+          }, changed);
+          const clipped = await measure(page);
+          assert(clipped.findings.some(item => item.selector === "#compact-identifier" && item.rule === "clipped-by-ancestor" && item.severity === "critical"), `${changed} must not inherit an ellipsis exception`);
+        }
+      }
     } finally {
       await page.close();
     }

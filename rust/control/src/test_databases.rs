@@ -31,31 +31,19 @@ pub(crate) struct SharedFixtures {
 }
 
 struct SharedDatabase {
-    docker: Arc<dyn DockerControl>,
-    container: Option<ExactContainerId>,
+    container: Option<crate::test_containers::OwnedTestContainer>,
     environment: BTreeMap<String, String>,
 }
 
 impl SharedDatabase {
     fn remove(&mut self) -> Result<(), String> {
-        if let Some(container) = &self.container {
-            self.docker
-                .remove_container_in_current_scope(container, true)
-                .map_err(shared_cleanup_failure)?;
+        if let Some(container) = &mut self.container {
+            container.remove()?;
             self.container = None;
         }
         Ok(())
     }
 }
-impl Drop for SharedDatabase {
-    fn drop(&mut self) {
-        // A failed setup or ordinary cleanup can leave this exact owned
-        // container behind. Recovery must survive the caller's cancellation.
-        let _cleanup = crate::capacity::NativeCleanupScope::enter();
-        let _ = self.remove();
-    }
-}
-
 fn shared_declarations(
     spec: &crate::repository_config::TestSpec,
     checks: &[devcoordinator2_executor_protocol::CheckPlan],
@@ -171,7 +159,7 @@ pub(crate) fn add_shared_phases(
         prototype.invalidates.clear();
         prototype.cwd = ".".into();
         prototype.env.clear();
-        prototype.timeout_seconds = Some(120);
+        prototype.timeout_seconds = Some(crate::test_containers::FIXTURE_PHASE_TIMEOUT_SECONDS);
         prototype.completion = CompletionMode::Process;
         prototype.produces.clear();
         prototype.retained_artifacts.clear();
@@ -305,6 +293,8 @@ impl FixtureRun {
                 *instance = Some(self.pool.create_shared(
                     spec,
                     &self.context,
+                    &self.root,
+                    self.gid,
                     &shared.scope,
                     cancelled.clone(),
                     Some(log.clone()),
@@ -395,9 +385,12 @@ impl FixtureRun {
                 .values()
                 .filter_map(|slot| {
                     slot.try_lock().ok().and_then(|value| {
-                        value
-                            .as_ref()
-                            .and_then(|database| database.container.clone())
+                        value.as_ref().and_then(|database| {
+                            database
+                                .container
+                                .as_ref()
+                                .map(|container| container.id().clone())
+                        })
                     })
                 }),
         );
@@ -517,6 +510,8 @@ impl FixtureHandler for FixtureRun {
                     specification,
                     &inputs,
                     &self.context,
+                    &self.root,
+                    self.gid,
                     &identity,
                     cancelled.clone(),
                     Some(log.clone()),
@@ -559,13 +554,14 @@ impl FixtureHandler for FixtureRun {
 
 pub(crate) struct DatabasePool {
     docker: Arc<dyn DockerControl>,
+    containers: crate::test_containers::TestContainerService,
     random: Arc<dyn RandomSource>,
     templates: Mutex<BTreeMap<String, Slot>>,
     owned: Mutex<Vec<Weak<Template>>>,
 }
 
 struct Template {
-    docker: Arc<dyn DockerControl>,
+    _ownership: crate::test_containers::OwnedTestContainer,
     container: ExactContainerId,
     manager: String,
     name: String,
@@ -573,12 +569,6 @@ struct Template {
     password: String,
     port: u16,
     last_used: Mutex<Instant>,
-}
-
-impl Drop for Template {
-    fn drop(&mut self) {
-        let _ = self.docker.remove_container(&self.container, true);
-    }
 }
 
 pub(crate) struct DatabaseLease {
@@ -706,10 +696,13 @@ pub(crate) fn read_sql_inputs(
 }
 
 impl DatabasePool {
+    #[allow(clippy::too_many_arguments)]
     fn create_shared(
         &self,
         spec: &PostgresSpec,
         context: &ManagedLabelContext,
+        root: &Path,
+        gid: u32,
         scope: &str,
         cancelled: Arc<AtomicBool>,
         log: Log,
@@ -733,14 +726,16 @@ impl DatabasePool {
             .run_id
             .as_deref()
             .ok_or("shared database run identity missing")?;
-        let container = self
-            .docker
-            .run_detached(&RunDetachedRequest {
+        let name = format!(
+            "devcoordinator2-test-{}-postgres-{scope}",
+            run_id.trim_start_matches('t')
+        );
+        let ownership = self.containers.create_fixture(
+            root,
+            gid,
+            RunDetachedRequest {
                 cancellation: Some(cancelled.clone()),
-                name: format!(
-                    "devcoordinator2-test-{}-postgres-{scope}",
-                    run_id.trim_start_matches('t')
-                ),
+                name: name.clone(),
                 image: spec.image.clone(),
                 label_context: labels,
                 labels: BTreeMap::new(),
@@ -759,11 +754,12 @@ impl DatabasePool {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
                 command: spec.startup_command(),
-            })
-            .map_err(shared_start_failure)?;
+                retain_on_failure: true,
+            },
+        )?;
+        let container = ownership.id().clone();
         let mut database = SharedDatabase {
-            docker: self.docker.clone(),
-            container: Some(container.clone()),
+            container: Some(ownership),
             environment: BTreeMap::new(),
         };
         let port = self
@@ -808,9 +804,14 @@ impl DatabasePool {
         ]);
         Ok(database)
     }
-    pub fn new(docker: Arc<dyn DockerControl>, random: Arc<dyn RandomSource>) -> Self {
+    pub fn new(
+        docker: Arc<dyn DockerControl>,
+        random: Arc<dyn RandomSource>,
+        containers: crate::test_containers::TestContainerService,
+    ) -> Self {
         Self {
             docker,
+            containers,
             random,
             templates: Mutex::new(BTreeMap::new()),
             owned: Mutex::new(Vec::new()),
@@ -831,6 +832,8 @@ impl DatabasePool {
         specification: &PostgresSpec,
         inputs: &[(String, Vec<u8>)],
         context: &ManagedLabelContext,
+        root: &Path,
+        gid: u32,
         identity: &str,
         cancelled: Arc<AtomicBool>,
         log: Log,
@@ -874,6 +877,8 @@ impl DatabasePool {
                 specification,
                 inputs,
                 context,
+                root,
+                gid,
                 &fingerprint,
                 cancelled.clone(),
                 log.clone(),
@@ -1031,11 +1036,14 @@ impl DatabasePool {
             .is_ok_and(|output| output.stdout.trim() == "t")
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create(
         &self,
         specification: &PostgresSpec,
         inputs: &[(String, Vec<u8>)],
         context: &ManagedLabelContext,
+        root: &Path,
+        gid: u32,
         fingerprint: &str,
         cancelled: Arc<AtomicBool>,
         log: Log,
@@ -1047,19 +1055,20 @@ impl DatabasePool {
         // Template containers are daemon-owned disposable resources too. Use
         // a stable template identity so the Docker boundary can enforce the
         // same run/check/owner label contract as per-run fixtures.
-        labels.run_id = Some(format!("template-{}", &fingerprint[..16]));
         labels.check = Some("database-template".into());
         labels.component = Some("database-template".into());
         let nonce = self.secret()?;
-        let container = self
-            .docker
-            .run_detached(&RunDetachedRequest {
+        let container_name = format!(
+            "devcoordinator2-template-{}-{}",
+            &fingerprint[..16],
+            &nonce[..8]
+        );
+        let ownership = self.containers.create_fixture(
+            root,
+            gid,
+            RunDetachedRequest {
                 cancellation: Some(cancelled.clone()),
-                name: format!(
-                    "devcoordinator2-template-{}-{}",
-                    &fingerprint[..16],
-                    &nonce[..8]
-                ),
+                name: container_name.clone(),
                 image: specification.image.clone(),
                 label_context: labels,
                 labels: BTreeMap::new(),
@@ -1078,10 +1087,12 @@ impl DatabasePool {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
                 command: specification.startup_command(),
-            })
-            .map_err(|_| "cannot start owned database template")?;
+                retain_on_failure: true,
+            },
+        )?;
+        let container = ownership.id().clone();
         let mut template = Template {
-            docker: self.docker.clone(),
+            _ownership: ownership,
             container,
             manager,
             name: format!("dc2_template_{}", &fingerprint[..24]),
@@ -1210,149 +1221,9 @@ impl DatabasePool {
     }
 }
 
-fn shared_start_failure(error: crate::docker::DockerError) -> String {
-    // run_detached already withholds stderr/environment values and exposes
-    // only the safe failure kind, exit status and exact-target cleanup result.
-    // Keep those facts at the original shared-fixture boundary instead of
-    // replacing them with an untraceable generic setup failure.
-    format!("cannot start owned shared database: {error}")
-}
-
-fn shared_cleanup_failure(error: crate::docker::DockerError) -> String {
-    use crate::docker::{DockerError, DockerErrorKind};
-    // Keep the failing boundary without logging Docker stderr, environment,
-    // command text or private database values. Unknown admission text is not
-    // trusted merely because the error variant accepts a static string.
-    let cause = match &error {
-        DockerError::Admission("cancelled before execution") => "network_admission_cancelled",
-        DockerError::Admission("deadline elapsed before execution") => "network_admission_deadline",
-        DockerError::Admission("unavailable before execution") => "network_admission_unavailable",
-        DockerError::Admission(_) => "network_admission_failed",
-        _ => match error.kind() {
-            DockerErrorKind::CliUnavailable => "cli_unavailable",
-            DockerErrorKind::SpawnFailed => "spawn_failed",
-            DockerErrorKind::TimedOut => "execution_timeout",
-            DockerErrorKind::Cancelled => "execution_cancelled",
-            DockerErrorKind::CommandFailed => "command_failed",
-            DockerErrorKind::NetworkUnavailable => "network_unavailable",
-            DockerErrorKind::InvalidOutput => "invalid_output",
-            DockerErrorKind::InvalidTarget => "invalid_target",
-            DockerErrorKind::InvalidRequest => "invalid_request",
-        },
-    };
-    format!("shared database cleanup failed (cause={cause})")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn shared_start_preserves_safe_docker_failure_and_cleanup_facts() {
-        let failure = shared_start_failure(crate::docker::DockerError::Command(
-            "docker run failed (exit_code=125; cleanup=removed:1)".into(),
-        ));
-        assert_eq!(
-            failure,
-            "cannot start owned shared database: docker run failed (exit_code=125; cleanup=removed:1)"
-        );
-        use crate::docker::DockerError;
-        for (error, cause) in [
-            (
-                DockerError::Admission("cancelled before execution"),
-                "network_admission_cancelled",
-            ),
-            (
-                DockerError::Admission("deadline elapsed before execution"),
-                "network_admission_deadline",
-            ),
-            (
-                DockerError::Admission("unavailable before execution"),
-                "network_admission_unavailable",
-            ),
-            (
-                DockerError::Admission("private-canary"),
-                "network_admission_failed",
-            ),
-            (
-                DockerError::Timeout {
-                    operation: "private-canary".into(),
-                },
-                "execution_timeout",
-            ),
-            (
-                DockerError::Cancelled {
-                    operation: "private-canary".into(),
-                },
-                "execution_cancelled",
-            ),
-            (
-                DockerError::CommandFailure {
-                    message: "private-canary".into(),
-                    exit_code: Some(1),
-                    signal: None,
-                    stderr: "private-canary".into(),
-                },
-                "command_failed",
-            ),
-        ] {
-            assert_eq!(
-                shared_cleanup_failure(error),
-                format!("shared database cleanup failed (cause={cause})")
-            );
-        }
-        // Exercise the shared-database caller too: reverting it to the generic
-        // recovery entry must fail even if the lower-level scope tests pass.
-        struct RemovalBoundary(AtomicBool);
-        impl DockerControl for RemovalBoundary {
-            fn invoke(
-                &self,
-                invocation: DockerInvocation,
-            ) -> Result<crate::docker::DockerOutput, DockerError> {
-                assert_eq!(invocation.timeout(), Duration::from_secs(60));
-                assert_eq!(
-                    invocation.args(),
-                    ["rm", "--force", "--volumes", &"c".repeat(64)].map(std::ffi::OsString::from)
-                );
-                if !self.0.swap(true, Ordering::SeqCst) {
-                    return Err(DockerError::Admission("deadline elapsed before execution"));
-                }
-                Ok(crate::docker::DockerOutput {
-                    exit_code: 0,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                })
-            }
-            fn spawn_follow_logs(
-                &self,
-                _: &ExactContainerId,
-            ) -> Result<crate::docker::LogFollower, DockerError> {
-                unreachable!("shared removal does not follow logs")
-            }
-            fn remove_container(&self, _: &ExactContainerId, _: bool) -> Result<(), DockerError> {
-                Err(DockerError::InvalidRequest(
-                    "ordinary cleanup selected recovery".into(),
-                ))
-            }
-        }
-        let docker = Arc::new(RemovalBoundary(AtomicBool::new(false)));
-        let mut database = SharedDatabase {
-            docker,
-            container: Some(ExactContainerId::parse("c".repeat(64)).unwrap()),
-            environment: BTreeMap::new(),
-        };
-        assert_eq!(
-            database.remove().unwrap_err(),
-            "shared database cleanup failed (cause=network_admission_deadline)"
-        );
-        assert!(
-            database.container.is_some(),
-            "failure discarded the exact recovery target"
-        );
-        database.remove().unwrap();
-        assert!(database.container.is_none());
-    }
     #[test]
     fn shared_phase_names_and_limits_are_checked_before_replacing_a_run() {
         let root = tempfile::tempdir().unwrap();

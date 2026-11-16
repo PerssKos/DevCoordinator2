@@ -1,14 +1,171 @@
-use super::{Backend, HostBackend, candidate, git_bytes, processes_reference};
+use super::{
+    Backend, HostBackend, candidate, git_bytes, git_bytes_with_stderr, processes_reference,
+    validate_path,
+};
+use crate::database::OptionalExtension;
 use crate::storage::{
-    blocked, fs, hash,
-    model::{Context, Discovery, Locator, Record},
+    blocked, db_error, fs, hash, invalid,
+    model::{Context, Discovery, IgnoredReview, IgnoredReviewFile, Locator, Record},
     unavailable,
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
+#[cfg(target_os = "linux")]
+use rustix::fs::{self as unix, Mode, OFlags};
+#[cfg(target_os = "linux")]
+use sha2::Digest;
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::fs::File;
+#[cfg(target_os = "linux")]
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+
+const MAX_IGNORED_REVIEW_FILES: usize = 128;
+const MAX_IGNORED_REVIEW_BYTES: u64 = 8 * 1024 * 1024;
 
 impl HostBackend {
+    pub(super) fn validate_intent(
+        &self,
+        r: &Record,
+        repository_id: &str,
+        now_ms: u64,
+        reviewed_ignored_files: Option<&[api::IgnoredFileReview]>,
+    ) -> Result<(String, Option<IgnoredReview>), ProtocolError> {
+        let recognized = r.artifact.ownership == "recognized";
+        let cleanup_owned_source = r.artifact.ownership == "cleanup_owned"
+            && r.disposal_approved
+            && r.artifact.effect == api::Effect::SourceWorktree;
+        if r.artifact.kind != api::Kind::Worktree
+            || (!recognized && !cleanup_owned_source)
+            || r.discovered_effect != api::Effect::SourceWorktree
+        {
+            return Err(blocked("disposal_intent_not_recognized"));
+        }
+        if r.artifact.repository_id.as_deref() != Some(repository_id) {
+            return Err(blocked("ownership_conflict"));
+        }
+        let repository_id = repository_id.to_owned();
+        let owner = self
+            .database
+            .read(move |connection| {
+                Ok(connection
+                    .query_row(
+                        "SELECT display_name,root_path FROM repositories WHERE repository_id=$1 AND archived_at IS NULL",
+                        [&repository_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                PathBuf::from(row.get::<_, String>(1)?),
+                            ))
+                        },
+                    )
+                    .optional()?)
+            })
+            .map_err(db_error)?
+            .ok_or_else(|| invalid("repository_not_registered"))?;
+        let Locator::Directory {
+            path,
+            device,
+            inode,
+            root,
+            git_root,
+        } = &r.locator
+        else {
+            return Err(blocked("worktree_locator_invalid"));
+        };
+        let normal_absolute = |value: &Path| {
+            value.is_absolute()
+                && value
+                    .components()
+                    .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
+        };
+        if !normal_absolute(path) || !normal_absolute(root) {
+            return Err(blocked("invalid_storage_path"));
+        }
+        if !path.starts_with(root) {
+            return Err(blocked("outside_registered_root"));
+        }
+        let Some(git_root) = git_root else {
+            return Err(blocked("git_owner_unknown"));
+        };
+        if git_root != &owner.1 {
+            return Err(blocked("ownership_conflict"));
+        }
+        if path == git_root {
+            return Err(blocked("canonical_checkout"));
+        }
+        // Keep the existing system-data and metadata protections while
+        // avoiding a recursive measurement of the candidate tree.
+        validate_path(path, &self.config, false, &self.database)?;
+        fs::identity(root)?;
+        fs::identity(git_root)?;
+        let identity = fs::identity(path)?;
+        if identity != (*device, *inode) {
+            return Err(blocked("identity_changed"));
+        }
+        let ignored_review = reviewed_ignored_files
+            .map(|files| self.review_ignored_files(path, identity, files))
+            .transpose()?;
+
+        let resource = r.resource_key.clone();
+        let ancestors = crate::storage::json(&r.ancestor_keys)?;
+        let lease_resource = resource.clone();
+        let lease_ancestors = ancestors.clone();
+        let artifact_id = r.artifact.artifact_id.clone();
+        let protected = r.artifact.protected;
+        let safety = self
+            .database
+            .read(move |connection| {
+                let shared_protection = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM storage_artifacts p WHERE p.removed_at_ms IS NULL AND p.projection_protected AND (p.projection_resource_key=$1 OR p.projection_resource_key IN (SELECT value FROM jsonb_array_elements_text($2::jsonb)) OR p.projection_ancestors @> jsonb_build_array($1)))",
+                    crate::database::params![resource, ancestors],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                let active_lease = connection.query_row(
+                    "WITH owned(artifact_id) AS (SELECT $1::text UNION SELECT related.artifact_id FROM storage_artifacts related WHERE related.removed_at_ms IS NULL AND (related.projection_resource_key=$2 OR related.projection_resource_key IN (SELECT value FROM jsonb_array_elements_text($3::jsonb)) OR related.projection_ancestors @> jsonb_build_array($2))) SELECT EXISTS(SELECT 1 FROM owned JOIN storage_leases lease ON lease.projection_artifact_ids @> jsonb_build_array(owned.artifact_id) WHERE lease.projection_expires_at_ms>$4::bigint)",
+                    crate::database::params![artifact_id, lease_resource, lease_ancestors, now_ms as i64],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                Ok((shared_protection, active_lease))
+            })
+            .map_err(db_error)?;
+        if protected || safety.0 {
+            return Err(blocked(if protected {
+                "explicitly_protected"
+            } else {
+                "protected_shared_data"
+            }));
+        }
+        if safety.1 {
+            return Err(blocked("active_lease"));
+        }
+        Ok((owner.0, ignored_review))
+    }
+
+    pub(super) fn native_backup_root_identity(
+        &self,
+        r: &Record,
+        root: &Path,
+        context: &Context,
+    ) -> Result<(u64, u64), ProtocolError> {
+        let registered = context
+            .roots
+            .iter()
+            .find(|configured| {
+                configured.path == root
+                    && configured.root.kind == api::Kind::Backup
+                    && (context.discovering
+                        || r.artifact.group_id.as_ref() == Some(&configured.root.root_id))
+            })
+            .ok_or_else(|| blocked("native_backup_root_unverified"))?;
+        let expected = (registered.device, registered.inode);
+        if fs::identity(root)? != expected {
+            return Err(blocked("configured_root_identity_changed"));
+        }
+        Ok(expected)
+    }
+
     pub(super) fn discover_retained_backing(
         &self,
         context: &Context,
@@ -16,7 +173,7 @@ impl HostBackend {
     ) -> Result<(), ProtocolError> {
         // Retiring fstab must not make the still-existing backing directory
         // disappear from inventory. The registry keeps that exact identity.
-        let rows=self.database.call(|c| {
+        let rows=self.database.read(|c| {
             let mut q=c.prepare("SELECT record_json FROM storage_artifacts WHERE kind='backing_directory' AND removed_at_ms IS NULL")?;
             Ok(q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
         }).map_err(crate::storage::db_error)?;
@@ -84,13 +241,16 @@ impl HostBackend {
         if !checked.recovery_verified {
             return Err(blocked("backup_unverified"));
         }
+        if checked.last_activity_signature != r.last_activity_signature {
+            return Err(blocked("backup_changed"));
+        }
         if checked.blockers.iter().any(|b| b == "backup_in_progress") {
             return Err(blocked("backup_in_progress"));
         }
         let scope = r.artifact.repository_id.clone().unwrap_or_default();
-        let floor=self.database.call(move|c|{
-            use rusqlite::OptionalExtension;
-            let value=c.query_row("SELECT policy_json FROM storage_policies WHERE scope=?1 OR scope='' ORDER BY CASE WHEN scope=?1 THEN 0 ELSE 1 END LIMIT 1",[scope],|r|r.get::<_,String>(0)).optional()?;
+        let floor=self.database.read(move|c|{
+            use crate::database::OptionalExtension;
+            let value=c.query_row("SELECT policy_json FROM storage_policies WHERE scope=$1 OR scope='' ORDER BY CASE WHEN scope=$1 THEN 0 ELSE 1 END LIMIT 1",[scope],|r|r.get::<_,String>(0)).optional()?;
             Ok(value)
         }).map_err(crate::storage::db_error)?.map(|v|crate::storage::parse::<api::Policy>(&v).map(|p|p.minimum_verified_backups)).transpose()?.unwrap_or(2);
         let mut newer = 0u32;
@@ -116,6 +276,7 @@ impl HostBackend {
                 context,
             )?;
             other.artifact.repository_id = r.artifact.repository_id.clone();
+            other.artifact.group_id = r.artifact.group_id.clone();
             if self.observe_backup(&mut other, context).is_ok()
                 && other.recovery_verified
                 && other.recovery_lineage == checked.recovery_lineage
@@ -130,147 +291,273 @@ impl HostBackend {
         Err(blocked("required_recovery"))
     }
 
-    pub(super) fn discover_sources(
+    fn ignored_review_path_allowed(path: &Path) -> bool {
+        let components = path
+            .components()
+            .map(|component| match component {
+                Component::Normal(name) => name.to_string_lossy().into_owned(),
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>();
+        if components.iter().any(String::is_empty)
+            || components.iter().any(|name| {
+                name == ".git"
+                    || fs::protected_metadata_name(name.as_ref())
+                    || matches!(
+                        name.as_str(),
+                        "chat"
+                            | "chats"
+                            | "chat-history"
+                            | "chat_history"
+                            | "conversations"
+                            | "messages"
+                    )
+            })
+        {
+            return false;
+        }
+        match components.as_slice() {
+            [name] if name == ".devcoordinator.toml" => true,
+            [root, test, name]
+                if root == ".devcoordinator"
+                    && test == "test"
+                    && matches!(name.as_str(), "history.json" | "evidence.json") =>
+            {
+                true
+            }
+            [root, test, current, name]
+                if root == ".devcoordinator"
+                    && test == "test"
+                    && current == "current"
+                    && matches!(
+                        name.as_str(),
+                        "check-plan.json"
+                            | "check-report.json"
+                            | "container-lifecycle.json"
+                            | "env"
+                            | "summary.json"
+                    ) =>
+            {
+                true
+            }
+            [root, ..] if root == ".devcoordinator" => false,
+            _ => true,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn hash_ignored_file(
+        root: &Path,
+        relative: &Path,
+        remaining: u64,
+    ) -> Result<IgnoredReviewFile, ProtocolError> {
+        let full = root.join(relative);
+        let parent = fs::open_directory(
+            full.parent()
+                .ok_or_else(|| blocked("ignored_review_path_invalid"))?,
+        )?;
+        let descriptor = unix::openat(
+            &parent,
+            full.file_name()
+                .ok_or_else(|| blocked("ignored_review_path_invalid"))?,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| blocked("ignored_review_file_unavailable"))?;
+        let mut file = File::from(descriptor);
+        let before =
+            unix::fstat(&file).map_err(|_| unavailable("ignored_review_file_unavailable"))?;
+        if unix::FileType::from_raw_mode(before.st_mode) != unix::FileType::RegularFile {
+            return Err(blocked("ignored_review_file_not_regular"));
+        }
+        let size = u64::try_from(before.st_size)
+            .ok()
+            .filter(|size| *size <= remaining)
+            .ok_or_else(|| blocked("ignored_review_size_limit"))?;
+        let mut digest = sha2::Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut read = 0_u64;
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .map_err(|_| unavailable("ignored_review_file_unavailable"))?;
+            if count == 0 {
+                break;
+            }
+            read = read.saturating_add(count as u64);
+            if read > remaining {
+                return Err(blocked("ignored_review_size_limit"));
+            }
+            digest.update(&buffer[..count]);
+        }
+        let after =
+            unix::fstat(&file).map_err(|_| unavailable("ignored_review_file_unavailable"))?;
+        if before.st_dev != after.st_dev
+            || before.st_ino != after.st_ino
+            || before.st_size != after.st_size
+            || before.st_mtime != after.st_mtime
+            || before.st_mtime_nsec != after.st_mtime_nsec
+            || read != size
+        {
+            return Err(blocked("ignored_review_file_changed"));
+        }
+        Ok(IgnoredReviewFile {
+            path: relative.to_owned(),
+            device: before.st_dev as u64,
+            inode: before.st_ino as u64,
+            size,
+            sha256: crate::storage::hex(&digest.finalize()),
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn review_ignored_files(
         &self,
+        root: &Path,
+        worktree_identity: (u64, u64),
+        files: &[api::IgnoredFileReview],
+    ) -> Result<IgnoredReview, ProtocolError> {
+        if files.len() > MAX_IGNORED_REVIEW_FILES {
+            return Err(blocked("ignored_review_file_limit"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut reviewed = Vec::with_capacity(files.len());
+        let mut total = 0_u64;
+        for file in files {
+            if file.sha256.len() != 64 || !file.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(blocked("ignored_review_digest_invalid"));
+            }
+            let relative = Path::new(&file.path);
+            if !relative.is_relative()
+                || relative
+                    .components()
+                    .any(|component| !matches!(component, Component::Normal(_)))
+                || !Self::ignored_review_path_allowed(relative)
+                || !seen.insert(relative.to_owned())
+            {
+                return Err(blocked("ignored_review_path_invalid"));
+            }
+            let entry = Self::hash_ignored_file(
+                root,
+                relative,
+                MAX_IGNORED_REVIEW_BYTES.saturating_sub(total),
+            )?;
+            if entry.sha256 != file.sha256.to_ascii_lowercase() {
+                return Err(blocked("ignored_review_digest_mismatch"));
+            }
+            total = total.saturating_add(entry.size);
+            reviewed.push(entry);
+        }
+        Ok(IgnoredReview {
+            worktree_device: worktree_identity.0,
+            worktree_inode: worktree_identity.1,
+            files: reviewed,
+            total_bytes: total,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn review_ignored_files(
+        &self,
+        _root: &Path,
+        _worktree_identity: (u64, u64),
+        _files: &[api::IgnoredFileReview],
+    ) -> Result<IgnoredReview, ProtocolError> {
+        Err(unavailable("ignored_review_unsupported"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn validate_ignored_review(
+        &self,
+        path: &Path,
+        record: &Record,
+        ignored: &[u8],
         context: &Context,
-        out: &mut Discovery,
     ) -> Result<(), ProtocolError> {
-        let mut visited = BTreeSet::new();
-        let mut generated = Vec::new();
-        for repo in context.repositories.iter().filter(|repo| {
-            context
-                .scan_repository_id
-                .as_ref()
-                .is_none_or(|id| id == &repo.id)
-        }) {
-            let mut roots = vec![repo.root.clone()];
-            roots.extend(
-                context
-                    .worktrees
-                    .iter()
-                    .filter(|(id, _)| id == &repo.id)
-                    .map(|(_, p)| p.clone()),
-            );
-            for root in roots {
-                if !visited.insert(root.clone()) {
-                    continue;
-                }
-                if let Ok(f) = fs::filesystem(&root, context.now_ms, "Project storage") {
-                    out.filesystems.push(f);
-                }
-                if let Err(e) = discover_generated(&root, &root, 0, &mut generated) {
-                    out.coverage_gaps.push(e.message);
-                }
-                for (path, kind, recognized) in generated.drain(..) {
-                    match self.directory_candidate(
-                        &path,
-                        &root,
-                        Some(&root),
-                        kind,
-                        recognized,
-                        context,
-                    ) {
-                        Ok(mut r) => {
-                            r.artifact.repository_id = Some(repo.id.clone());
-                            r.artifact.repository_name = Some(repo.name.clone());
-                            out.records.push(r);
-                        }
-                        Err(_) => out
-                            .coverage_gaps
-                            .push("generated_output_observation_incomplete".into()),
-                    }
-                }
-                if root != repo.root {
-                    match self.directory_candidate(
-                        &root,
-                        &root,
-                        Some(&repo.root),
-                        api::Kind::Worktree,
-                        true,
-                        context,
-                    ) {
-                        Ok(mut r) => {
-                            r.artifact.repository_id = Some(repo.id.clone());
-                            r.artifact.repository_name = Some(repo.name.clone());
-                            r.artifact.name = root
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned();
-                            out.records.push(r);
-                        }
-                        Err(_) => out
-                            .coverage_gaps
-                            .push("worktree_observation_incomplete".into()),
-                    }
-                }
+        let Some(review) = record.ignored_review.as_ref() else {
+            return Err(blocked("unreviewed_ignored_files"));
+        };
+        let Locator::Directory { device, inode, .. } = &record.locator else {
+            return Err(blocked("unreviewed_ignored_files"));
+        };
+        if review.worktree_device != *device || review.worktree_inode != *inode {
+            return Err(blocked("ignored_review_identity_changed"));
+        }
+        let listed = ignored
+            .split(|byte| *byte == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                std::str::from_utf8(entry)
+                    .map(PathBuf::from)
+                    .map_err(|_| blocked("ignored_review_listing_invalid"))
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let expected = review
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<BTreeSet<_>>();
+        if listed != expected {
+            return Err(blocked("unreviewed_ignored_files"));
+        }
+        if review.total_bytes > MAX_IGNORED_REVIEW_BYTES {
+            return Err(blocked("ignored_review_size_limit"));
+        }
+        if review
+            .files
+            .iter()
+            .any(|file| !Self::ignored_review_path_allowed(&file.path))
+        {
+            return Err(blocked("ignored_review_forbidden_path"));
+        }
+        if listed.is_empty() && !review.files.is_empty() {
+            return Err(blocked("unreviewed_ignored_files"));
+        }
+        let mut remaining = MAX_IGNORED_REVIEW_BYTES;
+        let mut total = 0_u64;
+        for file in &review.files {
+            let current = Self::hash_ignored_file(path, &file.path, remaining)?;
+            remaining = remaining.saturating_sub(current.size);
+            total = total.saturating_add(current.size);
+            if current.device != file.device
+                || current.inode != file.inode
+                || current.size != file.size
+                || current.sha256 != file.sha256
+            {
+                return Err(blocked("ignored_review_file_changed"));
             }
         }
-        for root in context.roots.iter().filter(|root| {
-            context
-                .scan_repository_id
-                .as_ref()
-                .is_none_or(|id| root.root.repository_id.as_ref() == Some(id))
-        }) {
-            if fs::identity(&root.path).ok() != Some((root.device, root.inode)) {
-                out.coverage_gaps
-                    .push("configured_root_identity_changed".into());
-                continue;
-            }
-            if let Ok(f) = fs::filesystem(&root.path, context.now_ms, &root.root.label) {
-                out.filesystems.push(f);
-            }
-            let children = std::fs::read_dir(&root.path)
-                .map_err(|_| unavailable("configured_root_unavailable"))?;
-            for child in children {
-                let child = child.map_err(|_| unavailable("configured_root_incomplete"))?;
-                if !child.file_type().is_ok_and(|k| k.is_dir()) {
-                    continue;
-                }
-                let recognized = root.root.kind != api::Kind::Unknown;
-                let git = context
-                    .repositories
-                    .iter()
-                    .find(|repo| child.path().starts_with(&repo.root))
-                    .map(|repo| repo.root.as_path());
-                match self.directory_candidate(
-                    &child.path(),
-                    &root.path,
-                    git,
-                    root.root.kind,
-                    recognized,
-                    context,
-                ) {
-                    Ok(mut r) => {
-                        r.artifact.repository_id = root.root.repository_id.clone();
-                        r.artifact.group_id = Some(root.root.root_id.clone());
-                        r.artifact.group_name = Some(root.root.label.clone());
-                        r.artifact.repository_name = context
-                            .repositories
-                            .iter()
-                            .find(|p| Some(&p.id) == r.artifact.repository_id.as_ref())
-                            .map(|p| p.name.clone());
-                        if r.artifact.kind == api::Kind::Backup {
-                            self.observe_backup(&mut r, context)?;
-                        }
-                        out.records.push(r);
-                    }
-                    Err(_) => out
-                        .coverage_gaps
-                        .push("configured_artifact_observation_incomplete".into()),
-                }
-            }
+        if total != review.total_bytes {
+            return Err(blocked("ignored_review_file_changed"));
         }
-        if out.coverage_gaps.is_empty() {
-            out.complete_kinds.extend([
-                api::Kind::BuildOutput,
-                api::Kind::DependencyCache,
-                api::Kind::Worktree,
-                api::Kind::Backup,
-                api::Kind::Unknown,
-            ]);
+        if review
+            .files
+            .iter()
+            .any(|file| file.path.starts_with(".devcoordinator/test"))
+            && !crate::storage::evidence::protected_runs(&self.database, path)?.is_empty()
+        {
+            return Err(blocked("protected_evidence"));
+        }
+        if context
+            .active_worktrees
+            .iter()
+            .any(|worktree| worktree == path)
+        {
+            return Err(blocked("active_worktree"));
         }
         Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn validate_ignored_review(
+        &self,
+        _path: &Path,
+        _record: &Record,
+        _ignored: &[u8],
+        _context: &Context,
+    ) -> Result<(), ProtocolError> {
+        Err(unavailable("ignored_review_unsupported"))
     }
 
     pub(super) fn directory_candidate(
@@ -282,7 +569,12 @@ impl HostBackend {
         recognized: bool,
         context: &Context,
     ) -> Result<Record, ProtocolError> {
-        let measured = fs::measure(path);
+        let measured = context
+            .discovery_measurements
+            .get(path)
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| fs::measure(path));
         let (device, inode) = fs::identity(path)?;
         let effect = if !recognized {
             api::Effect::Unknown
@@ -326,6 +618,9 @@ impl HostBackend {
         }
         r.private_aliases.push(path.into());
         r.artifact.ownership = if recognized { "recognized" } else { "unknown" }.into();
+        if let Some(review) = context.ignored_reviews.get(&r.resource_key) {
+            r.ignored_review = Some(review.clone());
+        }
         if !recognized {
             r.blockers.push("ownership_unknown".into());
         }
@@ -362,6 +657,7 @@ impl HostBackend {
 
     pub(super) fn validate_worktree(
         &self,
+        record: &Record,
         path: &Path,
         main: Option<&Path>,
         context: &Context,
@@ -386,7 +682,7 @@ impl HostBackend {
         {
             return Err(blocked("dirty_worktree"));
         }
-        if !git_bytes(
+        let (ignored, ignored_stderr) = git_bytes_with_stderr(
             path,
             &[
                 "ls-files",
@@ -396,20 +692,84 @@ impl HostBackend {
                 "-z",
             ],
             context,
-        )?
-        .is_empty()
+        )?;
+        if !ignored_stderr.is_empty() {
+            return Err(blocked("ignored_files_unverified"));
+        }
+        if !ignored.is_empty()
+            || record
+                .ignored_review
+                .as_ref()
+                .is_some_and(|review| !review.files.is_empty())
         {
+            self.validate_ignored_review(path, record, &ignored, context)?;
+        }
+        if !ignored.is_empty() && record.ignored_review.is_none() {
             return Err(blocked("unreviewed_ignored_files"));
         }
         let head = String::from_utf8(git_bytes(path, &["rev-parse", "HEAD"], context)?)
             .map_err(|_| blocked("git_baseline_unverified"))?;
-        let remote = String::from_utf8(git_bytes(main, &["ls-remote", "origin", "HEAD"], context)?)
+        let branch = String::from_utf8(git_bytes(
+            path,
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+            context,
+        )?)
+        .map_err(|_| blocked("git_baseline_unverified"))?;
+        let branch = branch.trim();
+        let upstream = if branch == "HEAD" {
+            None
+        } else {
+            let remote_key = format!("branch.{branch}.remote");
+            let merge_key = format!("branch.{branch}.merge");
+            let remote = String::from_utf8(git_bytes(
+                path,
+                &["config", "--get", "--default=", &remote_key],
+                context,
+            )?)
             .map_err(|_| blocked("git_baseline_unverified"))?;
-        let remote_head = remote
-            .split_whitespace()
+            let merge = String::from_utf8(git_bytes(
+                path,
+                &["config", "--get", "--default=", &merge_key],
+                context,
+            )?)
+            .map_err(|_| blocked("git_baseline_unverified"))?;
+            let remote = remote.trim();
+            let merge = merge.trim();
+            if remote.is_empty() && merge.is_empty() {
+                None
+            } else if remote == "."
+                || remote.chars().any(char::is_whitespace)
+                || !merge.starts_with("refs/heads/")
+                || merge.chars().any(char::is_whitespace)
+            {
+                return Err(blocked("git_baseline_unverified"));
+            } else {
+                git_bytes(path, &["remote", "get-url", "--", remote], context)?;
+                Some((remote.to_owned(), merge.to_owned()))
+            }
+        };
+        let remote = if let Some((remote_name, remote_ref)) = upstream.as_ref() {
+            git_bytes(
+                path,
+                &["ls-remote", "--exit-code", "--", remote_name, remote_ref],
+                context,
+            )?
+        } else {
+            git_bytes(path, &["ls-remote", "origin", "HEAD"], context)?
+        };
+        let remote = String::from_utf8(remote).map_err(|_| blocked("git_baseline_unverified"))?;
+        let mut fields = remote.split_whitespace();
+        let remote_head = fields
             .next()
-            .filter(|h| h.len() == 40 || h.len() == 64)
+            .filter(|h| {
+                (h.len() == 40 || h.len() == 64) && h.chars().all(|c| c.is_ascii_hexdigit())
+            })
             .ok_or_else(|| blocked("git_baseline_unverified"))?;
+        if let Some((_, remote_ref)) = upstream.as_ref()
+            && (fields.next() != Some(remote_ref) || fields.next().is_some())
+        {
+            return Err(blocked("git_baseline_unverified"));
+        }
         git_bytes(main, &["cat-file", "-e", remote_head], context)?;
         git_bytes(
             main,
@@ -428,9 +788,22 @@ impl HostBackend {
         r: &mut Record,
         context: &Context,
     ) -> Result<(), ProtocolError> {
+        r.recovery_verified = false;
         let Locator::Directory { path, root, .. } = &r.locator else {
             return Ok(());
         };
+        if path
+            .join("retirement-pending.json")
+            .symlink_metadata()
+            .is_ok()
+        {
+            r.blockers.push("activation_acceptance_pending".into());
+            return Ok(());
+        }
+        if super::native_backup_generation(path, root, r.artifact.kind, &self.config) {
+            self.native_backup_root_identity(r, root, context)?;
+            fs::validate_native_snapshot(path)?;
+        }
         if path.join("installation-snapshot.json").is_file() {
             let repository = r
                 .artifact
@@ -438,14 +811,16 @@ impl HostBackend {
                 .as_ref()
                 .or_else(|| context.repositories.first().map(|r| &r.id))
                 .ok_or_else(|| blocked("backup_owner_unverified"))?;
-            let observation =
-                crate::planning_backup::inspect(&crate::planning_backup::InspectRequest {
+            let observation = crate::planning_backup::inspect_configured(
+                self.database.persistence().config(),
+                &crate::planning_backup::InspectRequest {
                     transaction_dir: path.clone(),
                     repository_id: repository.clone(),
                     task_ids: Vec::new(),
                     include_identities: false,
-                })
-                .map_err(|_| blocked("backup_unverified"))?;
+                },
+            )
+            .map_err(|_| blocked("backup_unverified"))?;
             if observation.provenance != "recorded_hash_matched" {
                 return Ok(());
             }
@@ -468,6 +843,7 @@ impl HostBackend {
                 observation.snapshot_status.as_str(),
                 "prepared" | "rolling_back"
             ) {
+                r.recovery_verified = false;
                 r.blockers.push("backup_in_progress".into());
             }
             return Ok(());
@@ -575,69 +951,4 @@ impl HostBackend {
             hash(&std::fs::read(manifest).map_err(|_| unavailable("backup_manifest_unavailable"))?);
         Ok(())
     }
-}
-
-fn discover_generated(
-    path: &Path,
-    root: &Path,
-    depth: usize,
-    out: &mut Vec<(PathBuf, api::Kind, bool)>,
-) -> Result<(), ProtocolError> {
-    if depth > 8 {
-        return Ok(());
-    }
-    if out.len() > 10_000 {
-        return Err(blocked("source_discovery_limit"));
-    }
-    for entry in std::fs::read_dir(path).map_err(|_| unavailable("source_discovery_unavailable"))? {
-        let entry = entry.map_err(|_| unavailable("source_discovery_incomplete"))?;
-        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let name = entry.file_name();
-        let n = name.to_string_lossy();
-        if matches!(
-            n.as_ref(),
-            ".git"
-                | ".devcoordinator"
-                | ".devcoordinator-test"
-                | ".ssh"
-                | "sessions"
-                | "archived_sessions"
-        ) {
-            continue;
-        }
-        let candidate = match n.as_ref() {
-            "target" => Some((
-                api::Kind::BuildOutput,
-                path.join("Cargo.toml").is_file()
-                    && entry.path().join(".rustc_info.json").is_file(),
-            )),
-            "node_modules" => Some((
-                api::Kind::DependencyCache,
-                path.join("package.json").is_file()
-                    && (entry.path().join(".package-lock.json").is_file()
-                        || entry.path().join(".modules.yaml").is_file()),
-            )),
-            ".venv" | ".venv-v3" | "venv" => Some((
-                api::Kind::DependencyCache,
-                entry.path().join("pyvenv.cfg").is_file(),
-            )),
-            ".pytest_cache" | ".ruff_cache" => Some((
-                api::Kind::DependencyCache,
-                entry.path().join("CACHEDIR.TAG").is_file(),
-            )),
-            "dist" | "build" | "bazel-out" | ".next" => Some((api::Kind::BuildOutput, false)),
-            _ => None,
-        };
-        if let Some((kind, recognized)) = candidate {
-            out.push((entry.path(), kind, recognized));
-            continue;
-        }
-        if entry.path() != root && entry.path().join(".git").exists() {
-            continue;
-        }
-        discover_generated(&entry.path(), root, depth + 1, out)?;
-    }
-    Ok(())
 }

@@ -15,19 +15,18 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::params::TelegramSubscription as TelegramSubscriptionParams;
 use devcoordinator2_api::results::{
     TelegramChat, TelegramLinked, TelegramList, TelegramSubscription as TelegramSubscriptionResult,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use reqwest::header::CONTENT_LENGTH;
-use rusqlite::OptionalExtension;
 use rustix::fs::{Mode, OFlags, fstat, open};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, format_description::FormatItem, macros::format_description};
-use tokio::sync::{Notify, watch};
-use tokio::task::JoinHandle;
+use tokio::sync::Notify;
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
@@ -47,7 +46,6 @@ const TOKEN_MAX_CHARS: usize = 512;
 const HTTP_RESPONSE_MAX_BYTES: usize = 1024 * 1024;
 const POLL_TIMEOUT: StdDuration = StdDuration::from_secs(35);
 const SEND_TIMEOUT: StdDuration = StdDuration::from_secs(15);
-const LOOP_WAKE: StdDuration = StdDuration::from_millis(100);
 const ISO_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
@@ -262,7 +260,7 @@ struct TelegramInner {
     random: Arc<dyn RandomSource>,
     update_offset: AtomicI64,
     status: Mutex<RuntimeStatus>,
-    delivery_wake: Notify,
+    delivery_wake: Arc<Notify>,
 }
 
 #[derive(Clone)]
@@ -298,7 +296,7 @@ impl TelegramService {
                     last_poll_at: None,
                     last_error: None,
                 }),
-                delivery_wake: Notify::new(),
+                delivery_wake: Arc::new(Notify::new()),
             }),
         }
     }
@@ -315,8 +313,8 @@ impl TelegramService {
             .transaction(move |transaction| {
                 transaction.execute(
                     "INSERT INTO telegram_outbox(chat_id,text,created_at,attempts,next_attempt_at) \
-                     VALUES(?1,?2,?3,0,?3)",
-                    rusqlite::params![chat_id, bounded, now],
+                     VALUES($1,$2,$3,0,$3)",
+                    crate::database::params![chat_id, bounded, now],
                 )?;
                 let count =
                     transaction.query_row("SELECT count(*) FROM telegram_outbox", [], |row| {
@@ -325,7 +323,7 @@ impl TelegramService {
                 if count > OUTBOX_MAX_ROWS {
                     transaction.execute(
                         "DELETE FROM telegram_outbox WHERE message_id IN (\
-                           SELECT message_id FROM telegram_outbox ORDER BY message_id LIMIT ?1\
+                           SELECT message_id FROM telegram_outbox ORDER BY message_id LIMIT $1\
                          )",
                         [count - OUTBOX_MAX_ROWS],
                     )?;
@@ -355,13 +353,13 @@ impl TelegramService {
             .database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "DELETE FROM telegram_links WHERE chat_id=?1 OR expires_at<?2",
-                    rusqlite::params![chat_id, now],
+                    "DELETE FROM telegram_links WHERE chat_id=$1 OR expires_at<$2",
+                    crate::database::params![chat_id, now],
                 )?;
                 transaction.execute(
                     "INSERT INTO telegram_links(code,chat_id,label,created_at,expires_at) \
-                     VALUES(?1,?2,?3,?4,?5)",
-                    rusqlite::params![stored_code, chat_id, label, now, expires],
+                     VALUES($1,$2,$3,$4,$5)",
+                    crate::database::params![stored_code, chat_id, label, now, expires],
                 )?;
                 Ok(())
             })
@@ -391,8 +389,8 @@ impl TelegramService {
                 let link = transaction
                     .query_row(
                         "SELECT chat_id,label FROM telegram_links \
-                         WHERE code=?1 AND expires_at>=?2",
-                        rusqlite::params![code, now],
+                         WHERE code=$1 AND expires_at>=$2",
+                        crate::database::params![code, now],
                         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
                     )
                     .optional()?;
@@ -403,7 +401,7 @@ impl TelegramService {
                     )));
                 };
                 let consumed =
-                    transaction.execute("DELETE FROM telegram_links WHERE code=?1", [&code])?;
+                    transaction.execute("DELETE FROM telegram_links WHERE code=$1", [&code])?;
                 if consumed != 1 {
                     return Err(DatabaseError::Domain(ProtocolError::new(
                         ErrorCode::ParamsInvalid,
@@ -411,9 +409,9 @@ impl TelegramService {
                     )));
                 }
                 transaction.execute(
-                    "INSERT OR REPLACE INTO telegram_chats(chat_id,email,label,linked_at) \
-                     VALUES(?1,?2,?3,?4)",
-                    rusqlite::params![chat_id, transaction_email, label, now],
+                    "INSERT INTO telegram_chats(chat_id,email,label,linked_at) \
+                     VALUES($1,$2,$3,$4) ON CONFLICT(chat_id) DO UPDATE SET email=excluded.email,label=excluded.label,linked_at=excluded.linked_at",
+                    crate::database::params![chat_id, transaction_email, label, now],
                 )?;
                 Ok(chat_id)
             })
@@ -434,10 +432,10 @@ impl TelegramService {
         let exists = self
             .inner
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT 1 FROM telegram_chats WHERE chat_id=?1",
+                        "SELECT 1 FROM telegram_chats WHERE chat_id=$1",
                         [chat_id],
                         |_| Ok(()),
                     )
@@ -458,9 +456,9 @@ impl TelegramService {
             .database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT OR IGNORE INTO telegram_subscriptions(chat_id,scope,created_at) \
-                     VALUES(?1,?2,?3)",
-                    rusqlite::params![chat_id, stored_scope, now],
+                    "INSERT INTO telegram_subscriptions(chat_id,scope,created_at) \
+                     VALUES($1,$2,$3) ON CONFLICT(chat_id,scope) DO NOTHING",
+                    crate::database::params![chat_id, stored_scope, now],
                 )?;
                 Ok(())
             })
@@ -484,8 +482,8 @@ impl TelegramService {
             .database
             .transaction(move |transaction| {
                 Ok(transaction.execute(
-                    "DELETE FROM telegram_subscriptions WHERE chat_id=?1 AND scope=?2",
-                    rusqlite::params![chat_id, transaction_scope],
+                    "DELETE FROM telegram_subscriptions WHERE chat_id=$1 AND scope=$2",
+                    crate::database::params![chat_id, transaction_scope],
                 )? > 0)
             })
             .map_err(database_error)?;
@@ -501,12 +499,12 @@ impl TelegramService {
         let (mut chats, subscriptions, outbox_pending) = self
             .inner
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let chats = {
                     let mut statement = if email.is_some() {
                         connection.prepare(
                             "SELECT chat_id,email,label,linked_at FROM telegram_chats \
-                             WHERE email=?1 ORDER BY email,chat_id",
+                             WHERE email=$1 ORDER BY email,chat_id",
                         )?
                     } else {
                         connection.prepare(
@@ -562,10 +560,10 @@ impl TelegramService {
     pub fn chat_email(&self, chat_id: i64) -> Result<Option<String>, ProtocolError> {
         self.inner
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT email FROM telegram_chats WHERE chat_id=?1",
+                        "SELECT email FROM telegram_chats WHERE chat_id=$1",
                         [chat_id],
                         |row| row.get(0),
                     )
@@ -576,6 +574,15 @@ impl TelegramService {
     }
 
     pub async fn poll_once(&self) -> Result<u32, ProtocolError> {
+        self.poll_batch(25, POLL_TIMEOUT, false).await
+    }
+
+    async fn poll_batch(
+        &self,
+        wait_seconds: u64,
+        timeout: StdDuration,
+        direct: bool,
+    ) -> Result<u32, ProtocolError> {
         let Some(http) = self.inner.http.as_ref() else {
             return Ok(0);
         };
@@ -584,11 +591,12 @@ impl TelegramService {
             .call(
                 TelegramMethod::GetUpdates,
                 json!({
-                    "timeout": 25,
+                    "timeout": wait_seconds,
+                    "limit": 8,
                     "offset": offset,
                     "allowed_updates": ["message"],
                 }),
-                POLL_TIMEOUT,
+                timeout,
             )
             .await
             .map_err(|_| telegram_unavailable("Telegram polling is unavailable."))?;
@@ -602,40 +610,42 @@ impl TelegramService {
             .as_array()
             .ok_or_else(|| telegram_unavailable("Telegram polling returned an invalid result."))?;
         let mut handled = 0u32;
-        for update in updates {
-            let Some(update) = update.as_object() else {
-                continue;
-            };
-            let update_id = update
+        for update in updates.iter().take(8) {
+            let Some(update_id) = update
                 .get("update_id")
                 .and_then(Value::as_i64)
-                .unwrap_or_default();
+                .filter(|id| *id >= 0)
+            else {
+                continue;
+            };
+            if let Some(message) = update.get("message").and_then(Value::as_object)
+                && let Some(chat) = message.get("chat").and_then(Value::as_object)
+            {
+                let chat_id = chat.get("id").and_then(Value::as_i64).unwrap_or_default();
+                let text = message
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
+                if chat_id != 0 && !text.is_empty() {
+                    let label = ["first_name", "username"]
+                        .iter()
+                        .filter_map(|key| chat.get(*key).and_then(Value::as_str))
+                        .filter(|value| !value.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let text = text.to_owned();
+                    self.blocking(direct, move |service| {
+                        service.handle_message(chat_id, &text, &label)
+                    })
+                    .await?;
+                    handled = handled.saturating_add(1);
+                }
+            }
+            // Do not acknowledge a received update before its local effects succeed.
             self.inner
                 .update_offset
                 .fetch_max(update_id.saturating_add(1), Ordering::AcqRel);
-            let Some(message) = update.get("message").and_then(Value::as_object) else {
-                continue;
-            };
-            let Some(chat) = message.get("chat").and_then(Value::as_object) else {
-                continue;
-            };
-            let chat_id = chat.get("id").and_then(Value::as_i64).unwrap_or_default();
-            let text = message
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim();
-            if chat_id == 0 || text.is_empty() {
-                continue;
-            }
-            let label = ["first_name", "username"]
-                .iter()
-                .filter_map(|name| chat.get(*name).and_then(Value::as_str))
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            self.handle_message(chat_id, text, &label)?;
-            handled = handled.saturating_add(1);
         }
         Ok(handled)
     }
@@ -654,11 +664,11 @@ impl TelegramService {
                 .database
                 .transaction(move |transaction| {
                     transaction.execute(
-                        "DELETE FROM telegram_subscriptions WHERE chat_id=?1",
+                        "DELETE FROM telegram_subscriptions WHERE chat_id=$1",
                         [chat_id],
                     )?;
                     transaction
-                        .execute("DELETE FROM telegram_chats WHERE chat_id=?1", [chat_id])?;
+                        .execute("DELETE FROM telegram_chats WHERE chat_id=$1", [chat_id])?;
                     Ok(())
                 })
                 .map_err(database_error)?;
@@ -672,39 +682,54 @@ impl TelegramService {
     }
 
     pub async fn deliver_once(&self) -> Result<u32, ProtocolError> {
+        self.deliver_batch(OUTBOX_BATCH, SEND_TIMEOUT, false).await
+    }
+
+    async fn deliver_batch(
+        &self,
+        limit: u32,
+        timeout: StdDuration,
+        direct: bool,
+    ) -> Result<u32, ProtocolError> {
         let now_value = self.inner.clock.now_utc();
         let now = timestamp(now_value)?;
         let cutoff = timestamp(now_value - Duration::seconds(OUTBOX_MAX_AGE_SECONDS))?;
-        self.inner
-            .database
-            .transaction(move |transaction| {
-                transaction.execute(
-                    "DELETE FROM telegram_outbox WHERE created_at<?1 OR attempts>=?2",
-                    rusqlite::params![cutoff, OUTBOX_MAX_ATTEMPTS],
-                )?;
-                Ok(())
-            })
-            .map_err(database_error)?;
         let rows = self
-            .inner
-            .database
-            .call(move |connection| {
-                let mut statement = connection.prepare(
-                    "SELECT message_id,chat_id,text,attempts FROM telegram_outbox \
-                     WHERE next_attempt_at<=?1 ORDER BY message_id LIMIT ?2",
-                )?;
-                Ok(statement
-                    .query_map(rusqlite::params![now, OUTBOX_BATCH], |row| {
-                        Ok(OutboxRow {
-                            message_id: row.get(0)?,
-                            chat_id: row.get(1)?,
-                            text: row.get(2)?,
-                            attempts: row.get(3)?,
-                        })
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?)
+            .blocking(direct, move |service| {
+                service
+                    .inner
+                    .database
+                    .transaction(move |transaction| {
+                        transaction.execute(
+                            "DELETE FROM telegram_outbox WHERE created_at<$1 OR attempts>=$2",
+                            crate::database::params![cutoff, OUTBOX_MAX_ATTEMPTS],
+                        )?;
+                        Ok(())
+                    })
+                    .map_err(database_error)?;
+                let rows = service
+                    .inner
+                    .database
+                    .read(move |connection| {
+                        let mut statement = connection.prepare(
+                            "SELECT message_id,chat_id,text,attempts FROM telegram_outbox \
+                     WHERE next_attempt_at<=$1 ORDER BY message_id LIMIT $2",
+                        )?;
+                        Ok(statement
+                            .query_map(crate::database::params![now, limit], |row| {
+                                Ok(OutboxRow {
+                                    message_id: row.get(0)?,
+                                    chat_id: row.get(1)?,
+                                    text: row.get(2)?,
+                                    attempts: row.get(3)?,
+                                })
+                            })?
+                            .collect::<Result<Vec<_>, _>>()?)
+                    })
+                    .map_err(database_error)?;
+                Ok(rows)
             })
-            .map_err(database_error)?;
+            .await?;
         let Some(http) = self.inner.http.as_ref() else {
             return Ok(0);
         };
@@ -714,21 +739,25 @@ impl TelegramService {
                 .call(
                     TelegramMethod::SendMessage,
                     json!({"chat_id": row.chat_id, "text": row.text}),
-                    SEND_TIMEOUT,
+                    timeout,
                 )
                 .await;
             if result.is_ok() {
                 let message_id = row.message_id;
-                self.inner
-                    .database
-                    .transaction(move |transaction| {
-                        transaction.execute(
-                            "DELETE FROM telegram_outbox WHERE message_id=?1",
-                            [message_id],
-                        )?;
-                        Ok(())
-                    })
-                    .map_err(database_error)?;
+                self.blocking(direct, move |service| {
+                    service
+                        .inner
+                        .database
+                        .transaction(move |transaction| {
+                            transaction.execute(
+                                "DELETE FROM telegram_outbox WHERE message_id=$1",
+                                [message_id],
+                            )?;
+                            Ok(())
+                        })
+                        .map_err(database_error)
+                })
+                .await?;
                 delivered = delivered.saturating_add(1);
             } else {
                 let attempts = row.attempts.saturating_add(1);
@@ -736,17 +765,21 @@ impl TelegramService {
                 let delay = (1i64 << shift).min(300);
                 let retry_at = timestamp(now_value + Duration::seconds(delay))?;
                 let message_id = row.message_id;
-                self.inner
-                    .database
-                    .transaction(move |transaction| {
-                        transaction.execute(
-                            "UPDATE telegram_outbox SET attempts=?1,next_attempt_at=?2,\
-                             last_error='telegram request failed' WHERE message_id=?3",
-                            rusqlite::params![attempts, retry_at, message_id],
-                        )?;
-                        Ok(())
-                    })
-                    .map_err(database_error)?;
+                self.blocking(direct, move |service| {
+                    service
+                        .inner
+                        .database
+                        .transaction(move |transaction| {
+                            transaction.execute(
+                                "UPDATE telegram_outbox SET attempts=$1,next_attempt_at=$2,\
+                             last_error='telegram request failed' WHERE message_id=$3",
+                                crate::database::params![attempts, retry_at, message_id],
+                            )?;
+                            Ok(())
+                        })
+                        .map_err(database_error)
+                })
+                .await?;
             }
         }
         Ok(delivered)
@@ -767,7 +800,7 @@ impl TelegramService {
         let chats = self
             .inner
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
                     "SELECT DISTINCT chat_id,scope FROM telegram_subscriptions ORDER BY chat_id",
                 )?;
@@ -789,64 +822,72 @@ impl TelegramService {
         Ok(u32::try_from(chats.len()).unwrap_or(u32::MAX))
     }
 
-    pub fn start(&self) -> TelegramRuntime {
-        let (stop, receiver) = watch::channel(false);
-        let mut tasks = Vec::new();
-        if self.configured() {
-            let poll_service = self.clone();
-            let poll_receiver = receiver.clone();
-            tasks.push(tokio::spawn(async move {
-                poll_service.poll_loop(poll_receiver).await;
-            }));
-            let delivery_service = self.clone();
-            tasks.push(tokio::spawn(async move {
-                delivery_service.delivery_loop(receiver).await;
-            }));
+    async fn blocking<T: Send + 'static>(
+        &self,
+        direct: bool,
+        work: impl FnOnce(Self) -> Result<T, ProtocolError> + Send + 'static,
+    ) -> Result<T, ProtocolError> {
+        let service = self.clone();
+        if direct {
+            return work(service);
         }
-        TelegramRuntime { stop, tasks }
+        tokio::task::spawn_blocking(move || crate::database::maintenance_context(|| work(service)))
+            .await
+            .map_err(|_| telegram_unavailable("Telegram persistence is unavailable."))?
     }
 
-    async fn poll_loop(&self, mut stop: watch::Receiver<bool>) {
-        loop {
-            if *stop.borrow() {
-                break;
-            }
-            let result = tokio::select! {
-                changed = stop.changed() => {
-                    if changed.is_err() || *stop.borrow() { break; }
-                    continue;
+    pub fn update_cursor(&self) -> String {
+        self.inner.update_offset.load(Ordering::Acquire).to_string()
+    }
+    pub fn resume_updates(&self, cursor: Option<&str>) -> Result<(), ProtocolError> {
+        if let Some(cursor) = cursor {
+            let offset = cursor
+                .parse::<i64>()
+                .ok()
+                .filter(|value| *value >= 0)
+                .ok_or_else(|| telegram_unavailable("Telegram update cursor is invalid."))?;
+            self.inner.update_offset.fetch_max(offset, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+
+    /// Runs on a dedicated maintenance worker. Network I/O and its native
+    /// persistence handoffs never use the request runtime's blocking pool.
+    pub fn maintenance_step(&self, poll: bool, budget: StdDuration) -> Result<u32, ProtocolError> {
+        if !self.configured() {
+            return Ok(0);
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .map_err(|_| telegram_unavailable("Telegram worker unavailable."))?;
+        let result = runtime.block_on(async {
+            let work = async {
+                if poll {
+                    self.poll_batch(0, budget.min(StdDuration::from_secs(3)), true)
+                        .await
+                } else {
+                    self.deliver_batch(1, budget.min(StdDuration::from_secs(3)), true)
+                        .await
                 }
-                result = self.poll_once() => result,
             };
-            if result.is_err() {
-                self.record_runtime_error("telegram polling unavailable");
-            }
-            tokio::select! {
-                changed = stop.changed() => {
-                    if changed.is_err() || *stop.borrow() { break; }
-                }
-                () = tokio::time::sleep(LOOP_WAKE) => {}
-            }
+            tokio::time::timeout(budget, work)
+                .await
+                .map_err(|_| telegram_unavailable("Telegram step timed out."))?
+        });
+        if result.is_err() {
+            self.record_runtime_error(if poll {
+                "telegram polling unavailable"
+            } else {
+                "telegram delivery unavailable"
+            });
         }
+        result
     }
 
-    async fn delivery_loop(&self, mut stop: watch::Receiver<bool>) {
-        loop {
-            if *stop.borrow() {
-                break;
-            }
-            tokio::select! {
-                changed = stop.changed() => {
-                    if changed.is_err() || *stop.borrow() { break; }
-                    continue;
-                }
-                () = self.inner.delivery_wake.notified() => {}
-                () = tokio::time::sleep(LOOP_WAKE) => {}
-            }
-            if let Err(_error) = self.deliver_once().await {
-                self.record_runtime_error("telegram delivery unavailable");
-            }
-        }
+    pub fn delivery_signal(&self) -> Arc<Notify> {
+        self.inner.delivery_wake.clone()
     }
 
     fn record_runtime_error(&self, message: &'static str) {
@@ -855,29 +896,6 @@ impl TelegramService {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .last_error = Some(message.into());
-    }
-}
-
-pub struct TelegramRuntime {
-    stop: watch::Sender<bool>,
-    tasks: Vec<JoinHandle<()>>,
-}
-
-impl TelegramRuntime {
-    pub async fn shutdown(mut self) {
-        let _ = self.stop.send(true);
-        for task in self.tasks.drain(..) {
-            let _ = task.await;
-        }
-    }
-}
-
-impl Drop for TelegramRuntime {
-    fn drop(&mut self) {
-        let _ = self.stop.send(true);
-        for task in &self.tasks {
-            task.abort();
-        }
     }
 }
 
@@ -1136,7 +1154,7 @@ fn read_private_token(path: &Path) -> Option<String> {
     Some(token.into())
 }
 
-fn telegram_chat_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TelegramChat> {
+fn telegram_chat_row(row: &crate::database::Row<'_>) -> crate::database::Result<TelegramChat> {
     Ok(TelegramChat {
         chat_id: row.get(0)?,
         email: row.get(1)?,
@@ -1333,7 +1351,7 @@ mod tests {
 
         fn outbox_count(&self) -> u32 {
             self.database
-                .call(|connection| {
+                .read(|connection| {
                     Ok(connection
                         .query_row("SELECT count(*) FROM telegram_outbox", [], |row| row.get(0))?)
                 })
@@ -1363,9 +1381,13 @@ mod tests {
         assert_eq!(read_private_token(&token), None);
     }
 
-    #[tokio::test]
-    async fn poll_link_subscribe_route_and_delivery_preserve_offset_and_dedup() {
+    #[test]
+    fn poll_link_subscribe_route_and_delivery_preserve_offset_and_dedup() {
         let world = World::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         world.http.push_update(json!({
             "update_id": 7,
             "message": {
@@ -1373,9 +1395,22 @@ mod tests {
                 "text": "/start"
             }
         }));
-        assert_eq!(world.service.poll_once().await.expect("poll"), 1);
-        assert_eq!(world.service.poll_once().await.expect("repeat poll"), 0);
-        assert_eq!(world.service.deliver_once().await.expect("deliver"), 1);
+        assert_eq!(
+            runtime.block_on(world.service.poll_once()).expect("poll"),
+            1
+        );
+        assert_eq!(
+            runtime
+                .block_on(world.service.poll_once())
+                .expect("repeat poll"),
+            0
+        );
+        assert_eq!(
+            runtime
+                .block_on(world.service.deliver_once())
+                .expect("deliver"),
+            1
+        );
         let sent = world.http.sent();
         let start_text = sent[0]["text"].as_str().expect("start response");
         assert!(start_text.contains("link code ABCDEF"));
@@ -1432,7 +1467,12 @@ mod tests {
                 .expect("passing test"),
             0
         );
-        assert_eq!(world.service.deliver_once().await.expect("deliver"), 2);
+        assert_eq!(
+            runtime
+                .block_on(world.service.deliver_once())
+                .expect("deliver"),
+            2
+        );
         let texts = world
             .http
             .sent()
@@ -1457,15 +1497,24 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn outbox_retries_expires_and_drops_oldest_rows_with_safe_errors() {
+    #[test]
+    fn outbox_retries_expires_and_drops_oldest_rows_with_safe_errors() {
         let world = World::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         world.http.fail_sends(1);
         world.service.enqueue(4242, "retry me").expect("enqueue");
-        assert_eq!(world.service.deliver_once().await.expect("attempt"), 0);
+        assert_eq!(
+            runtime
+                .block_on(world.service.deliver_once())
+                .expect("attempt"),
+            0
+        );
         let row = world
             .database
-            .call(|connection| {
+            .read(|connection| {
                 Ok(connection.query_row(
                     "SELECT attempts,next_attempt_at,last_error FROM telegram_outbox",
                     [],
@@ -1483,7 +1532,12 @@ mod tests {
         assert_eq!(row.2, "telegram request failed");
         assert!(!row.2.contains("retry me"));
         world.clock.advance(2);
-        assert_eq!(world.service.deliver_once().await.expect("retry"), 1);
+        assert_eq!(
+            runtime
+                .block_on(world.service.deliver_once())
+                .expect("retry"),
+            1
+        );
 
         for index in 0..(OUTBOX_MAX_ROWS + 5) {
             world
@@ -1496,13 +1550,18 @@ mod tests {
             .database
             .transaction(|transaction| {
                 transaction.execute(
-                    "UPDATE telegram_outbox SET attempts=?1",
+                    "UPDATE telegram_outbox SET attempts=$1",
                     [OUTBOX_MAX_ATTEMPTS],
                 )?;
                 Ok(())
             })
             .expect("exhaust attempts");
-        assert_eq!(world.service.deliver_once().await.expect("cleanup"), 0);
+        assert_eq!(
+            runtime
+                .block_on(world.service.deliver_once())
+                .expect("cleanup"),
+            0
+        );
         assert_eq!(world.outbox_count(), 0);
 
         world.service.enqueue(1, "old").expect("old enqueue");
@@ -1516,7 +1575,9 @@ mod tests {
                 Ok(())
             })
             .expect("age row");
-        world.service.deliver_once().await.expect("age cleanup");
+        runtime
+            .block_on(world.service.deliver_once())
+            .expect("age cleanup");
         assert_eq!(world.outbox_count(), 0);
     }
 
@@ -1674,29 +1735,91 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn asynchronous_lifecycle_delivers_and_shuts_down_cleanly() {
-        let world = World::new();
-        let runtime = world.service.start();
-        world.service.enqueue(88, "lifecycle").expect("enqueue");
-        tokio::time::timeout(StdDuration::from_secs(2), async {
-            loop {
-                if world
-                    .http
-                    .sent()
-                    .iter()
-                    .any(|message| message["text"] == "lifecycle")
-                {
-                    break;
+    #[test]
+    fn asynchronous_lifecycle_delivers_and_shuts_down_cleanly() {
+        use crate::maintenance::{Budget, Job, JobResult, JobStatus, PeriodicJob, Scheduler};
+        struct Step {
+            service: TelegramService,
+            poll: bool,
+        }
+        impl Job for Step {
+            fn name(&self) -> &'static str {
+                if self.poll {
+                    "telegram-poll"
+                } else {
+                    "telegram-deliver"
                 }
-                tokio::time::sleep(StdDuration::from_millis(10)).await;
             }
-        })
-        .await
-        .expect("delivery deadline");
-        tokio::time::timeout(StdDuration::from_secs(1), runtime.shutdown())
-            .await
-            .expect("clean shutdown");
+            fn trigger(&self) -> Option<Arc<Notify>> {
+                (!self.poll).then(|| self.service.delivery_signal())
+            }
+            fn checkpoint(&self) -> Option<String> {
+                self.poll.then(|| self.service.update_cursor())
+            }
+            fn run(&self, budget: &mut Budget, cursor: Option<String>) -> JobResult {
+                let result = if self.poll {
+                    self.service.resume_updates(cursor.as_deref())
+                } else {
+                    Ok(())
+                }
+                .and_then(|()| self.service.maintenance_step(self.poll, budget.remaining()));
+                match result {
+                    Ok(rows) => JobResult {
+                        status: JobStatus::Complete,
+                        rows: u64::from(rows),
+                        bytes: 0,
+                    },
+                    Err(_) => JobResult {
+                        status: JobStatus::Retry {
+                            reason: "telegram_step_failed".into(),
+                        },
+                        rows: 0,
+                        bytes: 0,
+                    },
+                }
+            }
+        }
+        let world = World::new();
+        let scheduler = Scheduler::new(world.database.clone(), 2, 8).unwrap();
+        let jobs = [true, false]
+            .into_iter()
+            .map(|poll| PeriodicJob {
+                run_on_start: false,
+                job: Arc::new(Step {
+                    service: world.service.clone(),
+                    poll,
+                }),
+                interval: StdDuration::from_secs(3600),
+                budget: StdDuration::from_secs(4),
+                max_rows: 20,
+                max_bytes: 65536,
+            })
+            .collect();
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        executor.block_on(async {
+            let (stop,receiver)=tokio::sync::watch::channel(false);
+            let serving=scheduler.clone();
+            let task=tokio::spawn(async move {serving.serve(jobs,receiver).await});
+            tokio::time::timeout(StdDuration::from_secs(10),async {
+                loop {
+                    let ready=world.database.read(|c|Ok(c.query_row("SELECT count(*) FROM coordinator_maintenance WHERE job_key IN ('telegram-poll','telegram-deliver') AND last_status='complete'",[],|row|row.get::<_,u64>(0))?)).unwrap();
+                    if ready==2 {break;}
+                    tokio::time::sleep(StdDuration::from_millis(25)).await;
+                }
+            }).await.expect("initial polling and delivery complete");
+            world.service.enqueue(88,"lifecycle").expect("enqueue");
+            tokio::time::timeout(StdDuration::from_secs(10),async {
+                while !world.http.sent().iter().any(|message|message["text"]=="lifecycle") {
+                    tokio::time::sleep(StdDuration::from_millis(25)).await;
+                }
+            }).await.expect("delivery signal must bypass the one-hour periodic deadline");
+            stop.send(true).unwrap();
+            tokio::time::timeout(StdDuration::from_secs(2),task).await.expect("clean shared shutdown").unwrap();
+        });
+        scheduler.shutdown_and_join();
         assert!(
             world
                 .service

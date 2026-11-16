@@ -9,12 +9,12 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::params::{ServerList as ServerListParams, ServerRegister, ServerStop};
 use devcoordinator2_api::results::{
     ServerBroker, ServerHealth, ServerList, ServerPublication, ServerRow,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::FormatItem, macros::format_description};
 
@@ -58,8 +58,8 @@ impl ServerService {
         self.database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO server_definitions(server_definition_id,agent,project,name,role,cwd,argv_json,pid,port,host,health_url,health_timeout,status,url_is_current,health_json,lease_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'running',1,?13,?14,COALESCE((SELECT created_at FROM server_definitions WHERE agent=?2 AND project=?3 AND name=?4),?15),?15) ON CONFLICT(agent,project,name) DO UPDATE SET server_definition_id=excluded.server_definition_id,role=excluded.role,cwd=excluded.cwd,argv_json=excluded.argv_json,pid=excluded.pid,port=excluded.port,host=excluded.host,health_url=excluded.health_url,health_timeout=excluded.health_timeout,status='running',url_is_current=1,health_json=excluded.health_json,lease_id=excluded.lease_id,updated_at=excluded.updated_at",
-                    rusqlite::params![
+                    "INSERT INTO server_definitions(server_definition_id,agent,project,name,role,cwd,argv_json,pid,port,host,health_url,health_timeout,status,url_is_current,health_json,lease_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'running',1,$13,$14,COALESCE((SELECT created_at FROM server_definitions WHERE agent=$2 AND project=$3 AND name=$4),$15),$15) ON CONFLICT(agent,project,name) DO UPDATE SET server_definition_id=excluded.server_definition_id,role=excluded.role,cwd=excluded.cwd,argv_json=excluded.argv_json,pid=excluded.pid,port=excluded.port,host=excluded.host,health_url=excluded.health_url,health_timeout=excluded.health_timeout,status='running',url_is_current=1,health_json=excluded.health_json,lease_id=excluded.lease_id,updated_at=excluded.updated_at",
+                    crate::database::params![
                         row_id,
                         agent,
                         project,
@@ -98,14 +98,14 @@ impl ServerService {
         let name = params.name;
         let rows = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut sql = "SELECT server_definition_id,agent,project,name,role,cwd,argv_json,pid,port,host,health_url,health_timeout,status,url_is_current,health_json,lease_id FROM server_definitions".to_owned();
                 let mut clauses = Vec::new();
                 if project.is_some() {
-                    clauses.push("project=?1");
+                    clauses.push("project=$1");
                 }
                 if name.is_some() {
-                    clauses.push(if project.is_some() { "name=?2" } else { "name=?1" });
+                    clauses.push(if project.is_some() { "name=$2" } else { "name=$1" });
                 }
                 if !clauses.is_empty() {
                     sql.push_str(" WHERE ");
@@ -115,17 +115,17 @@ impl ServerService {
                 let mut statement = connection.prepare(&sql)?;
                 let values = match (project.as_deref(), name.as_deref()) {
                     (Some(project), Some(name)) => vec![
-                        rusqlite::types::Value::Text(project.to_owned()),
-                        rusqlite::types::Value::Text(name.to_owned()),
+                        crate::database::types::Value::Text(project.to_owned()),
+                        crate::database::types::Value::Text(name.to_owned()),
                     ],
                     (Some(project), None) => {
-                        vec![rusqlite::types::Value::Text(project.to_owned())]
+                        vec![crate::database::types::Value::Text(project.to_owned())]
                     }
-                    (None, Some(name)) => vec![rusqlite::types::Value::Text(name.to_owned())],
+                    (None, Some(name)) => vec![crate::database::types::Value::Text(name.to_owned())],
                     (None, None) => Vec::new(),
                 };
                 statement
-                    .query_map(rusqlite::params_from_iter(values.iter()), decode_row)
+                    .query_map(crate::database::params_from_iter(values.iter()), decode_row)
                     .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
                     .map_err(DatabaseError::from)
             })
@@ -146,8 +146,8 @@ impl ServerService {
             .database
             .call(move |connection| {
                 let count = connection.execute(
-                    "UPDATE server_definitions SET status='stopping',url_is_current=0,health_json=?1,updated_at=?2 WHERE agent=?3 AND project=?4 AND name=?5",
-                    rusqlite::params![health_json, now, agent, project, name],
+                    "UPDATE server_definitions SET status='stopping',url_is_current=0,health_json=$1,updated_at=$2 WHERE agent=$3 AND project=$4 AND name=$5",
+                    crate::database::params![health_json, now, agent, project, name],
                 )?;
                 Ok(count)
             })
@@ -171,11 +171,11 @@ impl ServerService {
         let project = project.to_owned();
         let name = name.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT server_definition_id,agent,project,name,role,cwd,argv_json,pid,port,host,health_url,health_timeout,status,url_is_current,health_json,lease_id FROM server_definitions WHERE agent=?1 AND project=?2 AND name=?3",
-                        rusqlite::params![agent, project, name],
+                        "SELECT server_definition_id,agent,project,name,role,cwd,argv_json,pid,port,host,health_url,health_timeout,status,url_is_current,health_json,lease_id FROM server_definitions WHERE agent=$1 AND project=$2 AND name=$3",
+                        crate::database::params![agent, project, name],
                         decode_row,
                     )
                     .optional()
@@ -300,7 +300,7 @@ fn timestamp() -> Result<String, ProtocolError> {
         })
 }
 
-fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerRow> {
+fn decode_row(row: &crate::database::Row<'_>) -> crate::database::Result<ServerRow> {
     let server_definition_id: String = row.get(0)?;
     let agent: String = row.get(1)?;
     let project: String = row.get(2)?;
@@ -308,9 +308,9 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerRow> {
     let role: String = row.get(4)?;
     let cwd: String = row.get(5)?;
     let argv: Vec<String> = serde_json::from_str(&row.get::<_, String>(6)?).map_err(|_| {
-        rusqlite::Error::FromSqlConversionFailure(
+        crate::database::Error::FromSqlConversionFailure(
             6,
-            rusqlite::types::Type::Text,
+            crate::database::types::Type::Text,
             "invalid server argv".into(),
         )
     })?;
@@ -322,9 +322,9 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerRow> {
     let status: String = row.get(12)?;
     let url_is_current = row.get::<_, i64>(13)? != 0;
     let health: ServerHealth = serde_json::from_str(&row.get::<_, String>(14)?).map_err(|_| {
-        rusqlite::Error::FromSqlConversionFailure(
+        crate::database::Error::FromSqlConversionFailure(
             14,
-            rusqlite::types::Type::Text,
+            crate::database::types::Type::Text,
             "invalid server health".into(),
         )
     })?;

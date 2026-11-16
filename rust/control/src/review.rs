@@ -1,6 +1,6 @@
+use crate::database::OptionalExtension;
 use devcoordinator2_api::review::*;
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 use std::time::Instant;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -48,9 +48,9 @@ impl ReviewService {
 
     fn repository(&self, repository_id: &str) -> Result<RepositoryRecord, ProtocolError> {
         let repository_id = repository_id.to_owned();
-        self.database.call(move |connection| {
+        self.database.read(move |connection| {
             Ok(connection.query_row(
-                "SELECT repository_id,display_name,root_path FROM repositories WHERE repository_id=?1 AND archived_at IS NULL AND merged_into_repository_id IS NULL",
+                "SELECT repository_id,display_name,root_path FROM repositories WHERE repository_id=$1 AND archived_at IS NULL AND merged_into_repository_id IS NULL",
                 [&repository_id], |row| Ok(RepositoryRecord {
                     repository_id: row.get(0)?, display_name: row.get(1)?,
                     root_path: std::path::PathBuf::from(row.get::<_, String>(2)?),
@@ -107,19 +107,19 @@ impl ReviewService {
         }
         let repository_id = params.repository_id.clone();
         let end = timestamp(params.window_end_ms)?;
-        let (mut evidence, worktrees, decisions, next_decision) = self.database.call(move |connection| {
-            let mut tasks = connection.prepare("SELECT task_id,title,status,outcome FROM tasks WHERE repository_id=?1 AND created_at<?2 ORDER BY seq LIMIT 1001")?;
-            let evidence = tasks.query_map(rusqlite::params![repository_id,end], |row| Ok(Evidence {
+        let (mut evidence, worktrees, decisions, next_decision) = self.database.read(move |connection| {
+            let mut tasks = connection.prepare("SELECT task_id,title,status,outcome FROM tasks WHERE repository_id=$1 AND created_at<$2 ORDER BY seq LIMIT 1001")?;
+            let evidence = tasks.query_map(crate::database::params![repository_id,end], |row| Ok(Evidence {
                 work: None,
                 source: EvidenceRef { kind: EvidenceKind::Outcome, reference: row.get(0)? },
                 source_sha256: None, config_sha256: None,
                 title: row.get::<_, String>(1)?.chars().take(120).collect(), state: row.get(2)?,
                 detail: row.get::<_, String>(3)?.chars().take(400).collect(),
             }))?.collect::<Result<Vec<_>, _>>()?;
-            let mut paths = connection.prepare("SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=?1 ORDER BY worktree_id LIMIT 21")?;
+            let mut paths = connection.prepare("SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=$1 ORDER BY worktree_id LIMIT 21")?;
             let worktrees = paths.query_map([&repository_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
-            let mut query = connection.prepare("SELECT decision_id,seq,title,body,superseded_by FROM decisions WHERE repository_id=?1 AND (?2 IS NULL OR seq<?2) ORDER BY seq DESC LIMIT ?3")?;
-            let mut decisions = query.query_map(rusqlite::params![repository_id,params.before_decision_seq,u32::from(params.limit)+1], |row| Ok((row.get::<_, u32>(1)?, Evidence {
+            let mut query = connection.prepare("SELECT decision_id,seq,title,body,superseded_by FROM decisions WHERE repository_id=$1 AND ($2::bigint IS NULL OR seq<$2) ORDER BY seq DESC LIMIT $3")?;
+            let mut decisions = query.query_map(crate::database::params![repository_id,params.before_decision_seq,u32::from(params.limit)+1], |row| Ok((row.get::<_, u32>(1)?, Evidence {
                 work: None,
                 source: EvidenceRef { kind: EvidenceKind::Decision, reference: row.get(0)? },
                 source_sha256: None, config_sha256: None,
@@ -308,7 +308,8 @@ impl ReviewService {
         let stored = result.clone();
         let actor = actor.to_owned();
         self.database.transaction(move |transaction| {
-            let previous = transaction.query_row("SELECT repository_id,revision,record_json FROM review_records WHERE record_id=?1 ORDER BY revision DESC LIMIT 1", [&record_id],
+            crate::plan::lock_repository(transaction, &stored.record.repository_id)?;
+            let previous = transaction.query_row("SELECT repository_id,revision,record_json FROM review_records WHERE record_id=$1 ORDER BY revision DESC LIMIT 1", [&record_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, String>(2)?))).optional()?;
             if previous.as_ref().map_or(0, |(_, revision, _)| *revision) != params.expected_revision {
                 return Err(invalid("Review revision conflict; read the current revision before appending").into());
@@ -320,8 +321,8 @@ impl ReviewService {
                     return Err(invalid("Review revisions cannot change repository, workstream or window identity").into());
                 }
             }
-            transaction.execute("INSERT INTO review_records(record_id,revision,repository_id,window_start_ms,window_end_ms,record_json,actor,recorded_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                rusqlite::params![record_id,revision,stored.record.repository_id,stored.record.window_start_ms as i64,stored.record.window_end_ms as i64,encoded,actor,now_ms as i64])?;
+            transaction.execute("INSERT INTO review_records(record_id,revision,repository_id,window_start_ms,window_end_ms,record_json,actor,recorded_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+                crate::database::params![record_id,revision,stored.record.repository_id,stored.record.window_start_ms as i64,stored.record.window_end_ms as i64,encoded,actor,now_ms as i64])?;
             schedule::complete(transaction, &stored)?;
             Ok(())
         }).map_err(database_error)?;
@@ -331,9 +332,9 @@ impl ReviewService {
     pub(crate) fn show(&self, params: Show) -> Result<Page, ProtocolError> {
         page(params.offset, params.limit)?;
         self.repository(&params.repository_id)?;
-        self.database.call(move |connection| {
-            let mut query = connection.prepare("SELECT record_id,revision,recorded_at_ms,record_json FROM review_records WHERE repository_id=?1 AND (?2 IS NULL OR record_id=?2) ORDER BY rowid LIMIT ?3 OFFSET ?4")?;
-            let mut rows = query.query(rusqlite::params![params.repository_id,params.record_id,u32::from(params.limit)+1,params.offset])?;
+        self.database.read(move |connection| {
+            let mut query = connection.prepare("SELECT record_id,revision,recorded_at_ms,record_json FROM review_records WHERE repository_id=$1 AND ($2::text IS NULL OR record_id=$2) ORDER BY rowid LIMIT $3 OFFSET $4")?;
+            let mut rows = query.query(crate::database::params![params.repository_id,params.record_id,u32::from(params.limit)+1,params.offset])?;
             let mut records = Vec::new();
             let mut bytes = 0;
             let mut more = false;
@@ -361,8 +362,8 @@ let completed = review_completed(&record);
             .parse()
             .map_err(|_| invalid("Invalid review revision"))?;
         let record_id = record_id.to_owned();
-        self.database.call(move |connection| {
-            let (encoded, recorded_at_ms) = connection.query_row("SELECT record_json,recorded_at_ms FROM review_records WHERE record_id=?1 AND revision=?2", rusqlite::params![record_id,revision],
+        self.database.read(move |connection| {
+            let (encoded, recorded_at_ms) = connection.query_row("SELECT record_json,recorded_at_ms FROM review_records WHERE record_id=$1 AND revision=$2", crate::database::params![record_id,revision],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))).optional()?.ok_or_else(|| invalid("Review revision not found"))?;
             let record: ReviewRecord = serde_json::from_str(&encoded).map_err(|_| invalid("Stored review is invalid"))?;
 let completed = review_completed(&record);
@@ -429,6 +430,9 @@ fn unix_ms(value: &str) -> Option<u64> {
 #[path = "review_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "review_api_tests.rs"]
+mod api_tests;
 #[cfg(test)]
 #[path = "review_result_tests.rs"]
 mod result_tests;

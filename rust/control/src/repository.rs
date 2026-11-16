@@ -10,12 +10,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::database::{Connection, OptionalExtension, Row};
 use devcoordinator2_api::results::{
     RegisteredRepository, Repository, RepositoryList, RepositoryListRow, RepositoryPresentation,
     RepositoryStatus, RetiredRepository, Worktree,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::{Connection, OptionalExtension, Row};
 use time::{OffsetDateTime, macros::format_description};
 
 use crate::database::{Database, DatabaseError};
@@ -91,8 +91,8 @@ impl Registry {
     ) -> Result<(RegisteredRepository, u32, u32), ProtocolError> {
         validate_absolute_path(path)?;
         let requested = path_text(path)?;
-        let (registration,uid)=self.database.call(move|connection|{
-            connection.query_row("SELECT repository.repository_id,repository.root_path,repository.display_name,worktree.worktree_id,worktree.worktree_path,repository.registered_by_uid FROM worktrees worktree JOIN repositories repository USING(repository_id) WHERE worktree.worktree_path=?1 AND repository.archived_at IS NULL",[requested],|row|Ok((RegisteredRepository{repository_id:row.get(0)?,root_path:row.get(1)?,display_name:row.get(2)?,worktree_id:row.get(3)?,worktree_path:row.get(4)?,registered:false},row.get::<_,u32>(5)?))).optional().map_err(DatabaseError::from)
+        let (registration,uid)=self.database.read(move|connection|{
+            connection.query_row("SELECT repository.repository_id,repository.root_path,repository.display_name,worktree.worktree_id,worktree.worktree_path,repository.registered_by_uid FROM worktrees worktree JOIN repositories repository USING(repository_id) WHERE worktree.worktree_path=$1 AND repository.archived_at IS NULL",[requested],|row|Ok((RegisteredRepository{repository_id:row.get(0)?,root_path:row.get(1)?,display_name:row.get(2)?,worktree_id:row.get(3)?,worktree_path:row.get(4)?,registered:false},row.get::<_,u32>(5)?))).optional().map_err(DatabaseError::from)
         }).map_err(database_error)?.ok_or_else(||repository_not_found("No registered worktree matches this request."))?;
         if uid == 0 {
             return Err(ProtocolError::new(
@@ -161,7 +161,7 @@ impl Registry {
                 let existing = connection
                     .query_row(
                         "SELECT archived_at, merged_into_repository_id \
-                         FROM repositories WHERE repository_id=?1",
+                         FROM repositories WHERE repository_id=$1",
                         [&transaction_repository_id],
                         |row| {
                             Ok((
@@ -184,7 +184,7 @@ impl Registry {
                         "INSERT INTO repositories(\
                            repository_id,root_path,display_name,registered_at,\
                            registered_by_uid,last_seen_at\
-                         ) VALUES(?1,?2,?3,?4,?5,?4)",
+                         ) VALUES($1,$2,$3,$4,$5,$4)",
                         (
                             &transaction_repository_id,
                             &transaction_root_path,
@@ -195,14 +195,14 @@ impl Registry {
                     )?;
                 } else {
                     connection.execute(
-                        "UPDATE repositories SET last_seen_at=?1 WHERE repository_id=?2",
+                        "UPDATE repositories SET last_seen_at=$1 WHERE repository_id=$2",
                         (&now, &transaction_repository_id),
                     )?;
                 }
 
                 let worktree_exists = connection
                     .query_row(
-                        "SELECT 1 FROM worktrees WHERE worktree_id=?1",
+                        "SELECT 1 FROM worktrees WHERE worktree_id=$1",
                         [&transaction_worktree_id],
                         |_| Ok(()),
                     )
@@ -210,14 +210,14 @@ impl Registry {
                     .is_some();
                 if worktree_exists {
                     connection.execute(
-                        "UPDATE worktrees SET last_seen_at=?1 WHERE worktree_id=?2",
+                        "UPDATE worktrees SET last_seen_at=$1 WHERE worktree_id=$2",
                         (&now, &transaction_worktree_id),
                     )?;
                 } else {
                     connection.execute(
                         "INSERT INTO worktrees(\
                            worktree_id,repository_id,worktree_path,registered_at,last_seen_at\
-                         ) VALUES(?1,?2,?3,?4,?4)",
+                         ) VALUES($1,$2,$3,$4,$4)",
                         (
                             &transaction_worktree_id,
                             &transaction_repository_id,
@@ -254,12 +254,52 @@ impl Registry {
         }
     }
 
+    /// Read one already registered worktree without invoking Git or updating
+    /// last-seen timestamps. This lookup does not authorize code execution.
+    pub(crate) fn registered_worktree(
+        &self,
+        path: &Path,
+    ) -> Result<Option<RegisteredRepository>, ProtocolError> {
+        validate_absolute_path(path)?;
+        let path = path_text(path)?;
+        let found = self.database.read(move |connection| {
+            connection.query_row(
+                "SELECT r.repository_id,r.root_path,r.display_name,w.worktree_id,w.worktree_path,r.archived_at,r.merged_into_repository_id FROM worktrees w JOIN repositories r USING(repository_id) WHERE w.worktree_path=$1",
+                [path],
+                |row| Ok((RegisteredRepository {
+                    repository_id: row.get(0)?,
+                    root_path: row.get(1)?,
+                    display_name: row.get(2)?,
+                    worktree_id: row.get(3)?,
+                    worktree_path: row.get(4)?,
+                    registered: false,
+                }, row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?)),
+            ).optional().map_err(DatabaseError::from)
+        }).map_err(database_error)?;
+        let Some((registered, archived, replacement)) = found else {
+            return Ok(None);
+        };
+        if archived.is_some() {
+            let suffix = replacement
+                .map(|id| format!("; use {id}"))
+                .unwrap_or_default();
+            return Err(ProtocolError::new(
+                ErrorCode::RepositoryArchived,
+                format!(
+                    "repository {} is archived{suffix}",
+                    registered.repository_id
+                ),
+            ));
+        }
+        Ok(Some(registered))
+    }
+
     pub fn list_repositories(
         &self,
         include_archived: bool,
     ) -> Result<RepositoryList, ProtocolError> {
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let repositories = {
                     let sql = if include_archived {
                         "SELECT repository_id,root_path,display_name,registered_at,last_seen_at,\
@@ -284,7 +324,7 @@ impl Registry {
                 {
                     let mut statement = connection.prepare(
                         "SELECT worktree_id,repository_id,worktree_path \
-                         FROM worktrees ORDER BY rowid",
+                         FROM worktrees ORDER BY registered_at,worktree_id",
                     )?;
                     let rows = statement.query_map([], |row| {
                         Ok((
@@ -303,6 +343,7 @@ impl Registry {
                     }
                 }
                 Ok(RepositoryList {
+                    next_repository_id: None,
                     repositories: repositories
                         .into_iter()
                         .map(|mut repository| {
@@ -315,6 +356,78 @@ impl Registry {
                 })
             })
             .map_err(database_error)
+    }
+
+    /// Public traversal keeps both the authority query and encoded reply bounded.
+    pub fn list_repositories_page(
+        &self,
+        params: devcoordinator2_api::params::RepositoryList,
+    ) -> Result<RepositoryList, ProtocolError> {
+        const PAGE_BYTES: usize = 192 * 1024;
+        const ROW_BYTES: usize = 32 * 1024;
+        const WORKTREES_PER_ROW: u32 = 32;
+        if params.limit == 0
+            || params.limit > 200
+            || (params.after_worktree_id.is_some() && params.repository_id.is_none())
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "invalid repository page",
+            ));
+        }
+        self.database.read_transaction(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT repository_id,root_path,display_name,registered_at,last_seen_at,archived_at,archived_by_uid,archive_note,merged_into_repository_id FROM repositories WHERE ($1::boolean OR archived_at IS NULL) AND repository_id>$2 AND ($3::text IS NULL OR repository_id=$3) ORDER BY repository_id LIMIT $4",
+            )?;
+            let rows = statement.query_map(crate::database::params![
+                params.include_archived,
+                params.after_repository_id.as_deref().unwrap_or(""),
+                params.repository_id,
+                u32::from(params.limit) + 1,
+            ], repository_list_row)?.collect::<Result<Vec<_>, _>>()?;
+            let count = rows.len();
+            let mut result = RepositoryList { repositories: Vec::new(), next_repository_id: None };
+            let mut bytes = 64usize;
+            for mut row in rows.into_iter().take(usize::from(params.limit)) {
+                let mut worktrees = connection.prepare(
+                    "SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=$1 AND worktree_id>$2 ORDER BY worktree_id LIMIT $3",
+                )?;
+                let found = worktrees.query_map(crate::database::params![
+                    row.repository_id,
+                    params.after_worktree_id.as_deref().unwrap_or(""),
+                    WORKTREES_PER_ROW + 1,
+                ], |worktree| Ok(Worktree {worktree_id: worktree.get(0)?, worktree_path: worktree.get(1)?}))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let found_count = found.len();
+                for worktree in found.into_iter().take(WORKTREES_PER_ROW as usize) {
+                    row.worktrees.push(worktree);
+                    let size = serde_json::to_vec(&row).map_err(|_| DatabaseError::Domain(
+                        ProtocolError::new(ErrorCode::InternalError, "cannot encode repository page"),
+                    ))?.len();
+                    if size > ROW_BYTES {
+                        row.worktrees.pop();
+                        row.next_worktree_id = row.worktrees.last().map(|w| w.worktree_id.clone());
+                        break;
+                    }
+                }
+                if row.next_worktree_id.is_none() && found_count > row.worktrees.len() {
+                    row.next_worktree_id = row.worktrees.last().map(|w| w.worktree_id.clone());
+                }
+                let size = serde_json::to_vec(&row).map_err(|_| DatabaseError::Domain(
+                    ProtocolError::new(ErrorCode::InternalError, "cannot encode repository page"),
+                ))?.len();
+                if bytes.saturating_add(size) > PAGE_BYTES && !result.repositories.is_empty() {
+                    result.next_repository_id = result.repositories.last().map(|r| r.repository_id.clone());
+                    break;
+                }
+                bytes = bytes.saturating_add(size + 1);
+                result.repositories.push(row);
+            }
+            if result.next_repository_id.is_none() && count > result.repositories.len() {
+                result.next_repository_id = result.repositories.last().map(|r| r.repository_id.clone());
+            }
+            Ok(result)
+        }).map_err(database_error)
     }
 
     pub fn repository_status(
@@ -360,11 +473,11 @@ impl Registry {
 
     pub fn registered_worktree_paths(&self) -> Result<Vec<PathBuf>, ProtocolError> {
         self.database
-            .call(|connection| {
+            .read(|connection| {
                 let mut statement = connection.prepare(
                     "SELECT w.worktree_path FROM worktrees w \
                      JOIN repositories r ON r.repository_id=w.repository_id \
-                     WHERE r.archived_at IS NULL ORDER BY w.rowid",
+                     WHERE r.archived_at IS NULL ORDER BY w.registered_at,w.worktree_id",
                 )?;
                 Ok(statement
                     .query_map([], |row| row.get::<_, String>(0))?
@@ -451,8 +564,8 @@ impl Registry {
                     return Ok(ArchiveOutcome::Blocked(blocker));
                 }
                 connection.execute(
-                    "UPDATE repositories SET archived_at=?1,archived_by_uid=?2,\
-                     archive_note=?3,merged_into_repository_id=?4 WHERE repository_id=?5",
+                    "UPDATE repositories SET archived_at=$1,archived_by_uid=$2,\
+                     archive_note=$3,merged_into_repository_id=$4 WHERE repository_id=$5",
                     (
                         &now,
                         i64::from(actor_uid),
@@ -464,7 +577,7 @@ impl Registry {
                 connection.execute(
                     "INSERT INTO repository_events(\
                        repository_id,event,merged_into_repository_id,actor_uid,at,note\
-                     ) VALUES(?1,'archived',?2,?3,?4,?5)",
+                     ) VALUES($1,'archived',$2,$3,$4,$5)",
                     (
                         &repository_id,
                         &replacement_id,
@@ -517,13 +630,13 @@ impl Registry {
                 }
                 connection.execute(
                     "UPDATE repositories SET archived_at=NULL,archived_by_uid=NULL,\
-                     archive_note=NULL,merged_into_repository_id=NULL WHERE repository_id=?1",
+                     archive_note=NULL,merged_into_repository_id=NULL WHERE repository_id=$1",
                     [&repository_id],
                 )?;
                 connection.execute(
                     "INSERT INTO repository_events(\
                        repository_id,event,merged_into_repository_id,actor_uid,at,note\
-                     ) VALUES(?1,'unarchived',NULL,?2,?3,?4)",
+                     ) VALUES($1,'unarchived',NULL,$2,$3,$4)",
                     (&repository_id, i64::from(actor_uid), &now, &note),
                 )?;
                 Ok(ArchiveOutcome::Repository(
@@ -588,10 +701,10 @@ impl Registry {
         let repository_id_owned = repository_id.to_owned();
         let target = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let repository = connection
                     .query_row(
-                        "SELECT root_path,registered_by_uid,archived_at FROM repositories WHERE repository_id=?1",
+                        "SELECT root_path,registered_by_uid,archived_at FROM repositories WHERE repository_id=$1",
                         [&repository_id_owned],
                         |row| {
                             Ok((
@@ -606,7 +719,7 @@ impl Registry {
                     return Ok(None);
                 };
                 let mut statement = connection.prepare(
-                    "SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=?1 ORDER BY worktree_id",
+                    "SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=$1 ORDER BY worktree_id",
                 )?;
                 let worktrees = statement
                     .query_map([&repository_id_owned], |row| {
@@ -801,14 +914,14 @@ impl Registry {
         let idempotency_key = idempotency_key.to_owned();
         let status = status.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT receipt_id,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed FROM repository_retirement_receipts WHERE repository_id=?1 AND idempotency_key=?2 AND status=?3 ORDER BY occurred_at DESC LIMIT 1",
-                        rusqlite::params![repository_id, idempotency_key, status],
+                        "SELECT receipt_id,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed FROM repository_retirement_receipts WHERE repository_id=$1 AND idempotency_key=$2 AND status=$3 ORDER BY occurred_at DESC LIMIT 1",
+                        crate::database::params![repository_id, idempotency_key, status],
                         |row| {
                             let ids: Vec<String> = serde_json::from_str(&row.get::<_, String>(1)?)
-                                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                                .map_err(|_| crate::database::Error::InvalidQuery)?;
                             Ok(RetiredRepository {
                                 repository_id: repository_id.clone(),
                                 receipt_id: row.get(0)?,
@@ -857,16 +970,18 @@ impl Registry {
         self.database
             .transaction(move |connection| {
                 connection.execute(
-                    "INSERT INTO repository_retirement_receipts(receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed,note,error_code) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-                    rusqlite::params![receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,ids_json,removed_worktree_count,root_removed as i64,logs_removed as i64,note,error_code],
+                    "INSERT INTO repository_retirement_receipts(receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed,note,error_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+                    crate::database::params![receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,ids_json,removed_worktree_count,root_removed as i64,logs_removed as i64,note,error_code],
                 )?;
                 Ok(())
             })
             .map_err(database_error)
     }
 
-    // Keep the explicit receipt fields aligned with insert_retirement_receipt.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "All existing retirement receipt fields are committed together at this boundary"
+    )]
     fn complete_retirement(
         &self,
         receipt_id: &str,
@@ -892,12 +1007,12 @@ impl Registry {
         self.database
             .transaction(move |connection| {
                 connection.execute(
-                    "UPDATE repositories SET archived_at=?1,archived_by_uid=?2,archive_note=?3,merged_into_repository_id=NULL WHERE repository_id=?4",
-                    rusqlite::params![occurred_at, actor_uid, note, repository_id],
+                    "UPDATE repositories SET archived_at=$1,archived_by_uid=$2,archive_note=$3,merged_into_repository_id=NULL WHERE repository_id=$4",
+                    crate::database::params![occurred_at, actor_uid, note, repository_id],
                 )?;
                 connection.execute(
-                    "INSERT INTO repository_retirement_receipts(receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed,note,error_code) VALUES(?1,?2,?3,'completed',?4,?5,?6,?7,1,1,?8,NULL)",
-                    rusqlite::params![receipt_id,repository_id,idempotency_key,actor_uid,occurred_at,ids_json,removed_worktree_count,note],
+                    "INSERT INTO repository_retirement_receipts(receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed,note,error_code) VALUES($1,$2,$3,'completed',$4,$5,$6,$7,1,1,$8,NULL)",
+                    crate::database::params![receipt_id,repository_id,idempotency_key,actor_uid,occurred_at,ids_json,removed_worktree_count,note],
                 )?;
                 Ok(())
             })
@@ -956,18 +1071,18 @@ impl Registry {
         let found = self.database.call(move |connection| {
             let transaction = connection.transaction()?;
             let active: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id=?1 AND archived_at IS NULL)",
+                "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id=$1 AND archived_at IS NULL)",
                 [&saved.repository_id], |row| row.get(0),
             )?;
             if !active { return Ok(false); }
             if saved.display_name.is_none() && saved.icon.is_none() {
-                transaction.execute("DELETE FROM repository_presentation WHERE repository_id=?1", [&saved.repository_id])?;
+                transaction.execute("DELETE FROM repository_presentation WHERE repository_id=$1", [&saved.repository_id])?;
             } else {
                 transaction.execute(
                     "INSERT INTO repository_presentation(repository_id,display_name,icon,updated_at,updated_by_uid) \
-                     VALUES(?1,?2,?3,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?4) \
+                     VALUES($1,$2,$3,to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'),$4) \
                      ON CONFLICT(repository_id) DO UPDATE SET display_name=excluded.display_name,icon=excluded.icon,updated_at=excluded.updated_at,updated_by_uid=excluded.updated_by_uid",
-                    rusqlite::params![saved.repository_id, saved.display_name, saved.icon, uid],
+                    crate::database::params![saved.repository_id, saved.display_name, saved.icon, uid],
                 )?;
             }
             transaction.commit()?;
@@ -1512,22 +1627,22 @@ fn persistent_archive_blocker(
     for (label, sql) in [
         (
             "open planning work",
-            "SELECT 1 FROM tasks WHERE repository_id=?1 \
+            "SELECT 1 FROM tasks WHERE repository_id=$1 \
              AND (status IN ('planned','in_progress') OR elaboration_needed=1) LIMIT 1",
         ),
         (
             "open release work",
-            "SELECT 1 FROM releases WHERE repository_id=?1 \
+            "SELECT 1 FROM releases WHERE repository_id=$1 \
              AND status IN ('planned','requested') LIMIT 1",
         ),
         (
             "active deployments",
-            "SELECT 1 FROM deployments WHERE repository_id=?1 \
+            "SELECT 1 FROM deployments WHERE repository_id=$1 \
              AND state NOT IN ('stopped','failed') LIMIT 1",
         ),
         (
             "active observed deployments",
-            "SELECT 1 FROM observed_deployments WHERE repository_id=?1 \
+            "SELECT 1 FROM observed_deployments WHERE repository_id=$1 \
              AND state='running' LIMIT 1",
         ),
     ] {
@@ -1552,15 +1667,15 @@ fn persistent_retirement_blocker(
     for (label, sql) in [
         (
             "registered deployments",
-            "SELECT 1 FROM deployments WHERE repository_id=?1 LIMIT 1",
+            "SELECT 1 FROM deployments WHERE repository_id=$1 LIMIT 1",
         ),
         (
             "observed deployments",
-            "SELECT 1 FROM observed_deployments WHERE repository_id=?1 LIMIT 1",
+            "SELECT 1 FROM observed_deployments WHERE repository_id=$1 LIMIT 1",
         ),
         (
             "active storage leases",
-            "SELECT 1 FROM storage_leases l JOIN json_each(l.lease_json,'$.artifact_ids') a JOIN storage_artifacts s ON s.artifact_id=a.value WHERE s.repository_id=?1 AND l.expires_at_ms > CAST(strftime('%s','now') AS INTEGER)*1000 LIMIT 1",
+            "SELECT 1 FROM storage_leases l CROSS JOIN LATERAL jsonb_array_elements_text(l.lease_json::jsonb->'artifact_ids') AS a(value) JOIN storage_artifacts s ON s.artifact_id=a.value WHERE s.repository_id=$1 AND l.expires_at_ms > (EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint LIMIT 1",
         ),
     ] {
         if connection
@@ -1670,14 +1785,14 @@ fn select_repository(
             "SELECT repository_id,root_path,display_name,registered_at,registered_by_uid,\
                     last_seen_at,archived_at,archived_by_uid,archive_note,\
                     merged_into_repository_id \
-             FROM repositories WHERE repository_id=?1",
+             FROM repositories WHERE repository_id=$1",
             [repository_id],
             repository_row,
         )
         .optional()?)
 }
 
-fn repository_row(row: &Row<'_>) -> rusqlite::Result<Repository> {
+fn repository_row(row: &Row<'_>) -> crate::database::Result<Repository> {
     Ok(Repository {
         repository_id: row.get(0)?,
         root_path: row.get(1)?,
@@ -1692,7 +1807,7 @@ fn repository_row(row: &Row<'_>) -> rusqlite::Result<Repository> {
     })
 }
 
-fn repository_list_row(row: &Row<'_>) -> rusqlite::Result<RepositoryListRow> {
+fn repository_list_row(row: &Row<'_>) -> crate::database::Result<RepositoryListRow> {
     Ok(RepositoryListRow {
         repository_id: row.get(0)?,
         root_path: row.get(1)?,
@@ -1704,27 +1819,28 @@ fn repository_list_row(row: &Row<'_>) -> rusqlite::Result<RepositoryListRow> {
         archive_note: row.get(7)?,
         merged_into_repository_id: row.get(8)?,
         worktrees: Vec::new(),
+        next_worktree_id: None,
     })
 }
 
-fn integer_u32(row: &Row<'_>, index: usize) -> rusqlite::Result<u32> {
+fn integer_u32(row: &Row<'_>, index: usize) -> crate::database::Result<u32> {
     let value = row.get::<_, i64>(index)?;
     u32::try_from(value).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
+        crate::database::Error::FromSqlConversionFailure(
             index,
-            rusqlite::types::Type::Integer,
+            crate::database::types::Type::Integer,
             Box::new(error),
         )
     })
 }
 
-fn optional_integer_u32(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<u32>> {
+fn optional_integer_u32(row: &Row<'_>, index: usize) -> crate::database::Result<Option<u32>> {
     row.get::<_, Option<i64>>(index)?
         .map(|value| {
             u32::try_from(value).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
+                crate::database::Error::FromSqlConversionFailure(
                     index,
-                    rusqlite::types::Type::Integer,
+                    crate::database::types::Type::Integer,
                     Box::new(error),
                 )
             })
@@ -2168,6 +2284,54 @@ mod tests {
             .expect("repository status");
         assert_eq!(status.worktree_id, linked.worktree_id);
         assert_eq!(status.current_test, None);
+
+        // Traverse a repository with more worktrees than one public row can
+        // carry. Every registered identity remains reachable through the cursor.
+        fixture
+            .database
+            .transaction(|connection| {
+                for index in 0..70 {
+                    connection.execute(
+                        "INSERT INTO worktrees VALUES($1,$2,$3,'t','t')",
+                        crate::database::params![
+                            format!("w{index:016x}"),
+                            first.repository_id,
+                            format!("/fixture/page/{index}")
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let mut cursor = None;
+        let mut found = std::collections::BTreeSet::new();
+        let mut pages = 0;
+        loop {
+            let page = fixture
+                .registry
+                .list_repositories_page(devcoordinator2_api::params::RepositoryList {
+                    repository_id: Some(first.repository_id.clone()),
+                    after_worktree_id: cursor,
+                    limit: 1,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(serde_json::to_vec(&page).unwrap().len() <= 192 * 1024);
+            assert_eq!(page.repositories.len(), 1);
+            let row = &page.repositories[0];
+            assert!(row.worktrees.len() <= 32);
+            for worktree in &row.worktrees {
+                assert!(found.insert(worktree.worktree_id.clone()));
+            }
+            pages += 1;
+            cursor = row.next_worktree_id.clone();
+            if cursor.is_none() {
+                break;
+            }
+            assert!(pages < 10);
+        }
+        assert_eq!(found.len(), 72);
+        assert!(pages >= 3);
     }
 
     #[test]
@@ -2223,10 +2387,10 @@ mod tests {
         assert!(restored.archived_at.is_none());
         let events: Vec<(String, String, u32)> = fixture
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
                     "SELECT event,note,actor_uid FROM repository_events \
-                     WHERE repository_id=?1 ORDER BY event_id",
+                     WHERE repository_id=$1 ORDER BY event_id",
                 )?;
                 Ok(statement
                     .query_map([source.repository_id], |row| {
@@ -2270,7 +2434,7 @@ mod tests {
                     "INSERT INTO tasks(\
                        task_id,repository_id,seq,position,title,outcome,kind,status,\
                        created_at,created_by,updated_at\
-                     ) VALUES('p1',?1,1,1,'Open work','Open work','improvement',\
+                     ) VALUES('p1',$1,1,1,'Open work','Open work','improvement',\
                               'planned','t','fixture','t')",
                     [repository_id],
                 )?;
@@ -2374,9 +2538,9 @@ mod tests {
         assert_eq!(repeated.receipt_id, retired.receipt_id);
         let receipt_count: i64 = fixture
             .database
-            .call(|connection| {
+            .read(|connection| {
                 Ok(connection.query_row(
-                    "SELECT COUNT(*) FROM repository_retirement_receipts WHERE repository_id=?1 AND status='completed'",
+                    "SELECT COUNT(*) FROM repository_retirement_receipts WHERE repository_id=$1 AND status='completed'",
                     [source.repository_id],
                     |row| row.get(0),
                 )?)
@@ -2398,7 +2562,7 @@ mod tests {
             .database
             .transaction(move |connection| {
                 connection.execute(
-                    "INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('p-retire',?1,1,1,'Open work','Open work','improvement','planned','t','fixture','t')",
+                    "INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('p-retire',$1,1,1,'Open work','Open work','improvement','planned','t','fixture','t')",
                     [repository_id],
                 )?;
                 Ok(())

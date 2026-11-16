@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 
-use rusqlite::OptionalExtension;
+use crate::database::OptionalExtension;
 use thiserror::Error;
 
 use crate::database::{Database, DatabaseError};
@@ -67,9 +67,13 @@ pub fn lease_with_availability(
     let now = now.to_owned();
     database
         .transaction(move |transaction| {
+            transaction.query_row(
+                "SELECT 1 FROM pg_advisory_xact_lock(hashtextextended('devcoordinator2.port-leases',0))",
+                [], |row| row.get::<_, i32>(0),
+            )?;
             if let Some(port) = transaction.query_row(
-                "SELECT port FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation=?3",
-                rusqlite::params![deployment_id, component, generation],
+                "SELECT port FROM port_assignments WHERE deployment_id=$1 AND component=$2 AND generation=$3",
+                crate::database::params![deployment_id, component, generation],
                 |row| row.get::<_, u16>(0),
             ).optional()? {
                 return Ok(port);
@@ -92,8 +96,8 @@ pub fn lease_with_availability(
                     )
                 })?;
                 transaction.execute(
-                    "INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(?1,?2,?3,?4,?5,?6)",
-                    rusqlite::params![port, deployment_id, component, generation, now, lease_id],
+                    "INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES($1,$2,$3,$4,$5,$6)",
+                    crate::database::params![port, deployment_id, component, generation, now, lease_id],
                 )?;
                 return Ok(port);
             }
@@ -121,10 +125,14 @@ pub fn adopt_stable(
     let component = component.to_owned();
     database
         .transaction(move |transaction| {
+            transaction.query_row(
+                "SELECT 1 FROM pg_advisory_xact_lock(hashtextextended('devcoordinator2.port-leases',0))",
+                [], |row| row.get::<_, i32>(0),
+            )?;
             let current = transaction
                 .query_row(
-                    "SELECT port FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation=?3",
-                    rusqlite::params![deployment_id, component, generation],
+                    "SELECT port FROM port_assignments WHERE deployment_id=$1 AND component=$2 AND generation=$3",
+                    crate::database::params![deployment_id, component, generation],
                     |row| row.get::<_, u16>(0),
                 )
                 .optional()?;
@@ -133,8 +141,8 @@ pub fn adopt_stable(
             };
             let stable = transaction
                 .query_row(
-                    "SELECT port FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation=0",
-                    rusqlite::params![deployment_id, component],
+                    "SELECT port FROM port_assignments WHERE deployment_id=$1 AND component=$2 AND generation=0",
+                    crate::database::params![deployment_id, component],
                     |row| row.get::<_, u16>(0),
                 )
                 .optional()?;
@@ -146,13 +154,13 @@ pub fn adopt_stable(
                     )));
                 }
                 transaction.execute(
-                    "DELETE FROM port_assignments WHERE port=?1 AND generation=?2",
-                    rusqlite::params![port, generation],
+                    "DELETE FROM port_assignments WHERE port=$1 AND generation=$2",
+                    crate::database::params![port, generation],
                 )?;
             } else {
                 transaction.execute(
-                    "UPDATE port_assignments SET generation=0 WHERE port=?1 AND deployment_id=?2 AND component=?3 AND generation=?4",
-                    rusqlite::params![port, deployment_id, component, generation],
+                    "UPDATE port_assignments SET generation=0 WHERE port=$1 AND deployment_id=$2 AND component=$3 AND generation=$4",
+                    crate::database::params![port, deployment_id, component, generation],
                 )?;
             }
             Ok(Some(port))
@@ -173,25 +181,25 @@ pub fn release(
             match (generation, component) {
                 (Some(generation), Some(component)) => {
                     transaction.execute(
-                        "DELETE FROM port_assignments WHERE deployment_id=?1 AND generation=?2 AND component=?3",
-                        rusqlite::params![deployment_id, generation, component],
+                        "DELETE FROM port_assignments WHERE deployment_id=$1 AND generation=$2 AND component=$3",
+                        crate::database::params![deployment_id, generation, component],
                     )?;
                 }
                 (Some(generation), None) => {
                     transaction.execute(
-                        "DELETE FROM port_assignments WHERE deployment_id=?1 AND generation=?2",
-                        rusqlite::params![deployment_id, generation],
+                        "DELETE FROM port_assignments WHERE deployment_id=$1 AND generation=$2",
+                        crate::database::params![deployment_id, generation],
                     )?;
                 }
                 (None, Some(component)) => {
                     transaction.execute(
-                        "DELETE FROM port_assignments WHERE deployment_id=?1 AND component=?2",
-                        rusqlite::params![deployment_id, component],
+                        "DELETE FROM port_assignments WHERE deployment_id=$1 AND component=$2",
+                        crate::database::params![deployment_id, component],
                     )?;
                 }
                 (None, None) => {
                     transaction.execute(
-                        "DELETE FROM port_assignments WHERE deployment_id=?1",
+                        "DELETE FROM port_assignments WHERE deployment_id=$1",
                         [&deployment_id],
                     )?;
                 }
@@ -208,12 +216,12 @@ pub fn assigned(
 ) -> Result<BTreeMap<String, u16>, PortError> {
     let deployment_id = deployment_id.to_owned();
     database
-        .call(move |connection| {
+        .read(move |connection| {
             let mut statement = connection.prepare(
-                "SELECT component,port FROM port_assignments WHERE deployment_id=?1 AND generation=?2",
+                "SELECT component,port FROM port_assignments WHERE deployment_id=$1 AND generation=$2",
             )?;
             Ok(statement
-                .query_map(rusqlite::params![deployment_id, generation], |row| {
+                .query_map(crate::database::params![deployment_id, generation], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, u16>(1)?))
                 })?
                 .collect::<Result<BTreeMap<_, _>, _>>()?)
@@ -224,7 +232,7 @@ pub fn assigned(
 /// Resolve the only valid routed lease in the caller's transaction. Runtime
 /// generations may change; the routed lease itself must be stable.
 pub fn route_lease(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
     deployment_id: &str,
     component: &str,
     port: u16,
@@ -235,32 +243,32 @@ pub fn route_lease(
         "SELECT p.lease_id FROM port_assignments p
          JOIN components c ON c.deployment_id=p.deployment_id AND c.name=p.component
          JOIN deployments d ON d.deployment_id=p.deployment_id
-         WHERE p.deployment_id=?1 AND p.component=?2 AND p.port=?3 AND p.generation=0
-           AND p.lease_id IS NOT NULL AND (?5 IS NULL OR p.lease_id=?5)
-           AND c.state='running' AND c.health='healthy' AND c.generation IN (0,?4)
-           AND (d.current_generation=?4 OR (d.state='applying' AND EXISTS(
-             SELECT 1 FROM generations g WHERE g.deployment_id=d.deployment_id AND g.number=?4 AND g.state='candidate')))",
-        rusqlite::params![deployment_id,component,port,generation,expected],
+         WHERE p.deployment_id=$1 AND p.component=$2 AND p.port=$3 AND p.generation=0
+           AND p.lease_id IS NOT NULL AND ($5::text IS NULL OR p.lease_id=$5)
+           AND c.state='running' AND c.health='healthy' AND c.generation IN (0,$4)
+           AND (d.current_generation=$4 OR (d.state='applying' AND EXISTS(
+             SELECT 1 FROM generations g WHERE g.deployment_id=d.deployment_id AND g.number=$4 AND g.state='candidate')))",
+        crate::database::params![deployment_id,component,port,generation,expected],
         |row| row.get(0),
     ).optional()?)
 }
 
 pub fn withdraw_conflict(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
     deployment_id: &str,
     component: &str,
 ) -> Result<(), DatabaseError> {
     connection.execute(
-        "UPDATE domain_routes SET port=NULL,lease_id=NULL WHERE deployment_id=?1",
+        "UPDATE domain_routes SET port=NULL,lease_id=NULL WHERE deployment_id=$1",
         [deployment_id],
     )?;
     connection.execute(
         // Withdrawing an obsolete route during a cutover must not revoke the
         // apply owner's candidate eligibility. The route still fails closed.
-        "UPDATE deployments SET state='degraded' WHERE deployment_id=?1 AND state!='applying'",
+        "UPDATE deployments SET state='degraded' WHERE deployment_id=$1 AND state!='applying'",
         [deployment_id],
     )?;
-    connection.execute("UPDATE components SET last_error='route_lease_conflict' WHERE deployment_id=?1 AND name=?2", rusqlite::params![deployment_id,component])?;
+    connection.execute("UPDATE components SET last_error='route_lease_conflict' WHERE deployment_id=$1 AND name=$2", crate::database::params![deployment_id,component])?;
     Ok(())
 }
 

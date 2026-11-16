@@ -132,7 +132,7 @@ window.DevCoordinatorWorkspace = (() => {
       : `#/${view}/${encodeURIComponent(repositoryId)}`;
   }
 
-  function create({ api, esc, identity }) {
+  function create({ api, apiPage, esc, identity }) {
     const shell = document.querySelector('#repository-workspace');
     const sidebar = document.querySelector('#repository-sidebar');
     const navigation = document.querySelector('#repository-list');
@@ -154,13 +154,15 @@ window.DevCoordinatorWorkspace = (() => {
       sidebarCollapsed = localStorage.getItem('dc2-repository-collapsed') === 'true';
     } catch {}
     let data;
-    let testsLoaded = false;
     let retainedEvidence;
     let groups = [];
     let selectedId = '';
     let currentView = 'plan';
     let active = false;
     let loading;
+    let catalogueLoading;
+    let catalogueSignal;
+    const catalogueListeners = new Set();
     let searchText = '';
     let remembered = '';
     let drawerBackground = null;
@@ -221,7 +223,7 @@ window.DevCoordinatorWorkspace = (() => {
         const selected = group === current();
         const title = [group.name, group.rootPath].filter(Boolean).join('\n');
         return `<a class="workspace-repository" title="${esc(title)}" data-repository-icon="${group.icon || 'folder'}" href="${href(currentView, selected ? selectedId : group.repositoryId)}"${selected ? ' aria-current="page"' : ''}>${repositoryIcon(group.icon)}<span><span class="workspace-repository-name">${esc(group.name)}</span>${group.rootPath ? `<small>${esc(group.rootPath)}</small>` : ''}</span></a>`;
-      }).join('') : `<p class="muted">${window.DevCoordinatorI18n.markup(searchText ? 'shell.noMatchingRepositories' : 'shell.noRepositories')}</p>`;
+      }).join('') : `<p class="muted">${window.DevCoordinatorI18n.markup(searchText && catalogueLoading ? 'shell.loading_repositories_460ca9' : searchText ? 'shell.noMatchingRepositories' : 'shell.noRepositories')}</p>`;
       const selected = current();
       const checkouts = document.querySelector('#workspace-checkouts');
       checkouts.hidden = !selected?.paths.length;
@@ -285,8 +287,9 @@ window.DevCoordinatorWorkspace = (() => {
         for (const control of form.elements) control.disabled = true;
         try {
           const result = await api('repository.presentation.update', values, false);
-          data.repositories = data.repositories.map((record) => record.repository_id === selected.repositoryId ? { ...record, presentation: result } : record);
-          groups = catalogue(data.repositories, data.runs, data.deployments);
+          data.presentations.set(selected.repositoryId, result);
+          for (const field of ['plans', 'registered', 'optional']) data[field] = data[field].map((record) => record.repository_id === selected.repositoryId ? { ...record, presentation: result } : record);
+          rebuildCatalogue();
           paint(); close();
         } catch (error) {
           const message = dialog.querySelector('[role=alert]');
@@ -300,55 +303,110 @@ window.DevCoordinatorWorkspace = (() => {
 
     editPresentation.addEventListener('click', openPresentation);
 
+    const navigationIdentity = () => JSON.stringify(groups.map(group => [group.key, group.repositoryId, group.name, group.defaultName, group.icon, group.rootPath, group.paths, group.records.map(record => [record.repository_id, record.display_name, record.paths])]));
+
+    function rebuildCatalogue() {
+      const before = navigationIdentity();
+      for (const record of data.plans) if (data.presentations.has(record.repository_id)) record.presentation = data.presentations.get(record.repository_id);
+      const registered = data.registered.flatMap((record) => {
+        const planned = data.plans.find((row) => row.repository_id === record.repository_id);
+        const source = planned?.repository_source || record.repository_source;
+        const base = { repository_id: record.repository_id, display_name: record.display_name,
+          repository_group_key: source?.key || record.repository_id, repository_group_name: source?.name || record.display_name,
+          root_path: planned?.root_path || record.root_path, repository_source: source, ...(record.presentation ? { presentation: record.presentation } : {}) };
+        return [base, ...(record.worktrees || []).map((worktree) => ({ ...base, worktree_path: worktree.worktree_path }))];
+      });
+      data.repositories = [...data.plans, ...registered, ...data.optional];
+      groups = catalogue(data.repositories, data.runs, data.deployments);
+      for (const listener of catalogueListeners) listener();
+      return before !== navigationIdentity();
+    }
+
+    function mergeRegistered(rows) {
+      for (const row of rows) {
+        const existing = data.registered.find((record) => record.repository_id === row.repository_id);
+        if (!existing) data.registered.push(row);
+        else {
+          const paths = new Map(existing.worktrees.map((worktree) => [worktree.worktree_id, worktree]));
+          for (const worktree of row.worktrees) paths.set(worktree.worktree_id, worktree);
+          existing.worktrees = [...paths.values()];
+        }
+      }
+    }
+
+    async function continueCatalogue(signal) {
+      if (!data || signal.aborted || catalogueLoading?.signal === signal) return;
+      const snapshot = data;
+      const promise = (async () => {
+        const seen = new Set();
+        while (!signal.aborted && data === snapshot) {
+          const checkout = snapshot.registered.find((row) => row.next_worktree_id && (searchText || document.querySelector('#workspace-checkouts').open && current()?.records.some((record) => record.repository_id === row.repository_id)));
+          const operation = snapshot.nextRepositories ? 'repository.list' : snapshot.nextPlans ? 'plan.overview' : checkout ? 'repository.list' : null;
+          if (!operation) break;
+          const params = { limit: 200, ...(snapshot.nextRepositories ? { after_repository_id: snapshot.nextRepositories }
+            : snapshot.nextPlans ? { headers_only: true, after_repository_id: snapshot.nextPlans }
+              : { repository_id: checkout.repository_id, after_worktree_id: checkout.next_worktree_id }) };
+          const key = JSON.stringify([operation, params]);
+          if (seen.has(key)) throw new Error('Repository pagination did not advance');
+          seen.add(key);
+          const page = await apiPage(operation, params);
+          if (signal.aborted || data !== snapshot) return;
+          if (operation === 'repository.list' && params.repository_id) {
+            const next = page.repositories.find((row) => row.repository_id === checkout.repository_id);
+            if (!next) throw new Error('Repository disappeared during pagination');
+            checkout.worktrees.push(...next.worktrees); checkout.next_worktree_id = next.next_worktree_id;
+          } else if (operation === 'repository.list') {
+            mergeRegistered(page.repositories); snapshot.nextRepositories = page.next_repository_id;
+          } else {
+            const plans = new Map(snapshot.plans.map((row) => [row.repository_id, row]));
+            for (const row of page.headers) plans.set(row.repository_id, row);
+            snapshot.plans = [...plans.values()]; snapshot.nextPlans = page.next_repository_id;
+          }
+          rebuildCatalogue();
+          if (active) paintNavigation();
+        }
+      })().catch((error) => {
+        if (!signal.aborted && data === snapshot && error.code !== 'stale') {
+          snapshot.catalogueFailed = true;
+          window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => window.DevCoordinatorI18n.t('shell.value1_repositories_unavailable_refresh_to_retry_426a76', { value1: 'Repositories' }));
+        }
+      }).finally(() => { if (catalogueLoading?.promise === promise) { catalogueLoading = null; if (active && data === snapshot) paintNavigation(); } });
+      catalogueLoading = { signal, promise };
+      return promise;
+    }
+
     async function load(signal) {
-      if (data && (currentView !== 'tests' || testsLoaded)) return;
+      if (data) return;
       if (loading?.signal === signal) return loading.promise;
-      const read = async (operation) => {
-        try { return { value: await api(operation, operation === 'usage.repositories' ? { range: '24h' } : {}) }; }
+      const read = async (operation, params) => {
+        try { return { value: await (['plan.overview', 'repository.list', 'test.list'].includes(operation) ? apiPage(operation, params || { limit: operation === 'test.list' ? 20 : 200 }) : api(operation, operation === 'usage.repositories' ? { range: '24h' } : {})) }; }
         catch (error) { if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') throw error; return { error }; }
       };
-      const includeTests = currentView === 'tests';
       const updateStatus = (results) => {
         const unavailable = results.filter(([, result]) => result?.error && result.error.code !== 'permission_denied');
         window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => (unavailable.length ? window.DevCoordinatorI18n.t("shell.value1_repositories_unavailable_refresh_to_retry_426a76", {value1: unavailable.map(([label]) => label).join(', ')}) : ''));
       };
-      // Plan, Tests, and Deployments determine the initial repository
-      // navigation. Optional Usage and Progress projections may involve
-      // independent refresh work; do not hold the entire workspace on them.
+      // Navigation needs repository identity and presentation, not every
+      // repository's Plan aggregates. Continue bounded header pages in the background.
       const promise = Promise.all([
-        read('plan.overview'),
-        includeTests ? read('test.list') : { value: { runs: [] } },
+        read('plan.overview', { headers_only: true, limit: 200 }),
+        { value: { runs: [] } },
         read('deployment.list'),
         read('repository.list'),
       ]).then(async ([plans, tests, deploymentList, repositoryList]) => {
-        if (plans.error && !includeTests) tests = await read('test.list');
+        if (plans.error) tests = await read('test.list');
         if (signal.aborted) return;
         if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
-        const registered = (repositoryList.value?.repositories || []).flatMap((record) => {
-          const planned = plans.value?.repositories?.find((row) => row.repository_id === record.repository_id);
-          const source = planned?.repository_source || record.repository_source;
-          const worktrees = record.worktrees || [];
-          return worktrees.map((worktree) => ({
-            repository_id: record.repository_id,
-            display_name: record.display_name,
-            repository_group_key: source?.key || record.repository_id,
-            repository_group_name: source?.name || record.display_name,
-            root_path: planned?.root_path || record.root_path,
-            worktree_path: worktree.worktree_path,
-            repository_source: source,
-          }));
-        });
-        data = { repositories: [...(plans.value?.repositories || []), ...registered], registered, runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
-        testsLoaded = includeTests || !!plans.error;
-        groups = catalogue(data.repositories, data.runs, data.deployments);
+        data = { plans: plans.value?.headers || [], registered: repositoryList.value?.repositories || [], optional: [], presentations: new Map(), runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [], nextRepositories: repositoryList.value?.next_repository_id, nextPlans: plans.value?.next_repository_id, catalogueFailed: !!plans.error || !!repositoryList.error };
+        rebuildCatalogue();
         updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList]]);
         if (!canOperate()) return;
         void Promise.all([read('usage.repositories'), read('progress.repositories')]).then(([usage, progress]) => {
           if (signal.aborted) return;
-          data.repositories = [...(plans.value?.repositories || []), ...registered, ...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
-          groups = catalogue(data.repositories, data.runs, data.deployments);
+          data.optional = [...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
+          const navigationChanged = rebuildCatalogue();
           updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList], ['Usage', usage], ['Progress', progress]]);
-          if (active) paint();
+          if (active && navigationChanged) paint();
         }).catch(() => {});
       });
       loading = { signal, promise };
@@ -366,9 +424,13 @@ window.DevCoordinatorWorkspace = (() => {
       sidebar.hidden = false;
       document.querySelector('#workspace-context').hidden = false;
       if (!data) navigation.innerHTML = "<p class=\"muted\"><span data-i18n=\"shell.loading_repositories_460ca9\">Loading repositories…</span></p>";
+      const query = new URLSearchParams(queryString);
+      let requested = ['plan', 'progress', 'usage', 'performance', 'decisions', 'sketches', 'glossary'].includes(view) ? argument : query.get('repository');
+      const planModel = view === 'plan' && requested ? api('plan.overview', { repository_id: requested }) : null;
+      planModel?.catch(() => {}); // Navigation may fail or abort before the scoped view consumes this read.
       await load(signal);
       if (signal.aborted) return null;
-      const query = new URLSearchParams(queryString);
+      catalogueSignal = signal;
       const matchesRun = run => (run.run_id === argument || run.earlier_visual_evidence?.run_id === argument) && (!query.get('worktree') || run.worktree_id === query.get('worktree'));
       if (view === 'tests' && argument && !data.runs.some(matchesRun)) {
         retainedEvidence = await api('test.evidence.lookup', { run_id: argument, image_id: query.get('image') || undefined, worktree_id: query.get('worktree') || undefined });
@@ -376,9 +438,22 @@ window.DevCoordinatorWorkspace = (() => {
         data.runs.push({ ...retainedEvidence.context, isEarlierEvidence: true });
         groups = catalogue(data.repositories, data.runs, data.deployments);
       }
-      let requested = ['plan', 'progress', 'usage', 'performance', 'decisions', 'sketches', 'glossary'].includes(view) ? argument : query.get('repository');
       if (view === 'tests' && argument) requested = data.runs.find(matchesRun)?.repository_id || requested;
       if (view === 'deployments' && argument) requested = data.deployments.find((deployment) => deployment.deployment_id === argument)?.repository_id || requested;
+      if (requested && !data.plans.some((row) => row.repository_id === requested)) {
+        const plan = await apiPage('plan.overview', { repository_id: requested, limit: 1 });
+        if (signal.aborted) return null;
+        if (plan.repository_id !== requested) throw new Error('Repository identity did not match the requested Plan');
+        data.plans.push({ repository_id: plan.repository_id, display_name: plan.display_name, presentation: plan.presentation, repository_source: plan.repository_source });
+        try {
+          const found = await apiPage('repository.list', { repository_id: requested, limit: 200 });
+          if (signal.aborted) return null;
+          mergeRegistered(found.repositories);
+        } catch (error) {
+          if (error.code !== 'permission_denied') throw error;
+        }
+        rebuildCatalogue();
+      }
       if (['tests', 'deployments'].includes(view) && argument && !requested) {
         active = false; selectedId = ''; paint();
         return { view, arg: `${argument}${view === 'tests' && queryString ? `?${queryString}` : ''}` };
@@ -401,7 +476,8 @@ window.DevCoordinatorWorkspace = (() => {
         }
       }
       paint();
-      return { view, arg: view === 'tests' ? argument && `${argument}${queryString ? `?${queryString}` : ''}` : view === 'deployments' ? argument : argument || selectedId, empty: !selectedId && !argument, settings: query.get('settings') };
+      void continueCatalogue(signal);
+      return { view, arg: view === 'tests' ? argument && `${argument}${queryString ? `?${queryString}` : ''}` : view === 'deployments' ? argument : argument || selectedId, empty: !selectedId && !argument, settings: query.get('settings'), planModel };
     }
 
     toggle.addEventListener('click', () => {
@@ -463,13 +539,16 @@ window.DevCoordinatorWorkspace = (() => {
       }
     });
     sidebar.addEventListener('click', (event) => { if (event.target.closest('a')) closeDrawer(true); });
-    search.addEventListener('input', () => { searchText = search.value; paintNavigation(); });
+    search.addEventListener('input', () => { searchText = search.value; paintNavigation(); if (catalogueSignal) void continueCatalogue(catalogueSignal); });
+    document.querySelector('#workspace-checkouts').addEventListener('toggle', () => { if (catalogueSignal) void continueCatalogue(catalogueSignal); });
     refreshButton.addEventListener('click', async () => {
       refreshButton.disabled = true;
       data = null;
       try { await window.render(); } finally { refreshButton.disabled = false; }
     });
     return { resolve, href, current, get active() { return active; }, get repositoryId() { return selectedId; }, get retainedEvidence() { return retainedEvidence; },
+      get catalogueComplete() { return !!data && !data.nextRepositories && !data.nextPlans && !data.catalogueFailed; },
+      subscribe(listener) { catalogueListeners.add(listener); return () => catalogueListeners.delete(listener); },
       matches: (row) => current()?.records.some((record) => record.repository_id === row.repository_id) || false };
   }
   return { catalogue, href, create };

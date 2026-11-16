@@ -15,18 +15,10 @@ Trusted local callers and existing Console administrators use the same typed
 operations and stored records. Existing viewer restrictions remain in place.
 
 ```sh
-devcoordinator2 health incidents --view all
-devcoordinator2 health incident update INCIDENT --expected-revision 0 \
-  --status handling --agent-response 'Investigating the failed service.'
-devcoordinator2 health incident update INCIDENT --expected-revision 1 \
-  --status suppressed --category development \
-  --agent-response 'Expected termination inside the development test.'
-devcoordinator2 health incident update INCIDENT --expected-revision 1 \
-  --status escalated --summary 'Preview is unavailable' \
-  --what-happened 'The service exited and the preview does not respond.' \
-  --agent-response 'Restarted once; the health check still failed.' \
-  --escalation-reason 'A decision is needed about restoring an older version.' \
-  --next-step 'Review the previous working version in the deployment.'
+devcoordinator2 call health.incidents --params '{"view":"all"}'
+devcoordinator2 call health.incident.update --params '{"incident_id":"INCIDENT","expected_revision":0,"status":"handling","agent_response":"Investigating the failed service."}'
+devcoordinator2 schema health.incident.update
+devcoordinator2 call health.incident.update --params-file /absolute/incident-response.json
 ```
 
 These examples describe separate transitions, not a script to run unchanged.
@@ -36,8 +28,8 @@ actions actually performed. Development observations cannot be escalated;
 Escalation requires the response, reason, and next step. A missing history is
 not proof that no agent acted.
 
-The API/MCP equivalents are `health.incidents` / `health_incidents` and
-`health.incident.update` / `health_incident_update`. List accepts `view`
+The API and MCP `call_operation` use `health.incidents` and
+`health.incident.update`. List accepts `view`
 (`attention`, `dismissed`, `all`), `limit` (1–50, default 20), and the returned
 `before` cursor. `attention_count` and `dismissed_count` are independent of the
 current page. Update requires `incident_id`, `expected_revision`, and `status`;
@@ -57,7 +49,7 @@ CPU and memory can be summed across attributed records. When recursive
 checkout storage overlaps, the family shows the main checkout's storage with
 that label and exposes the remaining exact measurements under Checkouts.
 
-Acceptance reuses the real Console/SQLite fixture from `verify-glossary.mjs`
+Acceptance reuses the real Console/PostgreSQL fixture from `verify-glossary.mjs`
 with `CONSOLE_VERIFY_HEALTH_ONLY=1` and the `glossary-fixture` feature. Incident
 authorization, transitions, revisions and persistence run through the real
 control plane. Resource charts use declared deterministic fixture readings.

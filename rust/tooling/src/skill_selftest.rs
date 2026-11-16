@@ -51,7 +51,7 @@ fn require_tokens(text: &str, tokens: &[&str], label: &str) -> Result<(), String
 }
 
 const WORKFLOW_TERMS: &[&str] = &[
-    "glossary resolve",
+    "glossary.resolve",
     "Projects retain their localization architecture and exact messages",
     "Reading the glossary is not proof of UI compliance",
     "Compose independent checks for one worktree inside one schema-2 graph",
@@ -75,7 +75,7 @@ const WORKFLOW_TERMS: &[&str] = &[
     "without modifying the original run's source or artifacts",
     "An interim answer or elaboration update does not complete the active outcome",
     "Preserve its agreed scope and pending operations",
-    "resume authorized work or a bounded event wait in the same active work cycle",
+    "resume authorized work or a bounded event.wait in the same active work cycle",
     "Honor explicit pause, cancellation, or replacement and real required decisions",
     "leave unfinished outcomes open and state the actual stopping condition",
 ];
@@ -97,10 +97,24 @@ pub fn validate_dev_coordinator_contract(
         &[
             "name: dev-coordinator",
             "devcoordinator2",
-            "test start|retry|status|stop|event|list|capacity",
-            "test log catalog|tail|search|range|failure-context|retention",
-            "test evidence show|image|feedback",
-            "test artifact catalog|file|materialize",
+            "test.start",
+            "test.retry",
+            "test.status",
+            "test.stop",
+            "test.list",
+            "test.capacity.*",
+            "test.log.catalog",
+            "test.log.tail",
+            "test.log.search",
+            "test.log.range",
+            "test.log.failure_context",
+            "test.log.retention.*",
+            "test.evidence.get",
+            "test.evidence.image",
+            "test.evidence.feedback.create",
+            "test.artifact.catalog",
+            "test.artifact.file",
+            "materialize",
             "journey-evidence.json",
             "ordinary Plan `user_feedback` task",
             "byte-complete stdout and stderr",
@@ -110,14 +124,28 @@ pub fn validate_dev_coordinator_contract(
             "preflight",
             "host-wide adaptive scheduler",
             "do not ask the user for another approval",
-            "deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove",
-            "config show|authorize|revoke|reload",
-            "storage inventory|show|scan|protect|policy|roots|cleanup|job|history|lease",
-            "storage legacy-register",
+            "deployment.list",
+            "deployment.preflight",
+            "deployment.apply",
+            "deployment.status",
+            "deployment.start",
+            "deployment.stop",
+            "deployment.restart",
+            "deployment.rollback",
+            "deployment.logs",
+            "deployment.remove",
+            "config.get",
+            "config.env.set",
+            "config.reload",
+            "storage.*",
+            "storage.legacy.register",
             "active_revision",
             "pending_apply",
-            "plan overview",
-            "decision record|tail|search|summarize",
+            "plan.overview",
+            "decision.record",
+            "decision.tail",
+            "decision.search",
+            "decision.summarize",
         ],
         "dev-coordinator skill contract",
     )?;
@@ -138,81 +166,30 @@ pub fn validate_dev_coordinator_contract(
     require_tokens(
         lookup(&[])?,
         &[
-            "test",
-            "deployment",
-            "health",
-            "plan",
-            "task",
-            "decision",
-            "storage",
+            "call",
+            "operations",
+            "schema",
+            "mcp",
+            "materialize",
+            "emit-event",
         ],
         "root CLI help",
     )?;
     require_tokens(
-        lookup(&["test"])?,
-        &["capacity", "log", "evidence", "artifact"],
-        "test CLI help",
+        lookup(&["call"])?,
+        &["Usage:", "--params", "--params-file", "OPERATION"],
+        "generic call help",
     )?;
     require_tokens(
-        lookup(&["test", "log"])?,
-        &[
-            "catalog",
-            "tail",
-            "search",
-            "range",
-            "failure-context",
-            "retention",
-        ],
-        "test log CLI help",
+        lookup(&["operations"])?,
+        &["Usage:", "--prefix"],
+        "catalog help",
     )?;
     require_tokens(
-        lookup(&["test", "evidence"])?,
-        &["show", "image", "feedback"],
-        "test evidence CLI help",
+        lookup(&["schema"])?,
+        &["Usage:", "OPERATION"],
+        "schema help",
     )?;
-    require_tokens(
-        lookup(&["test", "artifact"])?,
-        &["catalog", "file", "materialize"],
-        "test artifact CLI help",
-    )?;
-    require_tokens(
-        lookup(&["glossary"])?,
-        &["resolve", "save", "configure", "history", "check", "impact"],
-        "glossary CLI help",
-    )?;
-    require_tokens(
-        lookup(&["storage"])?,
-        &[
-            "inventory",
-            "scan",
-            "legacy-register",
-            "protect",
-            "policy",
-            "roots",
-            "cleanup",
-            "job",
-            "history",
-            "lease",
-        ],
-        "storage CLI help",
-    )?;
-    require_tokens(
-        lookup(&["storage", "cleanup"])?,
-        &["plan", "start"],
-        "storage cleanup CLI help",
-    )?;
-    require_tokens(
-        lookup(&["storage", "job"])?,
-        &["status", "cancel"],
-        "storage job CLI help",
-    )?;
-    for command in ["test", "deployment", "decision", "glossary", "storage"] {
-        require_tokens(
-            lookup(&[command])?,
-            &["Usage:"],
-            &format!("{command} CLI help"),
-        )?;
-    }
     Ok(json!({
         "ok":true,"skill":"dev-coordinator","contract":"skills/dev-coordinator/SKILL.md",
         "help_surfaces":help.len(),
@@ -220,19 +197,7 @@ pub fn validate_dev_coordinator_contract(
 }
 
 pub fn dev_coordinator(source_root: &Path, control_binary: &Path) -> Result<Value, String> {
-    let paths = [
-        Vec::new(),
-        vec!["test"],
-        vec!["deployment"],
-        vec!["decision"],
-        vec!["glossary"],
-        vec!["storage"],
-        vec!["storage", "cleanup"],
-        vec!["storage", "job"],
-        vec!["test", "log"],
-        vec!["test", "evidence"],
-        vec!["test", "artifact"],
-    ];
+    let paths = [Vec::new(), vec!["call"], vec!["operations"], vec!["schema"]];
     let help = paths
         .into_iter()
         .map(|arguments| {
@@ -240,7 +205,20 @@ pub fn dev_coordinator(source_root: &Path, control_binary: &Path) -> Result<Valu
             Ok((arguments, output))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    validate_dev_coordinator_contract(source_root, &help)
+    let result = validate_dev_coordinator_contract(source_root, &help)?;
+    let output = Command::new(control_binary)
+        .arg("operations")
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err("operation discovery failed".into());
+    }
+    let catalog: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "operation discovery returned invalid JSON")?;
+    if catalog != devcoordinator2_api::catalog_summary("") {
+        return Err("installed operation catalog differs from candidate source".into());
+    }
+    Ok(result)
 }
 
 pub fn sibling_control_binary() -> Result<PathBuf, String> {
@@ -311,31 +289,14 @@ mod tests {
         let help = vec![
             (
                 vec![],
-                "test deployment health plan task decision storage".to_owned(),
+                "call operations schema mcp materialize emit-event".to_owned(),
             ),
             (
-                vec!["test"],
-                "Usage: test capacity log evidence artifact".to_owned(),
+                vec!["call"],
+                "Usage: call OPERATION --params --params-file".to_owned(),
             ),
-            (vec!["deployment"], "Usage: deployment".to_owned()),
-            (vec!["decision"], "Usage: decision".to_owned()),
-            (vec!["storage"], "Usage: storage inventory scan legacy-register protect policy roots cleanup job history lease".to_owned()),
-            (vec!["storage","cleanup"], "plan start".to_owned()),
-            (vec!["storage","job"], "status cancel".to_owned()),
-            (
-                vec!["glossary"],
-                "Usage: glossary list resolve get save configure inherit history check impact"
-                    .to_owned(),
-            ),
-            (
-                vec!["test", "log"],
-                "catalog tail search range failure-context retention".to_owned(),
-            ),
-            (vec!["test", "evidence"], "show image feedback".to_owned()),
-            (
-                vec!["test", "artifact"],
-                "catalog file materialize".to_owned(),
-            ),
+            (vec!["operations"], "Usage: operations --prefix".to_owned()),
+            (vec!["schema"], "Usage: schema OPERATION".to_owned()),
         ];
         assert_eq!(
             validate_dev_coordinator_contract(root, &help).unwrap()["ok"],
@@ -344,13 +305,13 @@ mod tests {
         let mut missing = help.clone();
         missing
             .iter_mut()
-            .find(|(route, _)| route == &["test", "log"])
+            .find(|(route, _)| route == &["call"])
             .unwrap()
-            .1 = "catalog tail search range retention".to_owned();
+            .1 = "Usage: call OPERATION --params".to_owned();
         assert!(
             validate_dev_coordinator_contract(root, &missing)
                 .unwrap_err()
-                .contains("failure-context")
+                .contains("--params-file")
         );
         let temporary = tempfile::tempdir().unwrap();
         let contract_path = temporary.path().join("skills/dev-coordinator/SKILL.md");

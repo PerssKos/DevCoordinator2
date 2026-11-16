@@ -106,14 +106,21 @@ body.plan-shell, body.evidence-shell { height: auto; min-height: 100dvh; overflo
 .repository-scoped .plan-context-actions { flex-wrap: wrap; margin-left: auto; }
 .repository-scoped .plan-total-progress { min-width: 0; grid-template-columns: auto minmax(50px,140px) auto; }
 .repository-scoped .plan-context-actions > a { display: none; }
+.repository-scoped .grow.grel { height: 64px; }
+.repository-scoped .grelbar { top: 50%; transform: translateY(-50%); }
+.repository-scoped .plan-release-location { top: 50%; transform: translate(8px, -50%); }
 .repository-scoped .plan-release-copy { flex: 1; width: auto; flex-direction: column; align-items: stretch; gap: 2px; overflow: hidden; }
 .repository-scoped .plan-release-copy > strong { min-width: 0; }
 .repository-scoped .plan-release-meta { margin-left: 0; flex-wrap: nowrap; }
 .repository-scoped .plan-release-meta .muted { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .repository-scoped .plan-task-meta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.repository-scoped .plan-task-meta > .badge { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.repository-scoped .plan-task-meta > .badge { flex-shrink: 0; white-space: nowrap; }
+.repository-scoped .plan-task-meta { line-height: 1.25; }
 .repository-scoped .plan-task-title, .repository-scoped .plan-task-meta { flex-shrink: 0; }
 @media(max-width:720px) {
+  .repository-scoped .grow.gtask { height: auto; min-height: 74px; }
+  .repository-scoped .gtask .glabel { padding-left: calc(5px + min(var(--task-depth, 0), 3) * 4px); }
+  .repository-scoped .plan-task-select { height: auto; max-height: none; min-height: 73px; }
   .repository-scoped .plan-task-meta { gap: 2px; font-size: 10px; line-height: 1.2; }
   .repository-scoped .plan-task-meta .badge { font-size: inherit; line-height: inherit; }
 }

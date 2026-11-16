@@ -30,6 +30,10 @@ background, traverses discoverable open shadow roots, evaluates every
 Playwright-reachable iframe, records any reachable context it could not inspect, and lists
 allowed ellipsis/line-clamp truncations, hidden text-like elements, and
 still-loading media, even when the page has no critical layout findings.
+Nested labels under a boxed absolute or fixed ancestor's zero-area CSS `clip` remain
+in the hidden-content inventory; their larger layout boxes do not make them
+painted text. A `display: contents` ancestor has no clipping box. Nonzero partial
+clips and visible controls remain checked.
 Native modal dialogs exclude their browser-inert background from active-content
 defects. Fixed descendants count as reachable only when an actual inner scroll
 range on the cut axis can expose them within the viewport. Locked scroll regions,
@@ -119,6 +123,14 @@ child frames never reinstall it. This accepts plain string data, not executable
 hooks. The complete contract, limits and cookie precedence are in the journey
 review contract linked above. Setup failure remains failed coverage; preparation
 time stays in the ordinary browser measurements.
+
+States that acquire application resources may declare bounded `cleanup` UI
+actions and a response wait after capture. Require an actual editable field
+when the state promises an editing lease, then close the editor normally and
+verify its release response. Browser-context closure alone is not proof of
+server-side cleanup. Cleanup runs before context close even after failed
+capture; a failed cleanup blocks readiness. Read the post-capture cleanup
+contract in `references/journey_review_contract.md` before configuring it.
 
 Each checked cell automatically emits a redacted initial-viewport screenshot
 and full-page screenshot plus a changed visual-review queue. Screenshot hashes
@@ -381,7 +393,10 @@ candidate preliminary or blocked.
    - Readiness waits use observable events: response, URL/navigation, selector
      or ready/error selector race, server readback, load state, or one/two render
      frames. Longer timeouts are failure ceilings. Deliberate delays and polling
-     intervals above 100 ms are rejected.
+     intervals above 100 ms are rejected. Retain each attempted wait's duration
+     and outcome (`completed`, `timed_out`, or `failed`), including failed
+     initial readiness, interaction readiness, and observations after an action
+     fails. A failed wait must preserve preceding wait evidence.
    - Rendered-navigation performance is measured from the browser's Navigation
      Timing entry and a buffered LCP observer installed before navigation. The
      defaults are `TTFB < 10 ms` for localhost/loopback targets and `LCP < 800
@@ -434,7 +449,8 @@ candidate preliminary or blocked.
      below-the-fold and lazy-loaded content is exercised; how far it scrolled is
      reported in `metrics.scroll`. Pass `--no-scroll` (or `"scroll": false` in a
      config) only when the page must not scroll during inspection.
-   - Use `--from-coordinator --only-current` only for already-running current
+   - Discovery calls protocol-v3 `call deployment.list --params` with typed JSON.
+     Use `--from-coordinator --only-current` only for already-running current
      coordinator URLs. A discovered URL that cannot be checked fails the
      coverage gate by default. Use `--allow-discovered-target-failures` only
      when stale discovery is expected and the incomplete coverage is acceptable.
@@ -565,6 +581,13 @@ Critical findings by default:
   do not fail. Inside carousel/slider-marked containers the finding is
   downgraded to a warning; fully hidden content becomes a `clipped-hidden`
   warning because closed accordions/tabs/slides are often intentional.
+  In non-strict mode, intentional single-line ellipsis also permits an inline
+  font fragment to extend vertically beyond its line only when browser font and
+  glyph metrics agree with the rendered fragment and the actual glyph bounds
+  fit inside the clip. This requires unpositioned, same-font inline text.
+  Controls, genuine vertical crops, unsupported metrics and painted effects
+  omitted by those metrics (shadow, stroke or decoration) retain clipping
+  checks. `strictTruncation` continues to reject the ellipsis.
 - Unrelated overlap/occlusion of meaningful text or controls: fully covered
   (`occluded`) or covered on ≥60% of sampled points (`partially-occluded`).
   Every candidate starts from the verification state's original document and

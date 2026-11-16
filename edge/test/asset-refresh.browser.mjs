@@ -25,6 +25,7 @@ test('ordinary browser reload replaces both unversioned assets after a release',
   let browser;
   try {
     await fs.writeFile(path.join(directory, 'index.html'), '<!doctype html><meta charset="utf-8"><title>Release fixture</title><link rel="stylesheet" href="/app.css"><main id="status"></main><script src="/app.js"></script>');
+    await assets.prepare();
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     browser = await chromium.launch({ headless: true });
     for (const width of [1440, 390]) {
@@ -39,9 +40,12 @@ test('ordinary browser reload replaces both unversioned assets after a release',
       measured += 1;
       await fs.writeFile(path.join(directory, 'app.js'), 'fetch("/measurement").then(response => response.json()).then(value => { document.querySelector("#status").textContent = `Measured ${value.measured}`; });');
       await fs.writeFile(path.join(directory, 'app.css'), '#status { color: rgb(0, 96, 64); }');
+      await fs.writeFile(path.join(directory, 'index.html'), `<!doctype html><meta charset="utf-8"><title>Release fixture ${width}</title><link rel="stylesheet" href="/app.css"><main id="status" data-release="${width}"></main><script src="/app.js"></script>`);
       await page.reload();
       await page.waitForFunction((expected) => document.querySelector('#status').textContent === expected, `Measured ${measured}`);
       assert.equal(await page.locator('#status').evaluate((element) => getComputedStyle(element).color), 'rgb(0, 96, 64)');
+      assert.equal(await page.locator('#status').getAttribute('data-release'), String(width));
+      assert.equal(await page.title(), `Release fixture ${width}`);
       assert.deepEqual(errors, []);
       await context.close();
     }

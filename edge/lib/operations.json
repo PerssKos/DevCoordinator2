@@ -1,0 +1,1955 @@
+{
+  "operations": {
+    "agent.capabilities.report": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.ack": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.activity": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.admin.agent.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.admin.message.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.admin.room.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.console.directory": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.console.receive": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.console.send": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "viewer",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.directory": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.heartbeat": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "external",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.key.rotate": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.receive": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.register": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.remote": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "anonymous",
+        "scope": "public"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.room.create": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.room.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.room.member.add": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.room.member.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.send": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.settings.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.settings.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.unregister": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.upload.chunk": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.upload.file": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.upload.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.hub.upload.start": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.instruction.current": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.message.ack": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.message.claim": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.message.poll": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.roles.save": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.settings.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "agent.settings.save": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "bug.close": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "bug.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "bug.report": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "completion.check": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "config.env.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "config.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "config.reload": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "decision.record": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "decision.search": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "decision.summarize": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "decision.tail": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "deployment.apply": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "deployment.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "deployment.logs": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "deployment.preflight": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "deployment.recovery": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "deployment.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "deployment.restart": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "operator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "deployment.rollback": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "deployment.set_domain": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "deployment.start": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "deployment.status": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "deployment.stop": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "deployment.wait": {
+      "passiveWait": true,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "design.sketch.activate": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.annotation.create": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.decision": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.description": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.image": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.publish": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.record": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.resolve": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.search": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "design.sketch.story": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "event.wait": {
+      "passiveWait": true,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "glossary.check": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "glossary.configure": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "glossary.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "glossary.history": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "glossary.impact": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "glossary.inherit": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "glossary.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "glossary.resolve": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "glossary.save": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "grant.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "grant.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "deployment"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "health.container_remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "health.containers": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "health.history": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "health.incident.update": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "health.incidents": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "health.repositories": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "health.repository": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "health.summary": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "performance.overview": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "performance.review": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "performance.reviews": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "ping": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "anonymous",
+        "scope": "public"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "plan.overview": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "plan.recovery": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "progress.repositories": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "progress.repository": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "release.create": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "release.deliver": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "release.deliver_evidence": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "release.evidence": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "release.evidence_show": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "release.request": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "release.update": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "repository.archive": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "repository.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "repository.presentation.update": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "repository.register": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "repository.retire": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "repository.status": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "repository.unarchive": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "review.delivery.pending": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "review.delivery.register": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "review.policy.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "review.policy.status": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "review.prepare": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "review.receipt": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "review.record": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "review.show": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "server.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "server.register": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "server.stop": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.artifact.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.cleanup.plan": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.cleanup.start": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.history": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.inventory": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.job.cancel": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.job.status": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.lease.release": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.lease.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.legacy.register": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.policy.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.policy.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.protection.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.register": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.roots.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.roots.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "storage.scan": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "task.create": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "task.history": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "task.search": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "task.update": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "telegram.link": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "telegram.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "telegram.subscribe": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "telegram.unsubscribe": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "external",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.admission.status": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.admission.wait": {
+      "passiveWait": true,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "test.artifact.catalog": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.artifact.file": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.capacity.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.capacity.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.container.create": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.container.diagnostic": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.container.inspect": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.container.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.container.retry": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.container.start": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.evidence.feedback.create": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.evidence.feedback.delete": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.evidence.feedback.edit": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.evidence.feedback.reply": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.evidence.feedback.state": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.evidence.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.evidence.image": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.evidence.lookup": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.history": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.log.catalog": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "test.log.failure_context": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "test.log.range": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "test.log.retention.get": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.log.retention.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.log.search": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "test.log.tail": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "test.retry": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "test.start": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "test.status": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 20
+    },
+    "test.stop": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "test.wait": {
+      "passiveWait": true,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": null
+    },
+    "ticket.configure": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "ticket.remote": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "anonymous",
+        "scope": "public"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "ticket.request": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "ticket.settings": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "usage.rate_card.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "usage.rate_card.set": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "usage.repositories": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "usage.repository": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "operator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "user.accept_invitation": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "user.invite": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "user.list": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "user.remove": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      },
+      "responseTimeoutSeconds": 10
+    },
+    "user.whoami": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "anonymous",
+        "scope": "public"
+      },
+      "responseTimeoutSeconds": 10
+    }
+  },
+  "protocol": 3
+}

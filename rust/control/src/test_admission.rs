@@ -89,7 +89,7 @@ impl AdmissionError {
         }
     }
 
-    /// Stable error-code mapping used by the protocol-v2 dispatcher.
+    /// Stable error-code mapping used by the protocol-v3 dispatcher.
     pub const fn protocol_code(&self) -> &'static str {
         match self {
             Self::TestsDraining { .. } => "tests_draining",

@@ -1,4 +1,4 @@
-import { createCatalog, negotiateLocale, recentLocales, browserLocales, matchLocale, localeCookie, intlLocales } from './i18n-core.mjs';
+import { createCatalog, negotiateLocale, recentLocales, browserLocales, matchLocale, localeCookie, intlLocales, intlFormatter } from './i18n-core.mjs';
 const read = async file => {
   const response = await fetch(`/locales/${file}`, { cache: 'no-cache' });
   if (!response.ok) throw new Error('Language file unavailable');
@@ -18,7 +18,7 @@ try { recent = JSON.parse(stored('dc2-recent-locales', '[]')); } catch {}
 if (!Array.isArray(recent)) recent = [];
 let menu, trigger;
 const t = (id, params) => catalog.message(locale, id, params);
-const fmt = (kind, options, value) => new Intl[kind](intlLocales(locale, manifest), options).format(value);
+const fmt = (kind, options, value) => intlFormatter(kind, intlLocales(locale, manifest), options).format(value);
 function clearStaticBinding(element, attribute) {
   if (!attribute) element.removeAttribute('data-i18n');
   else if (element.dataset.i18nAttrs) {
@@ -26,6 +26,14 @@ function clearStaticBinding(element, attribute) {
     delete attributes[attribute];
     if (Object.keys(attributes).length) element.dataset.i18nAttrs = JSON.stringify(attributes);
     else element.removeAttribute('data-i18n-attrs');
+  }
+}
+function writeBinding(element, value, attribute) {
+  if (attribute) {
+    if (element.getAttribute(attribute) !== String(value)) element.setAttribute(attribute, value);
+  } else {
+    const text = String(value ?? '');
+    if (element.textContent !== text || element.childNodes.length !== (text ? 1 : 0) || text && element.firstChild.nodeType !== Node.TEXT_NODE) element.textContent = value;
   }
 }
 export const i18n = {
@@ -70,7 +78,7 @@ export const i18n = {
     const value = t(id, params);
     const entries = bindings.get(element) || new Map();
     entries.set(attribute || 'textContent', { id, params, attribute, last: String(value ?? '') }); bindings.set(element, entries);
-    if (attribute) element.setAttribute(attribute, value); else element.textContent = value;
+    writeBinding(element, value, attribute);
   },
   bind(element, compute, attribute = null) {
     if (!element) return;
@@ -78,7 +86,7 @@ export const i18n = {
     const value = compute();
     const entries = bindings.get(element) || new Map();
     entries.set(attribute || 'textContent', { compute, attribute, last: String(value ?? '') }); bindings.set(element, entries);
-    if (attribute) element.setAttribute(attribute, value); else element.textContent = value;
+    writeBinding(element, value, attribute);
   },
   async ensure(...names) { names.flat().forEach(name => namespaces.add(name)); return catalog.ensure(locale, names.flat()); },
   async setLocale(value) {

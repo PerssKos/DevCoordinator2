@@ -37,18 +37,22 @@ impl ReviewService {
         if let Some(scope) = &p.workstream_id {
             identifier(scope)?;
         }
-        let interval = p.review_interval_ms.unwrap_or(86_400_000);
-        let escalation = p.escalation_interval_ms.unwrap_or(3_600_000);
         let repo = p.repository_id.clone();
         let key = scope_key(&p.workstream_id);
-        let existing = self.database.call({
+        let existing = self.database.read({
             let repo = repo.clone();
             let key = key.clone();
-            move |c| Ok(c.query_row("SELECT window_start_ms,window_end_ms,active,last_receipt FROM review_policies WHERE repository_id=?1 AND workstream_key=?2", rusqlite::params![repo,key], |r| Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64,r.get::<_,bool>(2)?,r.get::<_,Option<String>>(3)?))).optional()?)
+            move |c| Ok(c.query_row("SELECT window_start_ms,window_end_ms,active,last_receipt,interval_ms,escalation_ms FROM review_policies WHERE repository_id=$1 AND workstream_key=$2", crate::database::params![repo,key], |r| Ok((r.get::<_,u64>(0)?,r.get::<_,u64>(1)?,r.get::<_,bool>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?))).optional()?)
         }).map_err(database_error)?;
-        let has_history = self.database.call({
+        let interval = p
+            .review_interval_ms
+            .unwrap_or_else(|| existing.as_ref().map_or(86_400_000, |value| value.4));
+        let escalation = p
+            .escalation_interval_ms
+            .unwrap_or_else(|| existing.as_ref().map_or(3_600_000, |value| value.5));
+        let has_history = self.database.read({
             let repo = p.repository_id.clone(); let key = key.clone();
-            move |c| Ok(c.query_row("SELECT 1 FROM review_clock_history WHERE repository_id=?1 AND workstream_key=?2 ORDER BY id DESC LIMIT 1", rusqlite::params![repo,key], |_| Ok(())).optional()?)
+            move |c| Ok(c.query_row("SELECT 1 FROM review_clock_history WHERE repository_id=$1 AND workstream_key=$2 ORDER BY id DESC LIMIT 1", crate::database::params![repo,key], |_| Ok(())).optional()?)
         }).map_err(database_error)?.is_some();
         let completed_existing = existing.as_ref().is_some_and(|value| value.3.is_some());
         if existing.is_some() && p.clock_action.is_none() && !has_history && !completed_existing {
@@ -61,12 +65,12 @@ impl ReviewService {
                 "clock_choice_required: this workstream already has a review clock; choose follow_existing, reset_existing, start_new, or retire_existing",
             ));
         }
-        let previous = self.database.call({
+        let previous = self.database.read({
             let repo = repo.clone();
             let workstream = p.workstream_id.clone();
             move |c| {
-            let mut q=c.prepare("SELECT record_id,revision,record_json FROM review_records WHERE repository_id=?1 AND json_extract(record_json,'$.workstreamId') IS ?2 AND json_extract(record_json,'$.experiment.disposition') IN ('retained','reverted','inconclusive','unchanged') ORDER BY window_end_ms DESC,revision DESC LIMIT 32")?;
-            let rows=q.query_map(rusqlite::params![repo,workstream],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+            let mut q=c.prepare("SELECT record_id,revision,record_json FROM review_records WHERE repository_id=$1 AND record_json->>'workstreamId' IS NOT DISTINCT FROM $2 AND record_json#>>'{experiment,disposition}' IN ('retained','reverted','inconclusive','unchanged') ORDER BY window_end_ms DESC,revision DESC LIMIT 32")?;
+            let rows=q.query_map(crate::database::params![repo,workstream],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
             Ok(rows.into_iter().find_map(|(id,revision,json)|serde_json::from_str::<ReviewRecord>(&json).ok().filter(review_completed).map(|record|(record.window_end_ms,format!("{id}@{revision}")))))
         }}).map_err(database_error)?;
         let action = p.clock_action.unwrap_or(if completed_existing {
@@ -90,14 +94,14 @@ impl ReviewService {
             p.window_start_ms,
             previous.as_ref().map(|(end, _)| *end),
         ) {
-            (ClockAction::FollowExisting, Some((start, _, _, _)), _, _) => start,
+            (ClockAction::FollowExisting, Some((start, _, _, _, _, _)), _, _) => start,
             (ClockAction::StartNew, None, Some(start), Some(completed)) => start.max(completed),
             (_, _, Some(start), _) => start,
             (ClockAction::ResetExisting, _, None, _) => now,
             (ClockAction::StartNew, Some(_), None, _) => now,
             (ClockAction::StartNew, None, None, Some(completed)) => completed,
             (ClockAction::StartNew, None, None, None) => now,
-            (ClockAction::RetireExisting, Some((start, _, _, _)), _, _) => start,
+            (ClockAction::RetireExisting, Some((start, _, _, _, _, _)), _, _) => start,
             (_, None, None, Some(completed)) => completed,
             (_, None, None, None) => now,
         };
@@ -132,8 +136,11 @@ impl ReviewService {
             }
         };
         self.database.transaction(move|tx| {
-            tx.execute("INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(repository_id,workstream_key) DO UPDATE SET interval_ms=COALESCE(?9,interval_ms),escalation_ms=COALESCE(?10,escalation_ms),active=excluded.active,window_start_ms=excluded.window_start_ms,window_end_ms=excluded.window_end_ms,last_receipt=excluded.last_receipt", rusqlite::params![repo,scope,interval as i64,escalation as i64,active,start as i64,(start+interval) as i64,last_receipt,p.review_interval_ms.map(|ms|ms as i64),p.escalation_interval_ms.map(|ms|ms as i64)])?;
-            tx.execute("INSERT INTO review_clock_history(repository_id,workstream_key,action,source,previous_window_start_ms,previous_window_end_ms,new_window_start_ms,new_window_end_ms,recorded_at_ms,explanation) VALUES(?1,?2,?3,'coordinator',?4,?5,?6,?7,?8,?9)", rusqlite::params![repo,scope,clock_action_name(action),previous_window.as_ref().map(|v|v.0 as i64),previous_window.as_ref().map(|v|v.1 as i64),start as i64,(start+interval) as i64,now as i64,explanation])?;
+            crate::plan::lock_repository(tx, &repo)?;
+            let current = tx.query_row("SELECT window_start_ms,window_end_ms,active,last_receipt,interval_ms,escalation_ms FROM review_policies WHERE repository_id=$1 AND workstream_key=$2", crate::database::params![repo,scope], |row| Ok((row.get::<_,u64>(0)?,row.get::<_,u64>(1)?,row.get::<_,bool>(2)?,row.get::<_,Option<String>>(3)?,row.get::<_,u64>(4)?,row.get::<_,u64>(5)?))).optional()?;
+            if current != previous_window { return Err(crate::database::DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict,"review clock changed; read its current dates before changing it"))); }
+            tx.execute("INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt,next_reminder_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,CASE WHEN $5::bigint<>0 THEN $7::bigint ELSE NULL END) ON CONFLICT(repository_id,workstream_key) DO UPDATE SET interval_ms=excluded.interval_ms,escalation_ms=excluded.escalation_ms,active=excluded.active,window_start_ms=excluded.window_start_ms,window_end_ms=excluded.window_end_ms,last_receipt=excluded.last_receipt,next_reminder_at_ms=excluded.next_reminder_at_ms", crate::database::params![repo,scope,interval as i64,escalation as i64,active,start as i64,(start+interval) as i64,last_receipt])?;
+            tx.execute("INSERT INTO review_clock_history(repository_id,workstream_key,action,source,previous_window_start_ms,previous_window_end_ms,new_window_start_ms,new_window_end_ms,recorded_at_ms,explanation) VALUES($1,$2,$3,'coordinator',$4,$5,$6,$7,$8,$9)", crate::database::params![repo,scope,clock_action_name(action),previous_window.as_ref().map(|v|v.0 as i64),previous_window.as_ref().map(|v|v.1 as i64),start as i64,(start+interval) as i64,now as i64,explanation])?;
             Ok(())
         }).map_err(database_error)?;
         self.policy_status(
@@ -152,7 +159,7 @@ impl ReviewService {
     ) -> Result<Option<Policy>, ProtocolError> {
         self.repository(&p.repository_id)?;
         let key = scope_key(&p.workstream_id);
-        self.database.call(move|c| c.query_row("SELECT interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt,lease_expires_at,owner_thread_id,(SELECT action FROM review_clock_history h WHERE h.repository_id=review_policies.repository_id AND h.workstream_key=review_policies.workstream_key ORDER BY h.id DESC LIMIT 1),(SELECT source FROM review_clock_history h WHERE h.repository_id=review_policies.repository_id AND h.workstream_key=review_policies.workstream_key ORDER BY h.id DESC LIMIT 1) FROM review_policies WHERE repository_id=?1 AND workstream_key=?2",rusqlite::params![p.repository_id,key],|r|{
+        self.database.read(move|c| c.query_row("SELECT interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt,lease_expires_at,owner_thread_id,(SELECT action FROM review_clock_history h WHERE h.repository_id=review_policies.repository_id AND h.workstream_key=review_policies.workstream_key ORDER BY h.id DESC LIMIT 1),(SELECT source FROM review_clock_history h WHERE h.repository_id=review_policies.repository_id AND h.workstream_key=review_policies.workstream_key ORDER BY h.id DESC LIMIT 1) FROM review_policies WHERE repository_id=$1 AND workstream_key=$2",crate::database::params![p.repository_id,key],|r|{
             let end=r.get::<_,i64>(4)? as u64;let escalation=r.get::<_,i64>(1)? as u64;let active:bool=r.get(2)?;
             let source: Option<String> = r.get(9)?;
             let action: Option<String> = r.get(8)?;
@@ -192,8 +199,24 @@ impl ReviewService {
         self.repository(&p.repository_id)?;
         let repo = p.repository_id.clone();
         let scope = scope_key(&p.workstream_id);
-        let changed=self.database.call(move|c| Ok(c.execute("UPDATE review_policies SET owner_thread_id=?1,alarm_namespace=?2,lease_expires_at=?3 WHERE repository_id=?4 AND workstream_key=?5 AND (?6 OR owner_thread_id IS NULL OR owner_thread_id=?1 OR lease_expires_at IS NULL OR lease_expires_at<=?7)",rusqlite::params![p.owner_thread_id,p.alarm_namespace,p.lease_expires_at as i64,repo,scope,matches!(mode,RegistrationMode::Replace),now as i64])?)).map_err(database_error)?;
-        let _ = changed;
+        let update = |c: &crate::database::Connection| {
+            Ok(c.execute("UPDATE review_policies SET owner_thread_id=$1,alarm_namespace=$2,lease_expires_at=$3 WHERE repository_id=$4 AND workstream_key=$5 AND ($6<>0 OR owner_thread_id IS NULL OR owner_thread_id=$1 OR lease_expires_at IS NULL OR lease_expires_at<=$7)",crate::database::params![p.owner_thread_id,p.alarm_namespace,p.lease_expires_at as i64,repo,scope,matches!(mode,RegistrationMode::Replace),now as i64])?)
+        };
+        match mode {
+            RegistrationMode::Replace => {
+                self.database
+                    .call(|connection| update(connection))
+                    .map_err(database_error)?;
+            }
+            RegistrationMode::Refresh => {
+                self.database.try_transaction(|transaction| transaction.run(update))
+                    .map_err(database_error)?
+                    .ok_or_else(|| ProtocolError::new(
+                        devcoordinator2_api::ErrorCode::Busy,
+                        "native review delivery refresh is unavailable while authority writers are busy",
+                    ))?;
+            }
+        }
         self.policy_status(
             api::Scope {
                 repository_id: p.repository_id,
@@ -209,13 +232,21 @@ impl ReviewService {
         now: u64,
     ) -> Result<(), ProtocolError> {
         // Persist each window/stage once. Publication retries use the same outbox key.
-        self.database.call(move|c| {
-            c.execute("INSERT OR IGNORE INTO review_reminders(repository_id,workstream_key,window_start_ms,window_end_ms,due_at_ms,escalation) SELECT repository_id,workstream_key,window_start_ms,window_end_ms,window_end_ms,0 FROM review_policies WHERE active=1 AND window_end_ms<=?1",[now as i64])?;
-            c.execute("INSERT OR IGNORE INTO review_reminders(repository_id,workstream_key,window_start_ms,window_end_ms,due_at_ms,escalation) SELECT repository_id,workstream_key,window_start_ms,window_end_ms,window_end_ms+escalation_ms,1 FROM review_policies WHERE active=1 AND window_end_ms+escalation_ms<=?1",[now as i64])?;
+        self.database.maintenance_transaction(move|c| {
+            let mut query=c.prepare("SELECT repository_id,workstream_key,window_start_ms,window_end_ms,escalation_ms FROM review_policies WHERE active=1 AND next_reminder_at_ms<=$1 ORDER BY next_reminder_at_ms,repository_id,workstream_key LIMIT 128 FOR UPDATE SKIP LOCKED")?;
+            let policies=query.query_map([now],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u64>(2)?,row.get::<_,u64>(3)?,row.get::<_,u64>(4)?)))?.collect::<Result<Vec<_>,_>>()?;
+            for (repo,scope,start,end,escalation) in policies {
+                c.execute("INSERT INTO review_reminders(repository_id,workstream_key,window_start_ms,window_end_ms,due_at_ms,escalation) VALUES($1,$2,$3,$4,$4,0) ON CONFLICT(repository_id,workstream_key,window_start_ms,window_end_ms,escalation) DO NOTHING",crate::database::params![repo,scope,start,end])?;
+                let escalates_at=end.saturating_add(escalation);
+                if escalates_at<=now {
+                    c.execute("INSERT INTO review_reminders(repository_id,workstream_key,window_start_ms,window_end_ms,due_at_ms,escalation) VALUES($1,$2,$3,$4,$5,1) ON CONFLICT(repository_id,workstream_key,window_start_ms,window_end_ms,escalation) DO NOTHING",crate::database::params![repo,scope,start,end,escalates_at])?;
+                }
+                c.execute("UPDATE review_policies SET next_reminder_at_ms=$3 WHERE repository_id=$1 AND workstream_key=$2",crate::database::params![repo,scope,(escalates_at>now).then_some(escalates_at)])?;
+            }
             Ok(())
         }).map_err(database_error)?;
-        let pending=self.database.call(move|c| {
-            let mut q=c.prepare("SELECT r.reminder_id,r.repository_id,r.workstream_key,r.window_start_ms,r.window_end_ms,r.escalation,p.last_receipt,p.owner_thread_id,p.alarm_namespace,p.lease_expires_at,r.event_route,r.message_id,r.due_at_ms FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.resolved=0 AND p.active=1 AND ((p.lease_expires_at>?1 AND (r.event_route IS NULL OR r.event_route != p.owner_thread_id || ':' || p.alarm_namespace)) OR ((p.lease_expires_at IS NULL OR p.lease_expires_at<=?1) AND r.message_id IS NULL)) ORDER BY r.reminder_id LIMIT 128")?;
+        let pending=self.database.read(move|c| {
+            let mut q=c.prepare("SELECT r.reminder_id,r.repository_id,r.workstream_key,r.window_start_ms,r.window_end_ms,r.escalation,p.last_receipt,p.owner_thread_id,p.alarm_namespace,p.lease_expires_at,r.event_route,r.message_id,r.due_at_ms FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.resolved=0 AND p.active=1 AND ((p.lease_expires_at>$1 AND (r.event_route IS NULL OR r.event_route != p.owner_thread_id || ':' || p.alarm_namespace)) OR ((p.lease_expires_at IS NULL OR p.lease_expires_at<=$1) AND r.message_id IS NULL)) ORDER BY r.reminder_id LIMIT 128")?;
             let rows=q.query_map([now as i64],|r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,bool>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<String>>(7)?,r.get::<_,Option<String>>(8)?,r.get::<_,Option<i64>>(9)?,r.get::<_,Option<String>>(10)?,r.get::<_,Option<String>>(11)?,r.get::<_,i64>(12)?)))?.collect::<Result<Vec<_>,_>>()?;
             Ok(rows)
         }).map_err(database_error)?;
@@ -278,8 +309,8 @@ impl ReviewService {
                 self.database
                     .call(move |c| {
                         c.execute(
-                            "UPDATE review_reminders SET event_route=?1 WHERE reminder_id=?2",
-                            rusqlite::params![route, id],
+                            "UPDATE review_reminders SET event_route=$1 WHERE reminder_id=$2",
+                            crate::database::params![route, id],
                         )?;
                         Ok(())
                     })
@@ -299,7 +330,7 @@ impl ReviewService {
                         "Act before unrelated work."
                     }
                 );
-                self.database.transaction(move|tx|{let claimed=tx.execute("UPDATE review_reminders SET message_id=?1 WHERE reminder_id=?2 AND message_id IS NULL AND resolved=0",rusqlite::params![message_id,id])?;if claimed==0{return Ok(());}tx.execute("INSERT INTO agent_messages(message_id,repository_id,kind,subject_id,summary,created_at) VALUES(?1,?2,'performance_review.reminder',?3,?4,?5)",rusqlite::params![message_id,repo,format!("review-{id}"),summary,OffsetDateTime::from_unix_timestamp_nanos(i128::from(now)*1_000_000).unwrap().format(&Rfc3339).unwrap()])?;tx.execute("UPDATE review_reminders SET message_id=?1 WHERE reminder_id=?2",rusqlite::params![message_id,id])?;Ok(())}).map_err(database_error)?;
+                self.database.transaction(move|tx|{let claimed=tx.execute("UPDATE review_reminders SET message_id=$1 WHERE reminder_id=$2 AND message_id IS NULL AND resolved=0",crate::database::params![message_id,id])?;if claimed==0{return Ok(());}tx.execute("INSERT INTO agent_messages(message_id,repository_id,kind,subject_id,summary,created_at) VALUES($1,$2,'performance_review.reminder',$3,$4,$5)",crate::database::params![message_id,repo,format!("review-{id}"),summary,OffsetDateTime::from_unix_timestamp_nanos(i128::from(now)*1_000_000).unwrap().format(&Rfc3339).unwrap()])?;tx.execute("UPDATE review_reminders SET message_id=$1 WHERE reminder_id=$2",crate::database::params![message_id,id])?;Ok(())}).map_err(database_error)?;
             }
         }
         Ok(())
@@ -307,7 +338,7 @@ impl ReviewService {
 }
 
 pub(super) fn complete(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &crate::database::Transaction<'_>,
     revision: &Revision,
 ) -> Result<(), crate::database::DatabaseError> {
     if !revision.completed {
@@ -315,8 +346,8 @@ pub(super) fn complete(
     }
     let r = &revision.record;
     let key = scope_key(&r.workstream_id);
-    tx.execute("UPDATE review_policies SET window_start_ms=?1,window_end_ms=?1+interval_ms,last_receipt=?2 WHERE repository_id=?3 AND workstream_key=?4 AND window_start_ms>=?5 AND window_end_ms<=?1",rusqlite::params![r.window_end_ms as i64,revision.reference,r.repository_id,key,r.window_start_ms as i64])?;
-    tx.execute("UPDATE review_reminders SET resolved=1 WHERE repository_id=?1 AND workstream_key=?2 AND window_start_ms>=?3 AND window_end_ms<=?4",rusqlite::params![r.repository_id,key,r.window_start_ms as i64,r.window_end_ms as i64])?;
+    tx.execute("UPDATE review_policies SET window_start_ms=$1,window_end_ms=$1+interval_ms,last_receipt=$2,next_reminder_at_ms=CASE WHEN active=1 THEN $1+interval_ms ELSE NULL END WHERE repository_id=$3 AND workstream_key=$4 AND window_start_ms>=$5 AND window_end_ms<=$1",crate::database::params![r.window_end_ms as i64,revision.reference,r.repository_id,key,r.window_start_ms as i64])?;
+    tx.execute("UPDATE review_reminders SET resolved=1 WHERE repository_id=$1 AND workstream_key=$2 AND window_start_ms>=$3 AND window_end_ms<=$4",crate::database::params![r.repository_id,key,r.window_start_ms as i64,r.window_end_ms as i64])?;
     // A message receipt records transport handling only; resolution is separate.
     Ok(())
 }
@@ -329,12 +360,12 @@ impl ReviewService {
         now: u64,
     ) -> Result<api::Pending, ProtocolError> {
         identifier(&p.alarm_namespace)?;
-        self.database.call(move|c|{
+        self.database.read(move|c|{
             let cursor=c.query_row("SELECT COALESCE(MAX(cursor),0) FROM owned_events",[],|r|r.get::<_,i64>(0))? as u64;
-            let mut query=c.prepare("SELECT r.reminder_id,r.repository_id,r.workstream_key,r.window_start_ms,r.window_end_ms,r.escalation,p.last_receipt,p.owner_thread_id,p.alarm_namespace,r.due_at_ms FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.resolved=0 AND p.active=1 AND p.lease_expires_at>?1 AND p.alarm_namespace=?2 AND r.reminder_id>?3 ORDER BY r.reminder_id LIMIT 17")?;
-            let rows=query.query_map(rusqlite::params![now as i64,p.alarm_namespace,p.after_id as i64],|r|{
+            let mut query=c.prepare("SELECT r.reminder_id,r.repository_id,r.workstream_key,r.window_start_ms,r.window_end_ms,r.escalation,p.last_receipt,p.owner_thread_id,p.alarm_namespace,r.due_at_ms FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.resolved=0 AND p.active=1 AND p.lease_expires_at>$1 AND p.alarm_namespace=$2 AND r.reminder_id>$3 ORDER BY r.reminder_id LIMIT 17")?;
+            let rows=query.query_map(crate::database::params![now as i64,p.alarm_namespace,p.after_id as i64],|r|{
                 let id=r.get::<_,i64>(0)? as u64;
-                Ok((id,Reminder{version:1,reminder_id:format!("review-{id}"),repository_id:r.get(1)?,workstream_id:serde_json::from_str(&r.get::<_,String>(2)?).map_err(|e|rusqlite::Error::FromSqlConversionFailure(2,rusqlite::types::Type::Text,Box::new(e)))?,window_start_ms:r.get::<_,i64>(3)? as u64,window_end_ms:r.get::<_,i64>(4)? as u64,due_at_ms:r.get::<_,i64>(9)? as u64,escalation:r.get(5)?,last_completed_receipt:r.get(6)?,owner_thread_id:r.get(7)?,alarm_namespace:r.get(8)?}))
+                Ok((id,Reminder{version:1,reminder_id:format!("review-{id}"),repository_id:r.get(1)?,workstream_id:serde_json::from_str(&r.get::<_,String>(2)?).map_err(|e|crate::database::Error::FromSqlConversionFailure(2,crate::database::types::Type::Text,Box::new(e)))?,window_start_ms:r.get::<_,i64>(3)? as u64,window_end_ms:r.get::<_,i64>(4)? as u64,due_at_ms:r.get::<_,i64>(9)? as u64,escalation:r.get(5)?,last_completed_receipt:r.get(6)?,owner_thread_id:r.get(7)?,alarm_namespace:r.get(8)?}))
             })?.collect::<Result<Vec<_>,_>>()?;
             let next_after_id=(rows.len()>16).then(||rows[15].0);
             Ok(api::Pending{cursor,reminders:rows.into_iter().take(16).map(|(_,reminder)|reminder).collect(),next_after_id})

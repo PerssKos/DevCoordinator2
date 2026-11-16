@@ -1,7 +1,7 @@
 //! Explicit recovery of one private PostgreSQL/process preview; never start it here.
 use super::*;
+use crate::database::{Connection, params};
 use devcoordinator2_api::runtime_recovery::{Port, Receipt, Request};
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -38,6 +38,54 @@ fn digest(bytes: impl AsRef<[u8]>) -> String {
         .collect()
 }
 fn read_rows(connection: &Connection, deployment: &str) -> Result<Rows, DatabaseError> {
+    let mut result = Rows::new();
+    for table in TABLES {
+        // The table names and sort keys are fixed authority-owned identifiers.
+        // JSON avoids PostgreSQL physical column order and row-location details.
+        let order = match *table {
+            "deployments" => "deployment_id",
+            "generations" => "number",
+            "components" => "order_index,name",
+            "port_assignments" => "port",
+            "domain_routes" => "domain",
+            _ => unreachable!("fixed recovery table"),
+        };
+        let mut statement = connection.prepare(&format!(
+            "SELECT to_jsonb(t)::text FROM {table} t WHERE deployment_id=$1 ORDER BY {order} LIMIT 1025"
+        ))?;
+        let encoded = statement
+            .query_map([deployment], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut rows = Vec::new();
+        let mut bytes = 0usize;
+        for encoded in encoded {
+            bytes = bytes.saturating_add(encoded.len());
+            if rows.len() == 1024 || bytes > 8 * 1024 * 1024 {
+                return Err(invalid("saved ownership exceeds recovery bounds").into());
+            }
+            let mut row: Row =
+                serde_json::from_str(&encoded).map_err(|_| invalid("invalid ownership row"))?;
+            // Snapshot contracts retain JSON columns as canonical JSON text,
+            // matching historical backups independently of authority SQL types.
+            for (name, value) in &mut row {
+                if name.ends_with("_json") && !value.is_null() && !value.is_string() {
+                    *value = Value::String(
+                        serde_json::to_string(value)
+                            .map_err(|_| invalid("invalid ownership JSON"))?,
+                    );
+                }
+            }
+            rows.push(row);
+        }
+        result.insert((*table).into(), rows);
+    }
+    Ok(result)
+}
+
+fn read_legacy_rows(
+    connection: &rusqlite::Connection,
+    deployment: &str,
+) -> Result<Rows, DatabaseError> {
     let mut result = Rows::new();
     for table in TABLES {
         let mut statement = connection.prepare(&format!(
@@ -84,24 +132,25 @@ fn row_insert(connection: &Connection, table: &str, row: &Row) -> Result<(), Dat
         .map(|s| format!("\"{s}\""))
         .collect::<Vec<_>>()
         .join(",");
-    let placeholders = std::iter::repeat_n("?", row.len())
+    let placeholders = (1..=row.len())
+        .map(|index| format!("${index}"))
         .collect::<Vec<_>>()
         .join(",");
     let values = row
         .values()
         .map(|v| match v {
-            Value::Null => Ok(rusqlite::types::Value::Null),
-            Value::String(s) => Ok(rusqlite::types::Value::Text(s.clone())),
+            Value::Null => Ok(crate::database::types::Value::Null),
+            Value::String(s) => Ok(crate::database::types::Value::Text(s.clone())),
             Value::Number(n) => n
                 .as_i64()
-                .map(rusqlite::types::Value::Integer)
+                .map(crate::database::types::Value::Integer)
                 .ok_or_else(|| invalid("invalid ownership number")),
             _ => Err(invalid("invalid ownership value")),
         })
         .collect::<Result<Vec<_>, _>>()?;
     connection.execute(
         &format!("INSERT INTO {table} ({columns}) VALUES ({placeholders})"),
-        rusqlite::params_from_iter(values),
+        crate::database::params_from_iter(values),
     )?;
     Ok(())
 }
@@ -164,9 +213,9 @@ fn database_blockers(
 ) -> Result<Vec<String>, DatabaseError> {
     let mut blockers = Vec::new();
     for table in TABLES {
-        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut statement = connection.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1")?;
         let columns = statement
-            .query_map([], |row| row.get::<_, String>(1))?
+            .query_map([*table], |row| row.get::<_, String>(0))?
             .collect::<Result<BTreeSet<_>, _>>()?;
         for row in &saved[*table] {
             if row.get("deployment_id").and_then(Value::as_str) != Some(&request.deployment_id)
@@ -191,7 +240,7 @@ fn database_blockers(
         let port = number(row, "port")?;
         let owner: Option<String> = connection
             .query_row(
-                "SELECT deployment_id FROM port_assignments WHERE port=?1",
+                "SELECT deployment_id FROM port_assignments WHERE port=$1",
                 [port],
                 |r| r.get(0),
             )
@@ -203,7 +252,7 @@ fn database_blockers(
             blockers.push(format!("port:{port}:assigned_to_another_deployment"));
         }
         let observed: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM observed_routes WHERE port=?1)",
+            "SELECT EXISTS(SELECT 1 FROM observed_routes WHERE port=$1)",
             [port],
             |r| r.get(0),
         )?;
@@ -215,7 +264,7 @@ fn database_blockers(
         let domain = text(row, "domain")?;
         let owner: Option<String> = connection
             .query_row(
-                "SELECT deployment_id FROM domain_routes WHERE domain=?1",
+                "SELECT deployment_id FROM domain_routes WHERE domain=$1",
                 [domain],
                 |r| r.get(0),
             )
@@ -227,7 +276,7 @@ fn database_blockers(
             blockers.push("route:assigned_to_another_deployment".into());
         }
         let observed: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM observed_routes WHERE domain=?1)",
+            "SELECT EXISTS(SELECT 1 FROM observed_routes WHERE domain=$1)",
             [domain],
             |r| r.get(0),
         )?;
@@ -261,16 +310,24 @@ impl Deployments {
             include_identities: false,
         };
         let id = request.deployment_id.clone();
-        let (backup, saved) = crate::planning_backup::inspect_with(&inspection, |c| {
-            read_rows(c, &id).map_err(|_| "cannot inspect scoped runtime rows".into())
-        })
+        let (backup, saved) = crate::planning_backup::inspect_with_sources(
+            &self.database,
+            &inspection,
+            |connection| {
+                read_legacy_rows(connection, &id)
+                    .map_err(|_| "cannot inspect scoped runtime rows".into())
+            },
+            |connection| {
+                read_rows(connection, &id).map_err(|_| "cannot inspect scoped runtime rows".into())
+            },
+        )
         .map_err(|_| invalid("saved runtime backup failed inspection"))?;
         if backup.backup_sha256 != request.backup_sha256 {
             return Err(invalid("saved runtime backup hash changed"));
         }
         let id = request.deployment_id.clone();
         let hash = request.backup_sha256.clone();
-        let old_receipt: Option<String> = self.database.call(move |c|c.query_row("SELECT receipt_json FROM deployment_recoveries WHERE deployment_id=?1 AND backup_sha256=?2",params![id,hash],|r|r.get(0)).optional().map_err(DatabaseError::from)).map_err(database_error)?;
+        let old_receipt: Option<String> = self.database.read(move |c|c.query_row("SELECT receipt_json FROM deployment_recoveries WHERE deployment_id=$1 AND backup_sha256=$2",params![id,hash],|r|r.get(0)).optional().map_err(DatabaseError::from)).map_err(database_error)?;
         if let Some(old) = old_receipt {
             let mut receipt: Receipt = serde_json::from_str(&old)
                 .map_err(|_| invalid("invalid saved runtime recovery receipt"))?;
@@ -287,7 +344,7 @@ impl Deployments {
         let id = request.deployment_id.clone();
         let current = self
             .database
-            .call(move |c| read_rows(c, &id))
+            .read(move |c| read_rows(c, &id))
             .map_err(database_error)?;
         let old = current["deployments"]
             .first()
@@ -801,7 +858,7 @@ fn apply_metadata(
         "generations",
     ] {
         connection.execute(
-            &format!("DELETE FROM {table} WHERE deployment_id=?1"),
+            &format!("DELETE FROM {table} WHERE deployment_id=$1"),
             [&request.deployment_id],
         )?;
     }
@@ -812,33 +869,37 @@ fn apply_metadata(
         .cloned()
         .collect::<Vec<_>>();
     let sql = format!(
-        "UPDATE deployments SET {} WHERE deployment_id=?",
+        "UPDATE deployments SET {} WHERE deployment_id=${}",
         columns
             .iter()
-            .map(|k| format!("\"{k}\"=?"))
+            .enumerate()
+            .map(|(index, k)| format!("\"{k}\"=${}", index + 1))
             .collect::<Vec<_>>()
-            .join(",")
+            .join(","),
+        columns.len() + 1
     );
     let mut values = columns
         .iter()
         .map(|k| match &saved_deployment[k] {
-            Value::Null => Ok(rusqlite::types::Value::Null),
-            Value::String(s) => Ok(rusqlite::types::Value::Text(s.clone())),
+            Value::Null => Ok(crate::database::types::Value::Null),
+            Value::String(s) => Ok(crate::database::types::Value::Text(s.clone())),
             Value::Number(n) => n
                 .as_i64()
-                .map(rusqlite::types::Value::Integer)
+                .map(crate::database::types::Value::Integer)
                 .ok_or_else(|| invalid("invalid recovered number")),
             _ => Err(invalid("invalid recovered value")),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    values.push(rusqlite::types::Value::Text(request.deployment_id.clone()));
-    connection.execute(&sql, rusqlite::params_from_iter(values))?;
+    values.push(crate::database::types::Value::Text(
+        request.deployment_id.clone(),
+    ));
+    connection.execute(&sql, crate::database::params_from_iter(values))?;
     for table in ["generations", "components", "port_assignments"] {
         for row in &recovered[table] {
             row_insert(connection, table, row)?;
         }
     }
-    connection.execute("INSERT INTO deployment_recoveries(recovery_id,repository_id,deployment_id,backup_sha256,before_sha256,at,actor,before_json,saved_json,receipt_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![receipt.recovery_id,request.repository_id,request.deployment_id,request.backup_sha256,receipt.live_sha256,now,actor,serde_json::to_string(before).map_err(|_|invalid("cannot retain current ownership"))?,serde_json::to_string(saved).map_err(|_|invalid("cannot retain saved ownership"))?,serde_json::to_string(receipt).map_err(|_|invalid("cannot retain recovery receipt"))?])?;
+    connection.execute("INSERT INTO deployment_recoveries(recovery_id,repository_id,deployment_id,backup_sha256,before_sha256,at,actor,before_json,saved_json,receipt_json) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",params![receipt.recovery_id,request.repository_id,request.deployment_id,request.backup_sha256,receipt.live_sha256,now,actor,serde_json::to_string(before).map_err(|_|invalid("cannot retain current ownership"))?,serde_json::to_string(saved).map_err(|_|invalid("cannot retain saved ownership"))?,serde_json::to_string(receipt).map_err(|_|invalid("cannot retain recovery receipt"))?])?;
     Ok(())
 }
 
@@ -873,13 +934,13 @@ mod tests {
             INSERT INTO port_assignments VALUES(20023,'d1111111111111111','db',0,'t','lease-db');
             INSERT INTO port_assignments VALUES(20053,'d1111111111111111','api',149,'t','lease-api');
             INSERT INTO domain_routes VALUES('preview','d1111111111111111','api',20053,149,'t','lease-api');")?;Ok(())}).unwrap();
-        let mut saved = database.call(|c| read_rows(c, DEPLOY)).unwrap();
+        let mut saved = database.read(|c| read_rows(c, DEPLOY)).unwrap();
         for row in saved.get_mut("port_assignments").unwrap() {
             row.remove("lease_id");
         }
         database.call(|c| {c.execute_batch("UPDATE deployments SET current_generation=15;
             DELETE FROM components WHERE name='db';DELETE FROM port_assignments WHERE component='db';")?;Ok(())}).unwrap();
-        let before = database.call(|c| read_rows(c, DEPLOY)).unwrap();
+        let before = database.read(|c| read_rows(c, DEPLOY)).unwrap();
         let expected = fingerprint(&before, "proof").unwrap();
         let request = Request {
             repository_id: REPO.into(),
@@ -964,7 +1025,7 @@ mod tests {
     #[test]
     fn runtime_conflicts_and_provenance_failure_leave_all_live_rows_intact() {
         let (_root, db, saved, before, request, receipt) = fixture();
-        db.call(|c| {c.execute_batch("CREATE TRIGGER fail_fixture BEFORE INSERT ON components BEGIN SELECT RAISE(ABORT,'fixture insertion failure'); END;")?;Ok(())}).unwrap();
+        db.call(|c| {c.execute_batch("CREATE FUNCTION fail_fixture_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture insertion failure'; END $$; CREATE TRIGGER fail_fixture BEFORE INSERT ON components FOR EACH ROW EXECUTE FUNCTION fail_fixture_insert();")?;Ok(())}).unwrap();
         let expected = before.clone();
         assert!(
             db.transaction(move |c| apply_metadata(
@@ -978,8 +1039,8 @@ mod tests {
             ))
             .is_err()
         );
-        assert_eq!(db.call(|c| read_rows(c, DEPLOY)).unwrap(), expected);
-        db.call(|c| {
+        assert_eq!(db.read(|c| read_rows(c, DEPLOY)).unwrap(), expected);
+        db.read(|c| {
             assert_eq!(
                 c.query_row("SELECT COUNT(*) FROM deployment_recoveries", [], |r| r
                     .get::<_, i64>(0))?,

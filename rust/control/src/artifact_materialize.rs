@@ -176,7 +176,7 @@ impl std::error::Error for MaterializeError {}
 pub type V2CallFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ResponseEnvelope, ProtocolError>> + Send + 'a>>;
 
-/// Injectable protocol-v2 call boundary used by materialization and tests.
+/// Injectable protocol-v3 call boundary used by materialization and tests.
 pub trait V2Call: Send + Sync {
     fn call<'a>(&'a self, operation: &'static str, params: Value) -> V2CallFuture<'a>;
 }

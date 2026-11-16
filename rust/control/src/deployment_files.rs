@@ -8,6 +8,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use devcoordinator2_api::results::{ProcessLogInfo, ProcessLogState};
 use rustix::fs::{self as unix_fs, AtFlags, Dir, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -16,6 +17,16 @@ use crate::platform::{HostRandom, RandomSource};
 
 const MAX_SECRET_BYTES: u64 = 4 * 1024;
 const MAX_LOG_BYTES: u64 = 64 * 1024;
+const PROCESS_LOG_GENERATIONS: usize = 8;
+const PROCESS_LOG_ATTEMPTS: usize = 8;
+
+struct ProcessLogEntry {
+    generation: u32,
+    attempt: Option<u32>,
+    name: String,
+    current_legacy: bool,
+    file: File,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnvironmentFormat {
@@ -85,6 +96,22 @@ impl DeploymentFiles {
             .join(format!("gen-{generation}")))
     }
 
+    /// Only these paths are managed frozen source, independent of source mode.
+    pub fn owned_generation(&self, deployment_id: &str, path: &Path) -> Option<u32> {
+        let generation = path
+            .file_name()?
+            .to_str()?
+            .strip_prefix("gen-")?
+            .parse::<u32>()
+            .ok()?;
+        self.generation_path(deployment_id, generation)
+            .ok()
+            .filter(|expected| expected == path)?;
+        let deployment = self.open_deployment(deployment_id, false).ok()??;
+        open_child_directory(&deployment, path.file_name()?.to_str()?, false, 0o755).ok()??;
+        Some(generation)
+    }
+
     pub fn environment_path(
         &self,
         deployment_id: &str,
@@ -121,6 +148,244 @@ impl DeploymentFiles {
             .deployment_dir(deployment_id)?
             .join("logs")
             .join(format!("{component}.log")))
+    }
+
+    pub fn generation_log_path(
+        &self,
+        deployment_id: &str,
+        component: &str,
+        generation: u32,
+    ) -> Result<PathBuf, DeploymentFileError> {
+        validate_component(component)?;
+        if generation == 0 {
+            return Err(DeploymentFileError::Invalid(
+                "generation must be positive".into(),
+            ));
+        }
+        Ok(self
+            .deployment_dir(deployment_id)?
+            .join("logs")
+            .join(format!("{component}-g{generation}.log")))
+    }
+
+    /// Reserve one immutable identity before submitting a process startup.
+    /// Retained names are the durable high-water mark across daemon restarts.
+    pub fn reserve_process_log(
+        &self,
+        deployment_id: &str,
+        component: &str,
+        generation: u32,
+        owner_uid: u32,
+        owner_gid: u32,
+    ) -> Result<PathBuf, DeploymentFileError> {
+        self.generation_log_path(deployment_id, component, generation)?;
+        self.ensure_layout(deployment_id, owner_uid, owner_gid)?;
+        let deployment = self
+            .open_deployment(deployment_id, false)?
+            .ok_or_else(|| DeploymentFileError::Io("deployment directory is unavailable".into()))?;
+        let logs = open_child_directory(&deployment, "logs", false, 0o755)?
+            .ok_or_else(|| DeploymentFileError::Io("log directory is unavailable".into()))?;
+        let mut entries = process_log_entries(&logs, component)?;
+        let attempt = entries
+            .iter()
+            .filter_map(|entry| entry.attempt)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| {
+                DeploymentFileError::Invalid("process attempt identity exhausted".into())
+            })?;
+        let name = format!("{component}-g{generation}-a{attempt}.log");
+        let descriptor = unix_fs::openat(
+            &logs,
+            name.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|error| io_error("reserve process startup log", error))?;
+        let file = File::from(descriptor);
+        unix_fs::fchmod(&file, Mode::from_raw_mode(0o600))
+            .map_err(|error| io_error("set process log mode", error))?;
+        fchown(&file, owner_uid, owner_gid)?;
+        file.sync_all()
+            .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
+        entries.push(ProcessLogEntry {
+            generation,
+            attempt: Some(attempt),
+            name: name.clone(),
+            current_legacy: false,
+            file,
+        });
+        let generations = entries
+            .iter()
+            .map(|entry| entry.generation)
+            .collect::<std::collections::BTreeSet<_>>();
+        let keep_generations = generations
+            .into_iter()
+            .rev()
+            .take(PROCESS_LOG_GENERATIONS)
+            .chain(std::iter::once(generation))
+            .collect::<std::collections::BTreeSet<_>>();
+        // Recovery of an older selected generation must keep its new attempt
+        // without increasing the generation bound.
+        let mut keep_generations = keep_generations;
+        while keep_generations.len() > PROCESS_LOG_GENERATIONS {
+            let remove = keep_generations
+                .iter()
+                .copied()
+                .find(|number| *number != generation)
+                .unwrap();
+            keep_generations.remove(&remove);
+        }
+        let mut keep_attempts = BTreeMap::new();
+        for number in &keep_generations {
+            let attempts = entries
+                .iter()
+                .filter(|entry| entry.generation == *number)
+                .filter_map(|entry| entry.attempt)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .rev()
+                .take(PROCESS_LOG_ATTEMPTS)
+                .collect::<std::collections::BTreeSet<_>>();
+            keep_attempts.insert(*number, attempts);
+        }
+        for entry in entries {
+            let keep = keep_attempts
+                .get(&entry.generation)
+                .is_some_and(|attempts| {
+                    entry
+                        .attempt
+                        .is_none_or(|attempt| attempts.contains(&attempt))
+                });
+            if !keep {
+                unix_fs::unlinkat(&logs, entry.name.as_str(), AtFlags::empty())
+                    .map_err(|error| io_error("prune process startup log", error))?;
+            }
+        }
+        logs.sync_all()
+            .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
+        Ok(self.deployment_dir(deployment_id)?.join("logs").join(name))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn read_process_log(
+        &self,
+        deployment_id: &str,
+        component: &str,
+        generation: u32,
+        attempt: Option<u32>,
+        tail_lines: u16,
+        allow_legacy_component: bool,
+    ) -> Result<(String, bool, ProcessLogInfo), DeploymentFileError> {
+        self.generation_log_path(deployment_id, component, generation)?;
+        if attempt == Some(0) || tail_lines == 0 || tail_lines > 5_000 {
+            return Err(DeploymentFileError::Invalid(
+                "attempt must be positive and tail_lines in 1..5000".into(),
+            ));
+        }
+        let entries = if let Some(deployment) = self.open_deployment(deployment_id, false)?
+            && let Some(logs) = open_child_directory(&deployment, "logs", false, 0o755)?
+        {
+            process_log_entries(&logs, component)?
+        } else {
+            Vec::new()
+        };
+        let retained_generations = entries
+            .iter()
+            .map(|entry| entry.generation)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .rev()
+            .take(PROCESS_LOG_GENERATIONS)
+            .collect();
+        let retained_attempts = entries
+            .iter()
+            .filter(|entry| entry.generation == generation)
+            .filter_map(|entry| entry.attempt)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .rev()
+            .take(PROCESS_LOG_ATTEMPTS)
+            .collect::<Vec<_>>();
+        let selected_attempt = attempt.or_else(|| retained_attempts.first().copied());
+        let selected = entries.iter().find(|entry| {
+            entry.generation == generation
+                && match selected_attempt {
+                    Some(attempt) => entry.attempt == Some(attempt),
+                    None => entry.current_legacy,
+                }
+        });
+        let mut info = ProcessLogInfo {
+            generation: Some(generation),
+            attempt: selected_attempt,
+            state: ProcessLogState::Unavailable,
+            retained_generations,
+            retained_attempts,
+            max_generations: PROCESS_LOG_GENERATIONS as u8,
+            max_attempts_per_generation: PROCESS_LOG_ATTEMPTS as u8,
+        };
+        let Some(selected) = selected else {
+            if allow_legacy_component && attempt.is_none() {
+                let path = self.log_path(deployment_id, component)?;
+                if self.log_exists(deployment_id, &path)? {
+                    let (tail, truncated) =
+                        self.read_log_tail_path(deployment_id, &path, tail_lines)?;
+                    info.generation = None;
+                    info.attempt = None;
+                    info.state = ProcessLogState::Legacy;
+                    return Ok((tail, truncated, info));
+                }
+            }
+            return Ok((String::new(), false, info));
+        };
+        let file = selected
+            .file
+            .try_clone()
+            .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
+        let (tail, truncated) = read_log_tail_file(file, tail_lines)?;
+        info.state = if selected.attempt.is_none() {
+            ProcessLogState::Legacy
+        } else if tail.is_empty() {
+            ProcessLogState::Empty
+        } else {
+            ProcessLogState::Available
+        };
+        Ok((tail, truncated, info))
+    }
+
+    fn log_exists(&self, deployment_id: &str, path: &Path) -> Result<bool, DeploymentFileError> {
+        let Some(deployment) = self.open_deployment(deployment_id, false)? else {
+            return Ok(false);
+        };
+        let Some(logs) = open_child_directory(&deployment, "logs", false, 0o755)? else {
+            return Ok(false);
+        };
+        let name = path
+            .file_name()
+            .ok_or_else(|| DeploymentFileError::Invalid("invalid log name".into()))?;
+        match unix_fs::openat(
+            &logs,
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
+            Ok(descriptor) => {
+                let file = File::from(descriptor);
+                if !file
+                    .metadata()
+                    .map_err(|error| DeploymentFileError::Io(error.to_string()))?
+                    .is_file()
+                {
+                    return Err(DeploymentFileError::Invalid(
+                        "deployment log is not a regular file".into(),
+                    ));
+                }
+                Ok(true)
+            }
+            Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(error) => Err(io_error("open deployment log", error)),
+        }
     }
 
     pub fn scratch_path(
@@ -447,22 +712,45 @@ impl DeploymentFiles {
         component: &str,
         tail_lines: u16,
     ) -> Result<(String, bool), DeploymentFileError> {
+        let path = self.log_path(deployment_id, component)?;
+        self.read_log_tail_path(deployment_id, &path, tail_lines)
+    }
+
+    pub fn read_generation_log_tail(
+        &self,
+        deployment_id: &str,
+        component: &str,
+        generation: u32,
+        tail_lines: u16,
+    ) -> Result<(String, bool), DeploymentFileError> {
+        let path = self.generation_log_path(deployment_id, component, generation)?;
+        self.read_log_tail_path(deployment_id, &path, tail_lines)
+    }
+
+    fn read_log_tail_path(
+        &self,
+        deployment_id: &str,
+        path: &Path,
+        tail_lines: u16,
+    ) -> Result<(String, bool), DeploymentFileError> {
         if tail_lines == 0 || tail_lines > 5_000 {
             return Err(DeploymentFileError::Invalid(
                 "tail_lines must be in 1..5000".into(),
             ));
         }
-        validate_component_or_build(component)?;
         let Some(deployment) = self.open_deployment(deployment_id, false)? else {
             return Ok((String::new(), false));
         };
         let Some(logs) = open_child_directory(&deployment, "logs", false, 0o755)? else {
             return Ok((String::new(), false));
         };
-        let name = format!("{component}.log");
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| DeploymentFileError::Invalid("deployment log path is invalid".into()))?;
         let descriptor = match unix_fs::openat(
             &logs,
-            name.as_str(),
+            name,
             OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
             Mode::empty(),
         ) {
@@ -470,27 +758,7 @@ impl DeploymentFiles {
             Err(rustix::io::Errno::NOENT) => return Ok((String::new(), false)),
             Err(error) => return Err(io_error("open deployment log", error)),
         };
-        let mut file = File::from(descriptor);
-        let metadata = file
-            .metadata()
-            .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
-        if !metadata.is_file() {
-            return Err(DeploymentFileError::Invalid(
-                "deployment log is not a regular file".into(),
-            ));
-        }
-        let start = metadata.len().saturating_sub(MAX_LOG_BYTES);
-        file.seek(SeekFrom::Start(start))
-            .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
-        let mut bytes = Vec::new();
-        file.take(MAX_LOG_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
-        bytes.truncate(MAX_LOG_BYTES as usize);
-        let text = String::from_utf8_lossy(&bytes);
-        let lines = text.lines().collect::<Vec<_>>();
-        let first = lines.len().saturating_sub(usize::from(tail_lines));
-        Ok((lines[first..].join("\n"), start > 0 || first > 0))
+        read_log_tail_file(File::from(descriptor), tail_lines)
     }
 
     pub fn validate_repository_file(
@@ -571,6 +839,113 @@ impl DeploymentFiles {
         }
         Ok(directory)
     }
+}
+
+fn read_log_tail_file(
+    mut file: File,
+    tail_lines: u16,
+) -> Result<(String, bool), DeploymentFileError> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(DeploymentFileError::Invalid(
+            "deployment log is not a regular file".into(),
+        ));
+    }
+    let start = metadata.len().saturating_sub(MAX_LOG_BYTES);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_LOG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
+    bytes.truncate(MAX_LOG_BYTES as usize);
+    let text = String::from_utf8_lossy(&bytes);
+    let lines = text.lines().collect::<Vec<_>>();
+    let first = lines.len().saturating_sub(usize::from(tail_lines));
+    Ok((lines[first..].join("\n"), start > 0 || first > 0))
+}
+
+fn process_log_entries(
+    logs: &File,
+    component: &str,
+) -> Result<Vec<ProcessLogEntry>, DeploymentFileError> {
+    validate_component(component)?;
+    let prefix = format!("{component}-g");
+    let directory = Dir::read_from(logs).map_err(|error| io_error("list process logs", error))?;
+    let mut entries = Vec::new();
+    for (index, entry) in directory.enumerate() {
+        if index >= 10_000 {
+            return Err(DeploymentFileError::Invalid(
+                "process log directory exceeds its bounded catalog".into(),
+            ));
+        }
+        let entry = entry.map_err(|error| io_error("read process log entry", error))?;
+        let Ok(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        let Some(suffix) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some((identity, rotation)) = suffix.split_once(".log") else {
+            continue;
+        };
+        if !rotation.is_empty()
+            && !rotation.strip_prefix('.').is_some_and(|value| {
+                value
+                    .parse::<u8>()
+                    .is_ok_and(|number| (1..=8).contains(&number))
+            })
+        {
+            continue;
+        }
+        let (generation, attempt) = if let Some((generation, attempt)) = identity.split_once("-a") {
+            if !rotation.is_empty() {
+                continue;
+            }
+            let Ok(attempt) = attempt.parse::<u32>() else {
+                continue;
+            };
+            if attempt == 0 {
+                continue;
+            }
+            (generation, Some(attempt))
+        } else {
+            (identity, None)
+        };
+        let Ok(generation) = generation.parse::<u32>() else {
+            continue;
+        };
+        if generation == 0 {
+            continue;
+        }
+        let descriptor = unix_fs::openat(
+            logs,
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|error| io_error("open process log entry", error))?;
+        let file = File::from(descriptor);
+        if !file
+            .metadata()
+            .map_err(|error| DeploymentFileError::Io(error.to_string()))?
+            .is_file()
+        {
+            return Err(DeploymentFileError::Invalid(
+                "process log must be a regular non-symlink file".into(),
+            ));
+        }
+        entries.push(ProcessLogEntry {
+            generation,
+            attempt,
+            name: name.to_owned(),
+            current_legacy: attempt.is_none() && rotation.is_empty(),
+            file,
+        });
+    }
+    Ok(entries)
 }
 
 fn validate_deployment_id(value: &str) -> Result<(), DeploymentFileError> {
@@ -1110,6 +1485,125 @@ mod tests {
             files.read_log_tail(deployment, "api", 2).unwrap(),
             ("two\nthree".into(), true)
         );
+        let generation_log = files.generation_log_path(deployment, "api", 7).unwrap();
+        fs::write(&generation_log, "candidate-start\nfailed\n").unwrap();
+        assert_eq!(
+            files
+                .read_generation_log_tail(deployment, "api", 7, 2)
+                .unwrap(),
+            ("candidate-start\nfailed".into(), false)
+        );
+        let first = files
+            .reserve_process_log(deployment, "api", 8, uid, gid)
+            .unwrap();
+        let empty = files
+            .read_process_log(deployment, "api", 8, None, 10, true)
+            .unwrap();
+        assert_eq!(empty.0, "");
+        assert_eq!(empty.2.state, ProcessLogState::Empty);
+        assert_eq!(empty.2.attempt, Some(1));
+        assert_eq!(
+            fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::write(&first, "first startup\n").unwrap();
+        let failed = files
+            .reserve_process_log(deployment, "api", 9, uid, gid)
+            .unwrap();
+        fs::write(&failed, "original candidate failure\n").unwrap();
+        for _ in 0..12 {
+            files
+                .reserve_process_log(deployment, "api", 8, uid, gid)
+                .unwrap();
+        }
+        let original = files
+            .read_process_log(deployment, "api", 9, Some(2), 10, false)
+            .unwrap();
+        assert_eq!(original.0, "original candidate failure");
+        assert_eq!(original.2.state, ProcessLogState::Available);
+        let latest = files
+            .read_process_log(deployment, "api", 8, None, 10, false)
+            .unwrap();
+        assert_eq!(latest.2.attempt, Some(14));
+        assert_eq!(latest.2.retained_attempts.len(), 8);
+        assert_eq!(
+            files
+                .read_process_log(deployment, "api", 8, Some(1), 10, false)
+                .unwrap()
+                .2
+                .state,
+            ProcessLogState::Unavailable
+        );
+        let logs = File::open(failed.parent().unwrap()).unwrap();
+        let entries = process_log_entries(&logs, "api").unwrap();
+        let captured = entries
+            .into_iter()
+            .find(|entry| entry.generation == 9 && entry.attempt == Some(2))
+            .unwrap()
+            .file;
+        for generation in 10..=18 {
+            files
+                .reserve_process_log(deployment, "api", generation, uid, gid)
+                .unwrap();
+        }
+        assert!(!failed.exists());
+        assert_eq!(
+            read_log_tail_file(captured, 10).unwrap().0,
+            "original candidate failure"
+        );
+        let reopened =
+            DeploymentFiles::new(files.deployments_root.clone(), files.secrets_root.clone());
+        reopened
+            .reserve_process_log(deployment, "api", 9, uid, gid)
+            .unwrap();
+        let restored = reopened
+            .read_process_log(deployment, "api", 9, None, 10, false)
+            .unwrap();
+        assert_eq!(restored.2.attempt, Some(24));
+        assert_eq!(restored.2.retained_generations.len(), 8);
+        assert_eq!(
+            reopened
+                .read_process_log(deployment, "api", 9, Some(2), 10, false)
+                .unwrap()
+                .2
+                .state,
+            ProcessLogState::Unavailable,
+            "recovery reused an expired diagnostic identity"
+        );
+        let outside = temporary.path().join("outside-log");
+        fs::write(&outside, "preserved private bytes").unwrap();
+        symlink(&outside, failed.parent().unwrap().join("api-g20-a999.log")).unwrap();
+        assert!(
+            reopened
+                .read_process_log(deployment, "api", 20, Some(999), 10, false)
+                .is_err()
+        );
+        assert!(
+            reopened
+                .reserve_process_log(deployment, "api", 20, uid, gid)
+                .is_err()
+        );
+        assert!(
+            reopened
+                .read_process_log(deployment, "../api", 20, None, 10, false)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(outside).unwrap(),
+            "preserved private bytes"
+        );
+        let managed = files.generation_path(deployment, 1).unwrap();
+        fs::create_dir(&managed).unwrap();
+        assert_eq!(files.owned_generation(deployment, &managed), Some(1));
+        assert_eq!(files.owned_generation(deployment, temporary.path()), None);
+        let linked = files.generation_path(deployment, 2).unwrap();
+        symlink(&managed, &linked).unwrap();
+        assert_eq!(files.owned_generation(deployment, &linked), None);
+        let original = files.deployment_dir(deployment).unwrap();
+        let saved = temporary.path().join("saved-deployment");
+        fs::rename(&original, &saved).unwrap();
+        symlink(&saved, &original).unwrap();
+        assert_eq!(files.owned_generation(deployment, &managed), None);
     }
 
     #[test]

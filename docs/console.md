@@ -2,7 +2,7 @@
 
 Static browser application in `console/` (no build step, no dependencies),
 served by the edge on the console host to signed-in users, driven only by
-the edge's `/api/v2/<operation>` bridge. Every visible enabled control calls the
+the edge's `/api/v3/<operation>` bridge. Every visible enabled control calls the
 real API and re-reads state afterwards; nothing is a placeholder, nothing
 fakes success, and no view carries fixture numbers.
 

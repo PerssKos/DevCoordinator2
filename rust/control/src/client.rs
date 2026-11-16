@@ -20,27 +20,11 @@ pub async fn call(
     client: ClientContext,
 ) -> Result<ResponseEnvelope, ProtocolError> {
     let operation = operation.into();
-    let review_action = matches!(
-        operation.as_str(),
-        "review.prepare" | "review.record" | "performance.overview" | "performance.review"
-    );
-    // Passive waits keep the request half open until Coordinator returns a
-    // terminal result.  Closing the write side immediately after submitting a
-    // test/admission/deployment wait is indistinguishable from a client
-    // disconnect to the daemon and used to cancel the accepted wait before it
-    // could produce a response.
-    let blocking_wait = is_passive_wait_operation(&operation);
-    let long_running_action = matches!(
-        operation.as_str(),
-        "deployment.apply"
-            | "deployment.rollback"
-            | "deployment.start"
-            | "deployment.stop"
-            | "deployment.restart"
-            | "deployment.remove"
-            | "deployment.recovery"
-            | "plan.recovery"
-    );
+    let definition = devcoordinator2_api::operation(&operation)
+        .ok_or_else(|| ProtocolError::new(ErrorCode::OperationUnknown, "unknown operation"))?;
+    (definition.validate_params)(&params)?;
+    let blocking_wait = definition.passive_wait();
+    let response_timeout = definition.response_timeout_seconds();
     let request = RequestEnvelope {
         protocol: PROTOCOL_VERSION,
         id: request_id(),
@@ -56,8 +40,7 @@ pub async fn call(
                 &request,
                 &bridge_directory,
                 blocking_wait,
-                long_running_action,
-                review_action,
+                response_timeout,
             )
             .await;
         }
@@ -113,16 +96,15 @@ pub async fn call(
                 ),
             ));
         }
-    } else if long_running_action {
-        read.await.map_err(transport_error)?;
-    } else {
-        let reply_seconds = if review_action { 20 } else { 10 };
+    } else if let Some(reply_seconds) = response_timeout {
         timeout(Duration::from_secs(reply_seconds), read)
             .await
             .map_err(|_| {
                 ProtocolError::new(ErrorCode::DaemonUnavailable, "daemon response timed out")
             })?
             .map_err(transport_error)?;
+    } else {
+        read.await.map_err(transport_error)?;
     }
     if blocking_wait && response.iter().all(u8::is_ascii_whitespace) {
         return Err(reconnectable_wait_error(
@@ -136,14 +118,11 @@ pub async fn call(
             "daemon response exceeds size cap",
         ));
     }
-    serde_json::from_slice(&response).map_err(|error| {
-        ProtocolError::new(ErrorCode::ProtocolInvalid, "daemon response is invalid")
-            .with_detail(error.to_string())
-    })
+    decode_bridge_response(&response, &request.id)
 }
 
 pub(crate) fn is_passive_wait_operation(operation: &str) -> bool {
-    devcoordinator2_api::is_deferred_wait(operation)
+    devcoordinator2_api::operation(operation).is_some_and(|definition| definition.passive_wait())
 }
 
 pub(crate) fn reconnectable_wait_error(request: &RequestEnvelope, reason: &str) -> ProtocolError {
@@ -196,8 +175,7 @@ async fn call_via_sandbox_bridge(
     request: &RequestEnvelope,
     directory: &Path,
     blocking_wait: bool,
-    long_running_action: bool,
-    review_action: bool,
+    response_timeout: Option<u64>,
 ) -> Result<ResponseEnvelope, ProtocolError> {
     let id = &request.id;
     let request_path = directory.join(format!("{id}.request"));
@@ -214,11 +192,7 @@ async fn call_via_sandbox_bridge(
         ));
     }
     write_bridge_request(directory, &request_path, &encoded)?;
-    let deadline = if blocking_wait || long_running_action {
-        None
-    } else {
-        Some(Instant::now() + Duration::from_secs(if review_action { 20 } else { 10 }))
-    };
+    let deadline = response_timeout.map(|seconds| Instant::now() + Duration::from_secs(seconds));
     let mut delay = Duration::from_millis(10);
     loop {
         match read_bridge_response(&response_path) {
@@ -285,9 +259,16 @@ fn decode_bridge_response(
         ProtocolError::new(ErrorCode::ProtocolInvalid, "daemon response is invalid")
             .with_detail(error.to_string())
     })?;
-    let id = match &response {
-        ResponseEnvelope::Success { id, .. } | ResponseEnvelope::Failure { id, .. } => id,
+    let (id, protocol) = match &response {
+        ResponseEnvelope::Success { id, protocol, .. }
+        | ResponseEnvelope::Failure { id, protocol, .. } => (id, protocol),
     };
+    if *protocol != PROTOCOL_VERSION {
+        return Err(ProtocolError::new(
+            ErrorCode::ProtocolUnsupported,
+            "daemon response must use protocol 3",
+        ));
+    }
     if id != expected_id {
         return Err(ProtocolError::new(
             ErrorCode::ProtocolInvalid,
@@ -381,7 +362,7 @@ mod tests {
             params: serde_json::json!({}),
             client: ClientContext::default(),
         };
-        let response = call_via_sandbox_bridge(&request, &directory, false, false, false)
+        let response = call_via_sandbox_bridge(&request, &directory, false, Some(10))
             .await
             .unwrap();
         assert!(response.is_ok());
@@ -436,6 +417,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn recovery_waits_for_verified_large_snapshot_results() {
         for operation in ["plan.recovery", "deployment.recovery"] {
+            let mut params = serde_json::json!({
+                "repository_id":"fixture-repository",
+                "transaction_dir":"/fixture/recovery",
+                "backup_sha256":"a".repeat(64)
+            });
+            if operation == "deployment.recovery" {
+                params["deployment_id"] = "fixture-deployment".into();
+            }
             let temporary = tempfile::tempdir().unwrap();
             let socket = temporary.path().join("daemon.sock");
             let listener = UnixListener::bind(&socket).unwrap();
@@ -457,15 +446,9 @@ mod tests {
                     .await
                     .unwrap();
             });
-            let result = call(
-                &socket,
-                operation,
-                serde_json::json!({}),
-                ClientContext::default(),
-            )
-            .await;
-            server.await.unwrap();
+            let result = call(&socket, operation, params, ClientContext::default()).await;
             assert!(result.unwrap().is_ok());
+            server.await.unwrap();
         }
     }
 
@@ -484,7 +467,7 @@ mod tests {
             client: ClientContext::default(),
         };
         let pending = tokio::spawn(async move {
-            call_via_sandbox_bridge(&request, &pending_directory, false, true, false).await
+            call_via_sandbox_bridge(&request, &pending_directory, false, None).await
         });
         for _ in 0..1024 {
             if directory.join("recovery1234.request").exists() {
@@ -551,6 +534,29 @@ mod tests {
             ("review.prepare", 21, false),
             ("review.receipt", 11, false),
         ] {
+            let params = match operation {
+                "review.prepare" => serde_json::json!({
+                    "repository_id":"fixture", "window_start_ms":1, "window_end_ms":2
+                }),
+                "review.receipt" => serde_json::json!({"reference":"review-fixture@1"}),
+                "review.record" => serde_json::json!({
+                    "expected_revision":0,
+                    "record":{
+                        "version":1,"repositoryId":"fixture","projectId":"fixture",
+                        "windowStartMs":1,"windowEndMs":2,
+                        "experiment":{
+                            "hypothesis":"Transport fixture", "evidenceRefs":[],
+                            "alternatives":[], "chosenAction":"Measure reply deadline",
+                            "baseline":{"evidenceRefs":[],"interpretation":"Fixture","missingMeasurements":[]},
+                            "successCriteria":"Expected transport deadline", "rollbackCondition":"Fixture",
+                            "disposition":"inconclusive", "resultEvidenceRefs":[],
+                            "scopeRepoId":"fixture", "preservesQuality":true,
+                            "reason":"Transport fixture", "observations":[]
+                        }
+                    }
+                }),
+                _ => unreachable!(),
+            };
             let temporary = tempfile::tempdir().unwrap();
             let socket = temporary.path().join("daemon.sock");
             let listener = UnixListener::bind(&socket).unwrap();
@@ -575,15 +581,12 @@ mod tests {
                     .await;
             });
             let pending = tokio::spawn(async move {
-                call(
-                    &socket,
-                    operation,
-                    serde_json::json!({}),
-                    ClientContext::default(),
-                )
-                .await
+                call(&socket, operation, params, ClientContext::default()).await
             });
-            ready_receiver.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), ready_receiver)
+                .await
+                .expect("client must reach the mock transport")
+                .unwrap();
             tokio::time::pause();
             tokio::time::advance(Duration::from_secs(delay_seconds)).await;
             let result = if succeeds {

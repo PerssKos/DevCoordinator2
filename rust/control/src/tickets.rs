@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use crate::database::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -33,7 +33,7 @@ pub enum TicketError {
     #[error("ticket storage is unavailable")]
     Database(#[from] DatabaseError),
     #[error("ticket storage could not read or save a record")]
-    Sqlite(#[from] rusqlite::Error),
+    Query(#[from] crate::database::Error),
     #[error("could not allocate a ticket identity")]
     Identity,
 }
@@ -121,7 +121,7 @@ impl TicketStore {
         let upstream = normalize_upstream(upstream)?;
         self.write(move |db| {
             let changed = db.execute(
-                "UPDATE ticket_settings SET upstream=?1,revision=revision+1 WHERE singleton=1 AND revision=?2",
+                "UPDATE ticket_settings SET upstream=$1,revision=revision+1 WHERE singleton=1 AND revision=$2",
                 params![upstream, sql_integer(expected_revision)?],
             )?;
             if changed != 1 { return Err(TicketError::Conflict); }
@@ -141,8 +141,13 @@ impl TicketStore {
         let at = at.to_owned();
         let upstream = self.upstream.clone();
         self.write(move |db| {
+            db.query_row(
+                "SELECT pg_advisory_xact_lock(hashtextextended('ticket-create:'||$1||':'||$2,0))",
+                params![input.author.server,input.request_key],
+                |_| Ok(()),
+            )?;
             let prior: Option<(String,String)> = db.query_row(
-                "SELECT ticket_id,fingerprint FROM feature_tickets WHERE origin=?1 AND request_key=?2",
+                "SELECT ticket_id,fingerprint FROM feature_tickets WHERE origin=$1 AND request_key=$2",
                 params![input.author.server,input.request_key], |row| Ok((row.get(0)?,row.get(1)?)),
             ).optional()?;
             if let Some((prior_id, prior_fingerprint)) = prior {
@@ -150,7 +155,7 @@ impl TicketStore {
                 return ticket(db, &prior_id);
             }
             db.execute(
-                "INSERT INTO feature_tickets(ticket_id,upstream,origin,author_name,title,body,request_key,fingerprint,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+                "INSERT INTO feature_tickets(ticket_id,upstream,origin,author_name,title,body,request_key,fingerprint,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)",
                 params![id,upstream,input.author.server,input.author.name,input.title,input.body,input.request_key,fingerprint,at],
             )?;
             insert_files(db, &id, None, files)?;
@@ -177,7 +182,7 @@ impl TicketStore {
         let origin = origin.map(str::to_owned);
         self.read(move |db| {
             let mut query = db.prepare(
-                "SELECT ticket_id,upstream,origin,title,closed,revision,created_at,updated_at,(SELECT COUNT(*) FROM ticket_comments c WHERE c.ticket_id=t.ticket_id) FROM feature_tickets t WHERE deleted=0 AND (?1 IS NULL OR origin=?1) AND (?2 IS NULL OR closed=?2) ORDER BY updated_at DESC,ticket_id DESC LIMIT ?3 OFFSET ?4",
+                "SELECT ticket_id,upstream,origin,title,closed,revision,created_at,updated_at,(SELECT COUNT(*) FROM ticket_comments c WHERE c.ticket_id=t.ticket_id) FROM feature_tickets t WHERE deleted=0 AND ($1::text IS NULL OR origin=$1) AND ($2::bigint IS NULL OR closed=$2) ORDER BY updated_at DESC,ticket_id DESC LIMIT $3 OFFSET $4",
             )?;
             let rows = query.query_map(params![origin,closed,limit+1,offset], summary_row)?;
             let items = rows.collect::<Result<Vec<_>,_>>()?;
@@ -206,7 +211,7 @@ impl TicketStore {
         );
         self.write(move |db| {
             check_revision(db, &id, expected_revision)?;
-            db.execute("UPDATE feature_tickets SET title=?2,body=?3,revision=revision+1,updated_at=?4 WHERE ticket_id=?1", params![id,title,body,at])?;
+            db.execute("UPDATE feature_tickets SET title=$2,body=$3,revision=revision+1,updated_at=$4 WHERE ticket_id=$1", params![id,title,body,at])?;
             history(db, &id, "edited", &author, &at, expected_revision + 1)?;
             ticket(db, &id)
         })
@@ -225,7 +230,7 @@ impl TicketStore {
         let (id, at) = (id.to_owned(), at.to_owned());
         self.write(move |db| {
             check_revision(db, &id, expected_revision)?;
-            db.execute("UPDATE feature_tickets SET closed=?2,revision=revision+1,updated_at=?3 WHERE ticket_id=?1", params![id,closed,at])?;
+            db.execute("UPDATE feature_tickets SET closed=$2,revision=revision+1,updated_at=$3 WHERE ticket_id=$1", params![id,closed,at])?;
             history(db, &id, if closed { "closed" } else { "reopened" }, &author, &at, expected_revision + 1)?;
             ticket(db, &id)
         })
@@ -245,7 +250,7 @@ impl TicketStore {
         let (id, at) = (id.to_owned(), at.to_owned());
         self.write(move |db| {
             check_revision(db, &id, expected_revision)?;
-            db.execute("UPDATE feature_tickets SET deleted=1,revision=revision+1,updated_at=?2 WHERE ticket_id=?1", params![id,at])?;
+            db.execute("UPDATE feature_tickets SET deleted=1,revision=revision+1,updated_at=$2 WHERE ticket_id=$1", params![id,at])?;
             history(db, &id, "removed", &author, &at, expected_revision + 1)
         })
     }
@@ -260,18 +265,19 @@ impl TicketStore {
         let id = new_id("comment")?;
         let at = at.to_owned();
         self.write(move |db| {
+            db.query_row("SELECT ticket_id FROM feature_tickets WHERE ticket_id=$1 FOR UPDATE", [&input.ticket_id], |_| Ok(()))?;
             let parent = ticket(db, &input.ticket_id)?;
             let prior: Option<(String,String)> = db.query_row(
-                "SELECT comment_id,fingerprint FROM ticket_comments WHERE ticket_id=?1 AND server=?2 AND request_key=?3",
+                "SELECT comment_id,fingerprint FROM ticket_comments WHERE ticket_id=$1 AND server=$2 AND request_key=$3",
                 params![input.ticket_id,input.author.server,input.request_key], |row| Ok((row.get(0)?,row.get(1)?)),
             ).optional()?;
             if let Some((prior_id, prior_fingerprint)) = prior {
                 if prior_fingerprint != fingerprint { return Err(TicketError::IdempotencyConflict); }
                 return comment(db, &prior_id);
             }
-            db.execute("INSERT INTO ticket_comments(comment_id,ticket_id,server,author_name,body,request_key,fingerprint,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![id,input.ticket_id,input.author.server,input.author.name,input.body,input.request_key,fingerprint,at])?;
+            db.execute("INSERT INTO ticket_comments(comment_id,ticket_id,server,author_name,body,request_key,fingerprint,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", params![id,input.ticket_id,input.author.server,input.author.name,input.body,input.request_key,fingerprint,at])?;
             insert_files(db, &input.ticket_id, Some(&id), files)?;
-            db.execute("UPDATE feature_tickets SET revision=revision+1,updated_at=?2 WHERE ticket_id=?1", params![input.ticket_id,at])?;
+            db.execute("UPDATE feature_tickets SET revision=revision+1,updated_at=$2 WHERE ticket_id=$1", params![input.ticket_id,at])?;
             history(db, &input.ticket_id, "commented", &input.author, &at, parent.summary.revision + 1)?;
             comment(db, &id)
         })
@@ -287,7 +293,7 @@ impl TicketStore {
         let id = id.to_owned();
         self.read(move |db| {
             ticket(db, &id)?;
-            let mut query = db.prepare("SELECT comment_id FROM ticket_comments WHERE ticket_id=?1 ORDER BY sequence LIMIT ?2 OFFSET ?3")?;
+            let mut query = db.prepare("SELECT comment_id FROM ticket_comments WHERE ticket_id=$1 ORDER BY sequence LIMIT $2 OFFSET $3")?;
             let ids = query.query_map(params![id,limit+1,offset], |r| r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
             let items = ids.iter().map(|id| comment(db,id)).collect::<Result<Vec<_>,_>>()?;
             page(items, offset, limit)
@@ -314,9 +320,9 @@ impl TicketStore {
         );
         self.read(move |db| {
             ticket(db, &ticket_id)?;
-            let attachment = db.query_row("SELECT attachment_id,name,content_type,byte_size,sha256 FROM ticket_attachments WHERE attachment_id=?1 AND ticket_id=?2 AND comment_id IS ?3", params![file_id,ticket_id,comment_id], attachment_row).optional()?.ok_or(TicketError::NotFound)?;
+            let attachment = db.query_row("SELECT attachment_id,name,content_type,byte_size,sha256 FROM ticket_attachments WHERE attachment_id=$1 AND ticket_id=$2 AND comment_id IS NOT DISTINCT FROM $3", params![file_id,ticket_id,comment_id], attachment_row).optional()?.ok_or(TicketError::NotFound)?;
             if offset > attachment.byte_size { return Err(invalid("file offset exceeds its size")); }
-            let bytes: Vec<u8> = db.query_row("SELECT substr(content,?2,?3) FROM ticket_attachments WHERE attachment_id=?1", params![file_id,sql_integer(offset+1)?,max_bytes as i64], |row| row.get(0))?;
+            let bytes: Vec<u8> = db.query_row("SELECT substring(content from $2::integer for $3::integer) FROM ticket_attachments WHERE attachment_id=$1", params![file_id,sql_integer(offset+1)?,max_bytes as i64], |row| row.get(0))?;
             let end = offset + bytes.len() as u64;
             Ok(FileChunk { next_offset: (end < attachment.byte_size).then_some(end), attachment, offset, bytes })
         })
@@ -326,7 +332,7 @@ impl TicketStore {
         &self,
         work: impl FnOnce(&Connection) -> Result<T, TicketError> + Send + 'static,
     ) -> Result<T, TicketError> {
-        self.database.call(move |db| Ok(work(db)))?
+        self.database.read(move |db| Ok(work(db)))?
     }
 
     fn write<T: Send + 'static>(
@@ -540,17 +546,17 @@ fn sql_integer(value: u64) -> Result<i64, TicketError> {
         .map_err(|_| invalid("integer exceeds the storage range"))
 }
 
-fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+fn unsigned(row: &crate::database::Row<'_>, index: usize) -> crate::database::Result<u64> {
     row.get::<_, i64>(index)?.try_into().map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
+        crate::database::Error::FromSqlConversionFailure(
             index,
-            rusqlite::types::Type::Integer,
+            crate::database::types::Type::Integer,
             Box::new(error),
         )
     })
 }
 
-fn summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TicketSummary> {
+fn summary_row(row: &crate::database::Row<'_>) -> crate::database::Result<TicketSummary> {
     Ok(TicketSummary {
         id: row.get(0)?,
         upstream: row.get(1)?,
@@ -566,7 +572,7 @@ fn summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TicketSummary> {
 
 fn ticket(db: &Connection, id: &str) -> Result<Ticket, TicketError> {
     let mut result = db.query_row(
-        "SELECT ticket_id,upstream,origin,title,closed,revision,created_at,updated_at,(SELECT COUNT(*) FROM ticket_comments c WHERE c.ticket_id=t.ticket_id),author_name,body FROM feature_tickets t WHERE ticket_id=?1 AND deleted=0",
+        "SELECT ticket_id,upstream,origin,title,closed,revision,created_at,updated_at,(SELECT COUNT(*) FROM ticket_comments c WHERE c.ticket_id=t.ticket_id),author_name,body FROM feature_tickets t WHERE ticket_id=$1 AND deleted=0",
         [id], |row| { let summary = summary_row(row)?; Ok(Ticket { author: Author { server: summary.origin.clone(), name: row.get(9)? }, summary, body: row.get(10)?, attachments: vec![] }) },
     ).optional()?.ok_or(TicketError::NotFound)?;
     result.attachments = attachments(db, id, None)?;
@@ -575,14 +581,14 @@ fn ticket(db: &Connection, id: &str) -> Result<Ticket, TicketError> {
 
 fn comment(db: &Connection, id: &str) -> Result<Comment, TicketError> {
     let mut result = db.query_row(
-        "SELECT comment_id,ticket_id,server,author_name,body,created_at FROM ticket_comments WHERE comment_id=?1",
+        "SELECT comment_id,ticket_id,server,author_name,body,created_at FROM ticket_comments WHERE comment_id=$1",
         [id], |row| Ok(Comment { id: row.get(0)?, ticket_id: row.get(1)?, author: Author {server:row.get(2)?,name:row.get(3)?}, body: row.get(4)?, created_at: row.get(5)?, attachments:vec![] }),
     ).optional()?.ok_or(TicketError::NotFound)?;
     result.attachments = attachments(db, &result.ticket_id, Some(id))?;
     Ok(result)
 }
 
-fn attachment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Attachment> {
+fn attachment_row(row: &crate::database::Row<'_>) -> crate::database::Result<Attachment> {
     Ok(Attachment {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -597,7 +603,7 @@ fn attachments(
     ticket_id: &str,
     comment_id: Option<&str>,
 ) -> Result<Vec<Attachment>, TicketError> {
-    let mut query = db.prepare("SELECT attachment_id,name,content_type,byte_size,sha256 FROM ticket_attachments WHERE ticket_id=?1 AND comment_id IS ?2 ORDER BY position")?;
+    let mut query = db.prepare("SELECT attachment_id,name,content_type,byte_size,sha256 FROM ticket_attachments WHERE ticket_id=$1 AND comment_id IS NOT DISTINCT FROM $2 ORDER BY position")?;
     Ok(query
         .query_map(params![ticket_id, comment_id], attachment_row)?
         .collect::<Result<Vec<_>, _>>()?)
@@ -611,7 +617,7 @@ fn insert_files(
 ) -> Result<(), TicketError> {
     for (position, file) in files.into_iter().enumerate() {
         let m = file.metadata;
-        db.execute("INSERT INTO ticket_attachments(attachment_id,ticket_id,comment_id,position,name,content_type,byte_size,sha256,content) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![m.id,ticket_id,comment_id,position as i64,m.name,m.content_type,sql_integer(m.byte_size)?,m.sha256,file.bytes])?;
+        db.execute("INSERT INTO ticket_attachments(attachment_id,ticket_id,comment_id,position,name,content_type,byte_size,sha256,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",params![m.id,ticket_id,comment_id,position as i64,m.name,m.content_type,sql_integer(m.byte_size)?,m.sha256,file.bytes])?;
     }
     Ok(())
 }
@@ -619,7 +625,7 @@ fn insert_files(
 fn check_revision(db: &Connection, id: &str, expected: u64) -> Result<(), TicketError> {
     let actual: Option<u64> = db
         .query_row(
-            "SELECT revision FROM feature_tickets WHERE ticket_id=?1 AND deleted=0",
+            "SELECT revision FROM feature_tickets WHERE ticket_id=$1 AND deleted=0 FOR UPDATE",
             [id],
             |row| unsigned(row, 0),
         )
@@ -639,6 +645,6 @@ fn history(
     at: &str,
     revision: u64,
 ) -> Result<(), TicketError> {
-    db.execute("INSERT INTO ticket_history(ticket_id,revision,action,server,author_name,occurred_at) VALUES(?1,?2,?3,?4,?5,?6)",params![id,sql_integer(revision)?,action,author.server,author.name,at])?;
+    db.execute("INSERT INTO ticket_history(ticket_id,revision,action,server,author_name,occurred_at) VALUES($1,$2,$3,$4,$5,$6)",params![id,sql_integer(revision)?,action,author.server,author.name,at])?;
     Ok(())
 }

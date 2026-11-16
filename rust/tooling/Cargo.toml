@@ -13,6 +13,13 @@ name = "devcoordinator2-tooling"
 path = "src/main.rs"
 
 [[bin]]
+name = "devcoordinator2-install-rehearsal"
+path = "src/bin/install_rehearsal.rs"
+required-features = ["selftest-fixtures"]
+test = false
+bench = false
+
+[[bin]]
 name = "devcoordinator2-selftest-coordinator"
 path = "src/bin/selftest_coordinator.rs"
 required-features = ["selftest-fixtures"]
@@ -53,3 +60,4 @@ unicode-normalization.workspace = true
 tempfile = "=3.23.0"
 
 [dev-dependencies]
+devcoordinator2-control = { path = "../control", features = ["test-fixtures"] }

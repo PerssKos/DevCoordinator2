@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod agent_hub;
+mod agent_request_log;
 pub mod agent_routing;
 pub mod alerts;
 pub mod artifact_materialize;
@@ -21,6 +22,7 @@ mod deployment_cancellation;
 pub mod deployment_files;
 pub mod deployment_git;
 pub mod deployment_health;
+mod deployment_origin;
 pub mod deployment_state;
 pub mod deployments;
 pub mod docker;
@@ -30,6 +32,7 @@ pub mod health;
 pub mod ids;
 pub mod incidents;
 pub mod inventory;
+pub mod maintenance;
 pub mod mcp;
 pub mod metrics;
 pub mod metrics_sampler;
@@ -38,11 +41,13 @@ pub mod plan;
 pub mod planning_backup;
 pub mod planning_recovery;
 pub mod platform;
+pub use devcoordinator2_persistence as persistence;
 pub mod ports;
 pub mod progress;
 pub mod rate_card;
 pub mod repository;
 pub mod repository_config;
+mod request_deadline;
 mod review;
 mod review_validation;
 pub mod routes;
@@ -66,9 +71,15 @@ pub mod test_state;
 pub mod ticket_service;
 pub mod tickets;
 pub mod usage;
+#[cfg(test)]
+mod usage_api_fixture;
+mod usage_context;
 
 #[cfg(test)]
 mod automation_test_support;
+
+#[cfg(test)]
+mod request_responsiveness_tests;
 
 pub use devcoordinator2_api::DATABASE_SCHEMA_VERSION;
 pub const SOURCE_COMMIT: &str = match option_env!("DEVCOORDINATOR2_SOURCE_COMMIT") {

@@ -4,7 +4,8 @@ const WORK: &str = r#"{"version":1,"native_project_id":"native-clock-hash","thre
 
 #[test]
 fn work_context_cli_uses_exact_environment_shape_and_explicit_flags_win() {
-    let cli = Cli::try_parse_from(["devcoordinator2", "ping", "--client", "human"]).unwrap();
+    let cli =
+        Cli::try_parse_from(["devcoordinator2", "call", "ping", "--client", "human"]).unwrap();
     let context = cli.client_context_with_work(Some(OsStr::new(WORK)));
     assert_eq!(
         context,
@@ -20,6 +21,7 @@ fn work_context_cli_uses_exact_environment_shape_and_explicit_flags_win() {
     for (session, retained) in [("thread-1", true), ("explicit-other", false)] {
         let cli = Cli::try_parse_from([
             "devcoordinator2",
+            "call",
             "ping",
             "--session",
             session,
@@ -45,7 +47,7 @@ fn work_context_cli_bad_environment_never_changes_or_cancels_the_command() {
         r#"{"version":2,"native_project_id":"native","thread_id":"thread"}"#,
         r#"{"version":1,"native_project_id":"native","thread_id":"thread","clientKind":"edge"}"#,
     ] {
-        let cli = Cli::try_parse_from(["devcoordinator2", "ping"]).unwrap();
+        let cli = Cli::try_parse_from(["devcoordinator2", "call", "ping"]).unwrap();
         let context = cli.client_context_with_work(Some(OsStr::new(raw)));
         assert_eq!(context.work, None);
         assert_eq!(context.work_source, Some(WorkSource::Environment));
@@ -55,12 +57,9 @@ fn work_context_cli_bad_environment_never_changes_or_cancels_the_command() {
                 .unwrap()
                 .contains("secret-marker")
         );
-        assert!(matches!(
-            cli.into_invocation().unwrap(),
-            Invocation::Remote {
-                operation: "ping",
-                ..
-            }
-        ));
+        let Invocation::Remote { operation, .. } = cli.into_invocation().unwrap() else {
+            panic!("ping must map to a remote invocation");
+        };
+        assert_eq!(operation, "ping");
     }
 }

@@ -93,6 +93,326 @@ pub fn inspect_with<T>(
     inspect_with_inner(request, || {}, read)
 }
 
+/// Inspect either historical SQLite activation evidence or a native PostgreSQL
+/// archive. A native archive is restored only into an owned isolated database;
+/// the configured authority database is never a restore target.
+pub fn inspect_with_sources<T>(
+    database: &crate::database::Database,
+    request: &InspectRequest,
+    read_legacy: impl FnOnce(&Connection) -> Result<T, String>,
+    read_native: impl FnOnce(&crate::database::Connection) -> Result<T, String>,
+) -> Result<(Inspection, T), String> {
+    inspect_with_config(
+        database.persistence().config(),
+        request,
+        read_legacy,
+        read_native,
+    )
+}
+
+pub fn inspect_configured(
+    config: &crate::database::DatabaseConfig,
+    request: &InspectRequest,
+) -> Result<Inspection, String> {
+    inspect_with_config(config, request, |_| Ok(()), |_| Ok(())).map(|(inspection, ())| inspection)
+}
+
+#[cfg(test)]
+fn snapshot_error_diagnostic(error: &crate::database::DatabaseError) -> serde_json::Value {
+    fn native(error: &crate::database::Error) -> serde_json::Value {
+        use crate::database::Error;
+        let category = match error {
+            Error::Configuration(_) => "configuration",
+            Error::Pool(_) => "pool",
+            Error::Postgres(_) => "postgres",
+            Error::Migration(_) => "migration",
+            Error::SnapshotCleanup { .. } => "snapshot_cleanup",
+            Error::Fixture(_) => "fixture",
+            Error::Closed => "closed",
+            Error::QueryReturnedNoRows => "no_rows",
+            Error::InvalidQuery => "invalid_query",
+            Error::UserFunctionError(_) => "callback",
+            _ => "decode",
+        };
+        let sqlstate = match error {
+            Error::Postgres(error) => error.code().map(|code| code.code()),
+            _ => None,
+        };
+        let cleanup = match error {
+            Error::SnapshotCleanup { cleanup, .. } => Some(native(cleanup)),
+            _ => None,
+        };
+        serde_json::json!({"category":category,"timeout":error.is_timeout(),"sqlstate":sqlstate,"cleanup":cleanup})
+    }
+    use crate::database::DatabaseError;
+    match error {
+        DatabaseError::Query(error) => native(error),
+        _ => {
+            serde_json::json!({"category":"domain_or_startup","timeout":false,"sqlstate":null,"cleanup":null})
+        }
+    }
+}
+
+fn inspect_with_config<T>(
+    config: &crate::database::DatabaseConfig,
+    request: &InspectRequest,
+    read_legacy: impl FnOnce(&Connection) -> Result<T, String>,
+    read_native: impl FnOnce(&crate::database::Connection) -> Result<T, String>,
+) -> Result<(Inspection, T), String> {
+    if !valid_id(&request.repository_id, b'r')
+        || request.task_ids.len() > 64
+        || request.task_ids.iter().any(|id| !valid_id(id, b'p'))
+    {
+        return Err("use one repository ID and at most 64 valid task IDs".into());
+    }
+    let root = &request.transaction_dir;
+    if !root.is_absolute()
+        || fs::canonicalize(root).map_err(|_| "activation directory is unavailable")? != *root
+        || !fs::symlink_metadata(root)
+            .map_err(|_| "activation directory is unavailable")?
+            .is_dir()
+    {
+        return Err("use the physical absolute activation directory, without aliases".into());
+    }
+    let header_path = request.transaction_dir.join("installation-snapshot.json");
+    let mut header_file = open_private(&header_path)?;
+    let mut header_bytes = Vec::new();
+    (&mut header_file)
+        .take(MAX_HEADER_BYTES + 1)
+        .read_to_end(&mut header_bytes)
+        .map_err(|_| "cannot read activation snapshot")?;
+    if header_bytes.len() as u64 > MAX_HEADER_BYTES {
+        return Err("activation snapshot exceeds the inspection limit".into());
+    }
+    let header: SnapshotHeader =
+        serde_json::from_slice(&header_bytes).map_err(|_| "invalid activation snapshot header")?;
+    if matches!(header.schema, 1 | 2) {
+        return inspect_with(request, read_legacy);
+    }
+    if header.schema != 3
+        || header.transaction_dir != request.transaction_dir
+        || !matches!(
+            header.status.as_str(),
+            "prepared" | "committed" | "rolling_back" | "rolled_back" | "recovered"
+        )
+    {
+        return Err("unsupported activation snapshot or mismatched transaction identity".into());
+    }
+    let backup_path = root.join("authority-before.pgdump");
+    let mut backup_file = open_private(&backup_path)?;
+    let backup_sha256 = hash(&mut backup_file)?;
+    if header.backup_sha256.as_deref() != Some(backup_sha256.as_str())
+        || !valid_hash(&backup_sha256)
+    {
+        return Err("backup differs from its recorded activation hash".into());
+    }
+    let inspected =
+        devcoordinator2_persistence::backup::with_snapshot(config, &backup_path, |connection| {
+            native_inspection(connection, request, &header, &backup_sha256, read_native).map_err(
+                |message| {
+                    crate::database::DatabaseError::Domain(devcoordinator2_api::ProtocolError::new(
+                        devcoordinator2_api::ErrorCode::ParamsInvalid,
+                        message,
+                    ))
+                },
+            )
+        })
+        .map_err(|error| {
+            #[cfg(test)]
+            eprintln!(
+                "native_snapshot_error {}",
+                snapshot_error_diagnostic(&error)
+            );
+            match error {
+                crate::database::DatabaseError::Domain(error) => error.message,
+                _ => {
+                    "cannot inspect the verified PostgreSQL archive in an isolated database".into()
+                }
+            }
+        })?;
+    if hash(&mut backup_file)? != backup_sha256
+        || hash(&mut header_file)? != hex(&Sha256::digest(&header_bytes))
+        || !same_file(&backup_file, &backup_path)?
+        || !same_file(&header_file, &header_path)?
+    {
+        return Err("activation backup changed during inspection; discard the observation".into());
+    }
+    Ok(inspected)
+}
+
+fn native_inspection<T>(
+    connection: &crate::database::Connection,
+    request: &InspectRequest,
+    header: &SnapshotHeader,
+    backup_sha256: &str,
+    read: impl FnOnce(&crate::database::Connection) -> Result<T, String>,
+) -> Result<(Inspection, T), String> {
+    use crate::database::OptionalExtension as _;
+    for table in [
+        "meta",
+        "repositories",
+        "tasks",
+        "decisions",
+        "releases",
+        "plan_events",
+    ] {
+        let ordinary:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=$1 AND table_type='BASE TABLE')",[table],|row|row.get(0))
+            .map_err(|_|"cannot inspect the backup table contract")?;
+        if !ordinary {
+            return Err(format!("backup has no ordinary {table} table"));
+        }
+    }
+    let schema: String = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| "backup schema metadata is unavailable")?;
+    let database_schema: u32 = schema
+        .parse()
+        .map_err(|_| "invalid backup schema version")?;
+    if database_schema == 0 || database_schema > devcoordinator2_api::DATABASE_SCHEMA_VERSION {
+        return Err("backup database schema is unsupported; no migration was attempted".into());
+    }
+    let count = |table: &str| -> Result<i64, String> {
+        connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE repository_id=$1"),
+                [&request.repository_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "cannot read repository-scoped planning counts".into())
+    };
+    let mut requested_tasks = Vec::new();
+    for id in &request.task_ids {
+        let repository_id: Option<String> = connection
+            .query_row(
+                "SELECT repository_id FROM tasks WHERE task_id=$1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| "cannot inspect a requested task ID")?;
+        let state = if repository_id.as_deref() == Some(&request.repository_id) {
+            let (status, updated_at, position): (String, String, i64) = connection
+                .query_row(
+                    "SELECT status,updated_at,position FROM tasks WHERE task_id=$1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|_| "cannot inspect requested task state")?;
+            let status = serde_json::from_value(serde_json::Value::String(status))
+                .map_err(|_| "requested task has an invalid status")?;
+            if updated_at.len() > 64
+                || time::OffsetDateTime::parse(
+                    &updated_at,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .is_err()
+            {
+                return Err("requested task has an invalid update timestamp".into());
+            }
+            Some(TaskState {
+                status,
+                updated_at,
+                position,
+            })
+        } else {
+            None
+        };
+        requested_tasks.push(TaskPresence {
+            task_id: id.clone(),
+            repository_id,
+            state,
+        });
+    }
+    let identities = if request.include_identities {
+        Some(PlanningIdentities {
+            tasks: native_identities(
+                connection,
+                &request.repository_id,
+                "SELECT task_id,seq,NULL::text FROM tasks WHERE repository_id=$1 ORDER BY seq LIMIT 4097",
+                b'p',
+            )?,
+            decisions: native_identities(
+                connection,
+                &request.repository_id,
+                "SELECT decision_id,seq,ref FROM decisions WHERE repository_id=$1 ORDER BY seq LIMIT 4097",
+                b'n',
+            )?,
+            releases: native_identities(
+                connection,
+                &request.repository_id,
+                "SELECT release_id,seq,NULL::text FROM releases WHERE repository_id=$1 ORDER BY seq LIMIT 4097",
+                b'v',
+            )?,
+        })
+    } else {
+        None
+    };
+    let result = Inspection {
+        version: 1,
+        transaction: request
+            .transaction_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("invalid activation directory name")?
+            .to_owned(),
+        snapshot_schema: header.schema,
+        snapshot_status: header.status.clone(),
+        provenance: "recorded_hash_matched",
+        backup_sha256: backup_sha256.to_owned(),
+        database_schema,
+        repository_id: request.repository_id.clone(),
+        repository_present: count("repositories")? != 0,
+        tasks: count("tasks")?,
+        decisions: count("decisions")?,
+        releases: count("releases")?,
+        plan_events: count("plan_events")?,
+        requested_tasks,
+        identities,
+        recovery_performed: false,
+    };
+    Ok((result, read(connection)?))
+}
+
+fn native_identities(
+    connection: &crate::database::Connection,
+    repository_id: &str,
+    sql: &str,
+    prefix: u8,
+) -> Result<Vec<RecordIdentity>, String> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|_| "backup identity columns are unavailable")?;
+    let rows = statement
+        .query_map([repository_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|_| "cannot query scoped planning identities")?;
+    let mut identities = Vec::new();
+    for row in rows {
+        let (id, sequence, reference) = row.map_err(|_| "invalid saved planning identity")?;
+        if !valid_id(&id, prefix) || sequence < 1 {
+            return Err("invalid saved planning identity".into());
+        }
+        identities.push(RecordIdentity {
+            id,
+            sequence,
+            reference_sha256: reference.map(|value| hex(&Sha256::digest(value.as_bytes()))),
+        });
+    }
+    if identities.len() > 4096 {
+        return Err("planning identity catalogue exceeds the bounded inspection limit".into());
+    }
+    Ok(identities)
+}
+
 fn inspect_inner(
     request: &InspectRequest,
     after_query: impl FnOnce(),

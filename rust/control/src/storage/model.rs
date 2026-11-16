@@ -54,6 +54,23 @@ pub enum SourceOwnerOrigin {
     LocalManual { uid: u32 },
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IgnoredReviewFile {
+    pub path: PathBuf,
+    pub device: u64,
+    pub inode: u64,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IgnoredReview {
+    pub worktree_device: u64,
+    pub worktree_inode: u64,
+    pub files: Vec<IgnoredReviewFile>,
+    pub total_bytes: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     /// Persistent observation/mutation order, independent of wall-clock changes.
@@ -80,6 +97,8 @@ pub struct Record {
     pub private_aliases: Vec<PathBuf>,
     #[serde(default)]
     pub retention_eligible: bool,
+    #[serde(default)]
+    pub ignored_review: Option<IgnoredReview>,
 }
 
 impl Record {
@@ -160,6 +179,8 @@ pub struct Context {
     /// Root, automatic work and Console keep the registered execution owner.
     pub manual_caller_uid: Option<u32>,
     pub discovering: bool,
+    /// Valid only within one discovery pass; removal always remeasures.
+    pub discovery_measurements: BTreeMap<PathBuf, super::fs::Measurement>,
     pub docker_snapshot: Option<std::sync::Arc<Vec<serde_json::Value>>>,
     pub docker_unavailable: bool,
     pub scan_repository_id: Option<String>,
@@ -169,6 +190,7 @@ pub struct Context {
     pub roots: Vec<RootRecord>,
     pub deployment_repositories: BTreeMap<String, String>,
     pub current_paths: Vec<PathBuf>,
+    pub ignored_reviews: BTreeMap<String, IgnoredReview>,
     pub current_container_ids: Vec<String>,
     pub current_projects: BTreeMap<String, String>,
     pub current_images: Vec<String>,

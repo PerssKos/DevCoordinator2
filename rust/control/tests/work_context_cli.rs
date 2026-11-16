@@ -54,7 +54,7 @@ async fn work_context_real_cli_environment_is_bounded_nonfatal_and_session_aware
             )
             .env("DEVCOORDINATOR2_SOCKET", &socket)
             .env("DEVCOORDINATOR_WORK_CONTEXT", environment)
-            .args(["ping", "--client", "human", "--format", "json"]);
+            .args(["call", "ping", "--client", "human", "--format", "json"]);
         if let Some(session) = session {
             command.args(["--session", session]);
         }
@@ -123,7 +123,7 @@ async fn native_alarm_activation_is_acknowledged_before_registration_or_falls_ba
             .env("DEVCOORDINATOR2_SOCKET",&socket)
             .env("DEVCOORDINATOR_WORK_CONTEXT",json!({"version":1,"native_project_id":"native","thread_id":"thread"}).to_string())
             .env("CODEX_ALARM_CONTEXT",json!({"alarm_namespace":"codex.review.v1","capability_revision":1,"lease_expires_at":1000000}).to_string())
-            .env("CODEX_ALARM_ACTIVATION",&marker).args(["ping","--format","json"]).output().await.unwrap();
+            .env("CODEX_ALARM_ACTIVATION",&marker).args(["call", "ping","--format","json"]).output().await.unwrap();
         assert!(output.status.success());
         let request = server.await.unwrap();
         receipt.await.unwrap();

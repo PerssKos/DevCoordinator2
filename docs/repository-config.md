@@ -10,7 +10,7 @@ for live assignments, identities, state, users, grants, and observations.
 
 Browser journeys belong in this graph even when their entrypoint is a single
 script that starts a temporary web server and browser internally. Launch the
-declared test with `devcoordinator2 test start PATH --test NAME --tier TIER`
+declared test with `devcoordinator2 call test.start --params '{"path":"PATH","test":"NAME","tier":"release"}'`
 (using the check's declared minimum tier), not the inner script directly
 from the agent shell. A finite combined script owns cleanup of its temporary
 server and browser; separate server/browser checks use `completion = "event"`
@@ -160,7 +160,7 @@ remain cold evidence available through explicit bounded log reads.
 
 `completion = "process"` (default) uses the exact exit status. A long-lived
 setup uses `completion = "event"` and emits one identity-bound result with
-`devcoordinator2 test event passed|failed|unsafe`; the inherited descriptor,
+`devcoordinator2 emit-event passed|failed|unsafe`; the inherited descriptor,
 not elapsed time, binds the event to that check. A passed long-lived process
 stays available to dependents and is terminated during final cleanup. If it
 exits early, downstream evidence is unsafe. `produces` paths are content-hashed

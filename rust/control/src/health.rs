@@ -111,7 +111,6 @@ impl HealthService {
                 deployment,
             });
         }
-        let inventory = self.sampler.inventory().containers();
         Ok(HealthSummary {
             host: snapshot.host,
             storage: host_storage(snapshot.storage.get(&SubjectKey::new("host", "storage"))),
@@ -122,7 +121,7 @@ impl HealthService {
                 .filter(|key| key.kind == "test")
                 .map(|key| key.id.clone())
                 .collect(),
-            container_counts: inventory.map_or_else(|_| BTreeMap::new(), |value| value.counts),
+            container_counts: snapshot.container_counts.unwrap_or_default(),
             alerts: self.sampler.alerts().current()?,
             sampling: SamplingSummary {
                 cpu_memory_seconds: super::metrics_sampler::SAMPLE_SECONDS,
@@ -365,11 +364,11 @@ impl HealthService {
         let deployment_id = deployment.deployment_id.clone();
         let observed = deployment.observed_only;
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut reasons = Vec::new();
                 if observed {
                     let mut statement = connection.prepare(
-                        "SELECT compose_service,state,status,health FROM observed_containers WHERE observed_deployment_id=?1 ORDER BY compose_service",
+                        "SELECT compose_service,state,status,health FROM observed_containers WHERE observed_deployment_id=$1 ORDER BY compose_service",
                     )?;
                     for row in statement.query_map([deployment_id], |row| {
                         Ok((
@@ -386,7 +385,7 @@ impl HealthService {
                     }
                 } else {
                     let mut statement = connection.prepare(
-                        "SELECT name,state,desired_state,health,last_error FROM components WHERE deployment_id=?1 ORDER BY order_index",
+                        "SELECT name,state,desired_state,health,last_error FROM components WHERE deployment_id=$1 ORDER BY order_index",
                     )?;
                     for row in statement.query_map([deployment_id], |row| {
                         Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?))
@@ -527,11 +526,16 @@ mod tests {
     };
     use std::collections::HashSet;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
     use tempfile::tempdir;
     use time::macros::datetime;
 
-    struct FakeDocker;
+    #[derive(Default)]
+    struct FakeDocker {
+        inventory_queries: AtomicUsize,
+        inventory_fails: AtomicBool,
+    }
     impl DockerControl for FakeDocker {
         fn invoke(&self, invocation: DockerInvocation) -> Result<DockerOutput, DockerError> {
             let args = invocation
@@ -539,6 +543,14 @@ mod tests {
                 .iter()
                 .map(|value| value.to_string_lossy())
                 .collect::<Vec<_>>();
+            if args.first().is_some_and(|value| value == "ps")
+                && args.iter().any(|value| value == "{{json .}}")
+            {
+                self.inventory_queries.fetch_add(1, Ordering::Relaxed);
+                if self.inventory_fails.load(Ordering::Relaxed) {
+                    return Err(DockerError::Command("inventory unavailable".into()));
+                }
+            }
             Ok(DockerOutput {
                 exit_code: 0,
                 stdout: if args.first().is_some_and(|value| value == "system") {
@@ -661,7 +673,7 @@ mod tests {
             .register(&repository, caller.uid, caller.gid)
             .unwrap();
         database.transaction({let registered=registered.clone();move |transaction| {
-            transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1111111111111111',?1,?2,'web','worktree',NULL,'f','{}','failed','t',1,'other','t')",rusqlite::params![registered.repository_id,registered.worktree_id])?;
+            transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1111111111111111',$1,$2,'web','worktree',NULL,'f','{}','failed','t',1,'other','t')",crate::database::params![registered.repository_id,registered.worktree_id])?;
             transaction.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,restarts,last_error,updated_at) VALUES('d1111111111111111','api','process',0,'f','running','failed','unhealthy',0,'boom','t')",[])?;
             Ok(())
         }}).unwrap();
@@ -684,18 +696,27 @@ mod tests {
             codex_usage_sources_file: None,
             codex_usage_sources: Vec::new(),
         };
+        let docker = Arc::new(FakeDocker::default());
         let health = HealthService::with_adapters(
             config,
             database,
             registry,
-            Arc::new(FakeDocker),
+            docker.clone(),
             Arc::new(FakeSystemd),
             Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
+        docker.inventory_fails.store(true, Ordering::Relaxed);
+        health.sampler().tick().unwrap();
+        let queries = docker.inventory_queries.load(Ordering::Relaxed);
+        assert!(health.summary().unwrap().container_counts.is_empty());
+        assert_eq!(docker.inventory_queries.load(Ordering::Relaxed), queries);
+        docker.inventory_fails.store(false, Ordering::Relaxed);
         health.sampler().tick().unwrap();
         health.sampler().storage_tick().unwrap();
         health.sampler().flush().unwrap();
+        let queries = docker.inventory_queries.load(Ordering::Relaxed);
         let summary = health.summary().unwrap();
+        assert_eq!(docker.inventory_queries.load(Ordering::Relaxed), queries);
         assert_eq!(summary.unhealthy_deployments.len(), 1);
         assert_eq!(
             summary.unhealthy_deployments[0].reasons[0]
@@ -704,6 +725,15 @@ mod tests {
             Some("boom")
         );
         assert_eq!(summary.container_counts["unmanaged"], 0);
+        docker.inventory_fails.store(true, Ordering::Relaxed);
+        health.sampler().tick().unwrap();
+        let queries = docker.inventory_queries.load(Ordering::Relaxed);
+        assert_eq!(
+            health.summary().unwrap().container_counts,
+            summary.container_counts,
+            "failed inventory must retain the last successful counts"
+        );
+        assert_eq!(docker.inventory_queries.load(Ordering::Relaxed), queries);
         let repositories = health.repositories().unwrap();
         assert_eq!(repositories.repositories[0].health, "unhealthy");
         let detail = health
@@ -720,6 +750,7 @@ mod tests {
             })
             .unwrap();
         assert!(!history.points.is_empty());
+        docker.inventory_fails.store(false, Ordering::Relaxed);
         assert!(health.containers().unwrap().containers.is_empty());
         assert_eq!(
             health.remove_container("short").unwrap_err().code,

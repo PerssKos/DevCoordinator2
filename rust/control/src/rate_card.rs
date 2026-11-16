@@ -1,6 +1,6 @@
+use crate::database::{Connection, params};
 use devcoordinator2_api::rate_card::{List, Mutation, Page, RateCard, Set};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::{Connection, params};
 
 use crate::database::{Database, DatabaseError};
 
@@ -26,7 +26,7 @@ impl RateCardService {
 
     pub fn list(&self, params: List) -> Result<Page, ProtocolError> {
         self.database
-            .call(move |connection| list_rows(connection, params))
+            .read(move |connection| list_rows(connection, params))
             .map_err(database_error)
     }
 
@@ -36,6 +36,11 @@ impl RateCardService {
         let now = now.to_owned();
         self.database
             .transaction(move |connection| {
+                connection.query_row(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                    [RATE_CARD_REVISION_KEY],
+                    |_| Ok(()),
+                )?;
                 let current = revision(connection)?;
                 if current != params.expected_revision {
                     return Err(ProtocolError::new(
@@ -45,7 +50,7 @@ impl RateCardService {
                     .into());
                 }
                 let exists: bool = connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM usage_rate_cards WHERE card_id=?1 AND version=?2)",
+                    "SELECT EXISTS(SELECT 1 FROM usage_rate_cards WHERE card_id=$1 AND version=$2)",
                     params![params.card.card_id, i64::from(params.card.version)],
                     |row| row.get(0),
                 )?;
@@ -65,7 +70,7 @@ impl RateCardService {
                         effective_from_ms,effective_to_ms,input_usd_micros_per_million,
                         cached_input_usd_micros_per_million,cache_write_usd_micros_per_million,
                         output_usd_micros_per_million,source_ref,active,created_at,created_by
-                    ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
                     params![
                         card.card_id,
                         i64::from(card.version),
@@ -97,7 +102,7 @@ impl RateCardService {
     }
 }
 
-pub(crate) fn snapshot_rows(connection: &Connection) -> rusqlite::Result<RateCardSnapshot> {
+pub(crate) fn snapshot_rows(connection: &Connection) -> crate::database::Result<RateCardSnapshot> {
     let revision = revision(connection)?;
     let mut statement = connection.prepare(
         "SELECT card_id,version,provider,model_pattern,processing_tier,context_tier,
@@ -130,7 +135,7 @@ fn list_rows(connection: &Connection, params: List) -> Result<Page, DatabaseErro
     }
     if effective_at.is_some() {
         sql.push_str(
-            " AND effective_from_ms<=?1 AND (effective_to_ms IS NULL OR effective_to_ms>?1)",
+            " AND effective_from_ms<=$1 AND (effective_to_ms IS NULL OR effective_to_ms>$1)",
         );
     }
     sql.push_str(" ORDER BY provider,model_pattern,processing_tier,context_tier,effective_from_ms,card_id,version");
@@ -158,13 +163,13 @@ fn list_rows(connection: &Connection, params: List) -> Result<Page, DatabaseErro
     })
 }
 
-fn decode_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<RateCard> {
+fn decode_card(row: &crate::database::Row<'_>) -> crate::database::Result<RateCard> {
     Ok(RateCard {
         card_id: row.get(0)?,
         version: row
             .get::<_, i64>(1)?
             .try_into()
-            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, 0))?,
+            .map_err(|_| crate::database::Error::IntegralValueOutOfRange(1, 0))?,
         provider: row.get(2)?,
         model_pattern: row.get(3)?,
         processing_tier: row.get(4)?,
@@ -209,20 +214,20 @@ fn validate_card(card: &RateCard) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-fn revision(connection: &Connection) -> rusqlite::Result<u64> {
+fn revision(connection: &Connection) -> crate::database::Result<u64> {
     connection
         .query_row(
-            "SELECT COALESCE((SELECT value FROM meta WHERE key=?1),'0')",
+            "SELECT COALESCE((SELECT value FROM meta WHERE key=$1),'0')",
             [RATE_CARD_REVISION_KEY],
             |row| row.get::<_, String>(0),
         )?
         .parse::<u64>()
-        .map_err(|_| rusqlite::Error::InvalidQuery)
+        .map_err(|_| crate::database::Error::InvalidQuery)
 }
 
-fn set_revision(connection: &Connection, revision: u64) -> rusqlite::Result<()> {
+fn set_revision(connection: &Connection, revision: u64) -> crate::database::Result<()> {
     connection.execute(
-        "INSERT OR REPLACE INTO meta(key,value) VALUES(?1,?2)",
+        "INSERT INTO meta(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         params![RATE_CARD_REVISION_KEY, revision.to_string()],
     )?;
     Ok(())
@@ -237,8 +242,8 @@ fn i64_value(value: u64) -> Result<i64, ProtocolError> {
     })
 }
 
-fn u64_value(value: i64) -> rusqlite::Result<u64> {
-    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
+fn u64_value(value: i64) -> crate::database::Result<u64> {
+    u64::try_from(value).map_err(|_| crate::database::Error::IntegralValueOutOfRange(0, value))
 }
 
 fn database_error(error: DatabaseError) -> ProtocolError {

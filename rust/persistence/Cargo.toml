@@ -1,0 +1,34 @@
+[package]
+name = "devcoordinator2-persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+test-fixtures = []
+
+[[test]]
+name = "postgres_boundary"
+required-features = ["test-fixtures"]
+[[test]]
+name = "metric_retention"
+required-features = ["test-fixtures"]
+[[test]]
+name = "sqlite_cutover"
+required-features = ["test-fixtures"]
+
+[dependencies]
+bytes = "=1.12.1"
+libc.workspace = true
+postgres.workspace = true
+r2d2.workspace = true
+r2d2_postgres.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tempfile = "=3.23.0"

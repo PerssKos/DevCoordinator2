@@ -38,7 +38,7 @@ fn work_context_bad_metadata_is_omitted_without_cancelling_or_echoing_it() {
         json!("secret-marker"),
         json!({"version":1,"native_project_id":"","thread_id":"thread"}),
     ] {
-        let raw = json!({"protocol":2,"id":"request","operation":"ping","params":{},"client":{"kind":"codex","work":work}});
+        let raw = json!({"protocol":3,"id":"request","operation":"ping","params":{},"client":{"kind":"codex","work":work}});
         let request = parse_request(&serde_json::to_vec(&raw).unwrap()).unwrap();
         assert_eq!(request.operation, "ping");
         assert!(request.client.work.is_none());

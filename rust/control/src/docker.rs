@@ -4,14 +4,17 @@
 //! environment. Managed labels are generated inside this module, container
 //! mutations require a full 64-hex ID, and cleanup is always exact-targeted.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::marker::PhantomData;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -28,6 +31,40 @@ const MAX_CAPTURE_BYTES: usize = 256 * 1024;
 const MAX_ERROR_BYTES: usize = 4 * 1024;
 const MAX_LOG_BYTES: usize = 64 * 1024;
 const READINESS_POLL: Duration = Duration::from_millis(100);
+
+thread_local! {
+    static CLEANUP_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Opt-in budget for a synchronous owned cleanup. The guard is not Send and
+/// must never escape to another thread or span asynchronous work. Nested
+/// scopes can only shorten the deadline; Drop restores it during unwinding.
+pub(crate) struct DockerDeadlineScope {
+    previous: Option<Instant>,
+    _same_thread: PhantomData<Rc<()>>,
+}
+
+impl DockerDeadlineScope {
+    pub(crate) fn enter(deadline: Instant) -> Self {
+        let previous = CLEANUP_DEADLINE.with(|current| {
+            let previous = current.get();
+            current.set(Some(
+                previous.map_or(deadline, |earlier| earlier.min(deadline)),
+            ));
+            previous
+        });
+        Self {
+            previous,
+            _same_thread: PhantomData,
+        }
+    }
+}
+
+impl Drop for DockerDeadlineScope {
+    fn drop(&mut self) {
+        CLEANUP_DEADLINE.with(|current| current.set(self.previous));
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DockerErrorKind {
@@ -344,6 +381,14 @@ pub struct DockerOutput {
     pub stderr: String,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+}
+
+/// Bounded output captured from an exact container before it is removed.
+/// Contents are written only to the private lifecycle artifact; protocol
+/// responses expose its digest and size instead of this text.
+pub struct ContainerLogCapture {
+    pub text: String,
+    pub truncated: bool,
 }
 
 impl DockerOutput {
@@ -725,6 +770,14 @@ pub struct RunDetachedRequest {
     pub publish: Vec<String>,
     pub tmpfs: Vec<String>,
     pub command: Vec<String>,
+    /// A persisted owner reconciles failures instead of deleting by name.
+    pub retain_on_failure: bool,
+}
+
+pub struct ContainerRemovalReceipt {
+    /// Removal may fail after Docker deleted the container. A successful
+    /// receipt independently proves exact ID and owned-name absence.
+    pub command_error: Option<DockerError>,
 }
 
 pub struct CreateContainerRequest {
@@ -1175,7 +1228,11 @@ pub trait DockerControl: Send + Sync {
             Ok(output) => output,
             Err(error @ DockerError::Admission(_)) => return Err(error),
             Err(error) => {
-                let cleanup = self.cleanup_failed_run_container(&request.name);
+                let cleanup = if request.retain_on_failure {
+                    "owned-reconciliation-pending".into()
+                } else {
+                    self.cleanup_failed_run_container(&request.name)
+                };
                 return Err(DockerError::Command(format!(
                     "docker run invocation failed (kind={:?}; cleanup={cleanup})",
                     error.kind()
@@ -1190,20 +1247,33 @@ pub trait DockerControl: Send + Sync {
             // name and expose the safe exit/cleanup facts. Known bridge
             // failures are reduced to a fixed, secret-free recovery reason.
             let network_reason = classify_network_failure(&output.stderr);
-            let cleanup = self.cleanup_failed_run_container(&request.name);
+            let cleanup = if request.retain_on_failure {
+                "owned-reconciliation-pending".into()
+            } else {
+                self.cleanup_failed_run_container(&request.name)
+            };
             if let Some(reason) = network_reason {
                 return Err(DockerError::NetworkUnavailable(format!(
                     "{reason} (exit_code={}; cleanup={cleanup})",
                     output.exit_code
                 )));
             }
-            return Err(DockerError::Command(format!(
-                "docker run failed (exit_code={}; cleanup={cleanup})",
-                output.exit_code
-            )));
+            return Err(DockerError::CommandFailure {
+                message: format!(
+                    "docker run failed (exit_code={}; cleanup={cleanup})",
+                    output.exit_code
+                ),
+                exit_code: Some(output.exit_code),
+                signal: None,
+                stderr: String::new(),
+            });
         }
         if ensure_exact_output(&output, "run").is_err() {
-            let cleanup = self.cleanup_failed_run_container(&request.name);
+            let cleanup = if request.retain_on_failure {
+                "owned-reconciliation-pending".into()
+            } else {
+                self.cleanup_failed_run_container(&request.name)
+            };
             return Err(DockerError::Command(format!(
                 "docker run output exceeded the bounded capture (cleanup={cleanup})"
             )));
@@ -1211,7 +1281,11 @@ pub trait DockerControl: Send + Sync {
         match ExactContainerId::parse(output.stdout.trim().to_owned()) {
             Ok(container) => Ok(container),
             Err(_) => {
-                let cleanup = self.cleanup_failed_run_container(&request.name);
+                let cleanup = if request.retain_on_failure {
+                    "owned-reconciliation-pending".into()
+                } else {
+                    self.cleanup_failed_run_container(&request.name)
+                };
                 Err(DockerError::Command(format!(
                     "docker run returned an invalid container id (cleanup={cleanup})"
                 )))
@@ -1655,11 +1729,13 @@ pub trait DockerControl: Send + Sync {
         container_id: &ExactContainerId,
         delete_volumes: bool,
     ) -> Result<(), DockerError> {
-        self.remove_container(container_id, delete_volumes)?;
+        let removal = self.remove_container(container_id, delete_volumes);
         if self.container_present(container_id)? {
-            return Err(DockerError::Command(
-                "docker rm completed but the exact container is still present".into(),
-            ));
+            return Err(removal.err().unwrap_or_else(|| {
+                DockerError::Command(
+                    "docker rm completed but the exact container is still present".into(),
+                )
+            }));
         }
         Ok(())
     }
@@ -1673,13 +1749,32 @@ pub trait DockerControl: Send + Sync {
         name: &str,
         delete_volumes: bool,
     ) -> Result<(), DockerError> {
-        self.remove_container_verified(container_id, delete_volumes)?;
+        self.remove_container_receipt(container_id, name, delete_volumes)
+            .map(|_| ())
+    }
+
+    fn remove_container_receipt(
+        &self,
+        container_id: &ExactContainerId,
+        name: &str,
+        delete_volumes: bool,
+    ) -> Result<ContainerRemovalReceipt, DockerError> {
+        let removal = self.remove_container(container_id, delete_volumes);
+        if self.container_present(container_id)? {
+            return Err(removal.err().unwrap_or_else(|| {
+                DockerError::Command(
+                    "docker rm completed but the exact container is still present".into(),
+                )
+            }));
+        }
         if self.container_name_present(name)? {
             return Err(DockerError::Command(
                 "docker rm completed but the exact container name is still present".into(),
             ));
         }
-        Ok(())
+        Ok(ContainerRemovalReceipt {
+            command_error: removal.err(),
+        })
     }
 
     fn container_name_present(&self, name: &str) -> Result<bool, DockerError> {
@@ -1767,11 +1862,11 @@ pub trait DockerControl: Send + Sync {
         container_state_from_inspect(&info)
     }
 
-    fn container_logs(
+    fn container_log_capture(
         &self,
         container_id: &ExactContainerId,
         tail_lines: u16,
-    ) -> Result<String, DockerError> {
+    ) -> Result<ContainerLogCapture, DockerError> {
         if tail_lines == 0 || tail_lines > 5_000 {
             return Err(DockerError::InvalidRequest(
                 "tail_lines must be in 1..5000".to_owned(),
@@ -1781,15 +1876,47 @@ pub trait DockerControl: Send + Sync {
             vec![
                 "logs".into(),
                 "--tail".into(),
-                tail_lines.to_string().into(),
+                // One extra line proves whether the requested tail omitted
+                // earlier content, even when no byte limit was reached.
+                (u32::from(tail_lines) + 1).to_string().into(),
                 container_id.as_str().into(),
             ],
             Duration::from_secs(30),
         )?)?;
-        Ok(bounded_tail(
-            &format!("{}{}", output.stdout, output.stderr),
-            MAX_LOG_BYTES,
-        ))
+        if !output.success() {
+            // CLI failures can contain private runtime values. Keep typed
+            // command facts and never mislabel that stderr as container logs.
+            return Err(DockerError::CommandFailure {
+                message: "container diagnostic capture failed".into(),
+                exit_code: Some(output.exit_code),
+                signal: None,
+                stderr: String::new(),
+            });
+        }
+        let combined = format!("{}{}", output.stdout, output.stderr);
+        let line_count = combined.split_inclusive('\n').count();
+        let line_start: usize = combined
+            .split_inclusive('\n')
+            .take(line_count.saturating_sub(usize::from(tail_lines)))
+            .map(str::len)
+            .sum();
+        let mut start = combined.len().saturating_sub(MAX_LOG_BYTES).max(line_start);
+        while !combined.is_char_boundary(start) {
+            start += 1;
+        }
+        Ok(ContainerLogCapture {
+            truncated: output.stdout_truncated || output.stderr_truncated || start != 0,
+            text: combined[start..].to_owned(),
+        })
+    }
+
+    fn container_logs(
+        &self,
+        container_id: &ExactContainerId,
+        tail_lines: u16,
+    ) -> Result<String, DockerError> {
+        self.container_log_capture(container_id, tail_lines)
+            .map(|capture| capture.text)
     }
 
     fn compose_invoke(
@@ -2333,6 +2460,9 @@ impl DockerControl for DockerCli {
             || Instant::now() + Duration::from_secs(900),
             |context| context.deadline,
         );
+        let deadline = CLEANUP_DEADLINE
+            .with(Cell::get)
+            .map_or(deadline, |cleanup| deadline.min(cleanup));
         let _network = if docker_changes_network(&invocation.args) {
             self.network
                 .as_ref()
@@ -2358,6 +2488,15 @@ impl DockerControl for DockerCli {
             None
         };
         // Keep the guard through child-group timeout/cancellation and reaping.
+        if let Some(deadline) = CLEANUP_DEADLINE.with(Cell::get) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(DockerError::Timeout {
+                    operation: "owned cleanup budget".into(),
+                });
+            }
+            invocation.timeout = invocation.timeout.min(remaining);
+        }
         execute_process(&self.executable, invocation)
     }
 
@@ -2665,7 +2804,41 @@ fn compose_state<D: DockerControl + ?Sized>(
 ) -> Result<ComposeState, DockerError> {
     validate_services(services)?;
     validate_services(finite_services)?;
-    let ids = docker.compose_container_ids(project)?;
+    let mut ids = docker.compose_container_ids(project)?;
+    let mut refreshed = false;
+    let observed = 'snapshot: loop {
+        let mut observed = Vec::new();
+        for container_id in &ids {
+            let info = match docker.inspect(container_id) {
+                Ok(info) => info,
+                Err(error) => {
+                    let missing = error.command_details().2.is_some_and(|stderr| {
+                        let stderr = stderr.to_ascii_lowercase();
+                        stderr.contains("no such container") || stderr.contains("no such object")
+                    });
+                    // A listed ID may disappear while Compose replaces a
+                    // container. Refresh once only after exact absence and a
+                    // new project list agree; discard the entire old snapshot.
+                    if !refreshed
+                        && missing
+                        && matches!(docker.container_present(container_id), Ok(false))
+                        && let Ok(current) = docker.compose_container_ids(project)
+                        && !current.contains(container_id)
+                    {
+                        ids = current;
+                        refreshed = true;
+                        continue 'snapshot;
+                    }
+                    return Err(DockerError::Command(format!(
+                        "Compose container inspection failed ({:?})",
+                        error.kind()
+                    )));
+                }
+            };
+            observed.push((container_id.clone(), container_state_from_inspect(&info)));
+        }
+        break observed;
+    };
     if ids.is_empty() && completions.is_empty() {
         return Ok(ComposeState {
             state: RuntimeState::Stopped,
@@ -2676,13 +2849,12 @@ fn compose_state<D: DockerControl + ?Sized>(
         });
     }
     let mut by_service = BTreeMap::<String, Vec<(ExactContainerId, ContainerState)>>::new();
-    for container_id in &ids {
-        let state = docker.container_state(container_id);
+    for (container_id, state) in observed {
         if let Some(service) = state.compose_service.clone() {
             by_service
                 .entry(service)
                 .or_default()
-                .push((container_id.clone(), state));
+                .push((container_id, state));
         }
     }
     let expected = if services.is_empty() {
@@ -3125,6 +3297,7 @@ mod tests {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/tmp:rw,noexec".into()],
                 command: vec!["postgres".into()],
+                retain_on_failure: false,
             })
             .expect("container");
         assert_eq!(container, id('a'));
@@ -3174,6 +3347,7 @@ mod tests {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/tmp:rw,noexec".into()],
                 command: vec!["postgres".into()],
+                retain_on_failure: false,
             })
             .expect_err("Docker run failure should be reported");
         let message = error.to_string();
@@ -3190,6 +3364,30 @@ mod tests {
         );
         assert_eq!(&calls[2].args[..2], ["rm", "--force"]);
         assert_eq!(calls.len(), 3, "the sibling name must not be removed");
+        let owned = FakeDocker::new(vec![output(125, "", "POSTGRES_PASSWORD=fixture-value")]);
+        let failure = owned
+            .run_detached(&RunDetachedRequest {
+                name: "fixture".into(),
+                image: "postgres:16-alpine".into(),
+                label_context: labels(),
+                labels: BTreeMap::new(),
+                env_names: vec!["POSTGRES_PASSWORD".into()],
+                env_values: BTreeMap::from([("POSTGRES_PASSWORD".into(), "fixture-value".into())]),
+                publish: Vec::new(),
+                tmpfs: Vec::new(),
+                command: vec!["postgres".into()],
+                retain_on_failure: true,
+                cancellation: None,
+            })
+            .expect_err("owned failure needs durable reconciliation");
+        assert_eq!(failure.command_details().0, Some(125));
+        assert!(failure.to_string().contains("owned-reconciliation-pending"));
+        assert!(!failure.to_string().contains("fixture-value"));
+        assert_eq!(
+            owned.calls().len(),
+            1,
+            "a persisted owner must reconcile exact IDs instead of deleting by name"
+        );
     }
 
     #[test]
@@ -3216,6 +3414,7 @@ mod tests {
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/tmp:rw,noexec".into()],
                 command: vec!["postgres".into()],
+                retain_on_failure: false,
             })
             .expect_err("bridge failure should be classified");
         assert_eq!(error.kind(), DockerErrorKind::NetworkUnavailable);
@@ -3316,6 +3515,48 @@ mod tests {
             vec![container.clone()]
         );
         assert_eq!(fake.container_logs(&container, 20).unwrap(), "stdoutstderr");
+
+        let tail = format!("{}final-diagnostic\n", "€".repeat(MAX_LOG_BYTES));
+        let mut upstream_truncated = output(0, "captured-prefix\n", "");
+        upstream_truncated.stdout_truncated = true;
+        let captures = FakeDocker::new(vec![
+            output(0, &tail, ""),
+            output(0, "x".repeat(MAX_LOG_BYTES), ""),
+            upstream_truncated,
+            output(1, "", "PRIVATE_DOCKER_FAILURE"),
+            output(0, "one\ntwo\n", ""),
+            output(0, "one\ntwo\nthree\n", ""),
+        ]);
+        let bounded = captures.container_log_capture(&container, 500).unwrap();
+        assert!(bounded.truncated);
+        assert!(bounded.text.len() <= MAX_LOG_BYTES);
+        assert!(bounded.text.ends_with("final-diagnostic\n"));
+        let exact = captures.container_log_capture(&container, 500).unwrap();
+        assert_eq!(exact.text.len(), MAX_LOG_BYTES);
+        assert!(!exact.truncated, "an exact bound is not truncation");
+        let upstream = captures.container_log_capture(&container, 500).unwrap();
+        assert_eq!(upstream.text, "captured-prefix\n");
+        assert!(
+            upstream.truncated,
+            "subprocess truncation must remain explicit"
+        );
+        let failed = captures
+            .container_log_capture(&container, 500)
+            .err()
+            .expect("a nonzero logs command must fail capture");
+        assert_eq!(failed.command_details().0, Some(1));
+        assert!(!failed.to_string().contains("PRIVATE_DOCKER_FAILURE"));
+        let exact_lines = captures.container_log_capture(&container, 2).unwrap();
+        assert_eq!(exact_lines.text, "one\ntwo\n");
+        assert!(!exact_lines.truncated, "exactly N short lines are complete");
+        let overflow_lines = captures.container_log_capture(&container, 2).unwrap();
+        assert!(
+            overflow_lines.truncated,
+            "N+1 short lines must report line truncation"
+        );
+        assert_eq!(overflow_lines.text, "two\nthree\n");
+        assert_eq!(captures.calls()[4].args[2], "3");
+        assert_eq!(captures.calls()[5].args[2], "3");
     }
 
     #[test]
@@ -3454,6 +3695,185 @@ mod tests {
             assert_eq!(state.state, expected);
             assert_ne!(state.state, RuntimeState::Running);
         }
+
+        for (inspection, kind) in [
+            (
+                output(23, "", "private Docker diagnostic"),
+                DockerErrorKind::CommandFailed,
+            ),
+            (
+                output(1, "", "private permission denied"),
+                DockerErrorKind::CommandFailed,
+            ),
+            (
+                output(1, "", "private Cannot connect to the Docker daemon"),
+                DockerErrorKind::CommandFailed,
+            ),
+            (
+                output(0, "private invalid inspection body", ""),
+                DockerErrorKind::InvalidOutput,
+            ),
+        ] {
+            let container = id('d');
+            let fake = FakeDocker::new(vec![output(0, format!("{container}\n"), ""), inspection]);
+            let error = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect_err("an unobserved container cannot be classified as missing");
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains("inspection"), "{diagnostic}");
+            assert!(diagnostic.contains(&format!("{kind:?}")), "{diagnostic}");
+            assert!(!diagnostic.contains("private"), "{diagnostic}");
+            assert_eq!(fake.calls().len(), 2, "arbitrary errors must not refresh");
+        }
+
+        for (status, expected) in [
+            ("running", RuntimeState::Starting),
+            ("exited", RuntimeState::Completed),
+        ] {
+            let old_completed = id('a');
+            let removed = id('d');
+            let replacement = id('e');
+            let old_info = serde_json::json!({
+                "State":{"Status":"exited","ExitCode":0},
+                "Config":{"Labels":{"com.docker.compose.service":"probe"}}
+            });
+            let info = serde_json::json!({
+                "State":{"Status":status,"ExitCode":0},
+                "Config":{"Labels":{"com.docker.compose.service":"probe"}}
+            });
+            let fake = FakeDocker::new(vec![
+                output(0, format!("{old_completed}\n{removed}\n"), ""),
+                output(0, old_info.to_string(), ""),
+                output(1, "", format!("Error: No such object: {removed}")),
+                output(1, "", format!("Error: No such container: {removed}")),
+                output(0, format!("{replacement}\n"), ""),
+                output(0, info.to_string(), ""),
+            ]);
+            let state = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect("refresh one project snapshot after proven exact disappearance");
+            assert_eq!(state.state, expected);
+            assert_eq!(state.containers, 1);
+            assert_eq!(state.services[0].containers, 1);
+            assert_eq!(
+                state.completion_candidates.len(),
+                usize::from(status == "exited")
+            );
+            assert!(
+                state
+                    .completion_candidates
+                    .iter()
+                    .all(|candidate| candidate.container_id == replacement)
+            );
+            let calls = fake.calls();
+            assert_eq!(&calls[3].args[..3], ["inspect", "--format", "{{.Id}}"]);
+            assert_eq!(calls[3].args[3], removed.as_str());
+            assert_eq!(
+                calls[4].args, calls[0].args,
+                "refresh the same scoped project"
+            );
+            assert_eq!(calls[5].args[3], replacement.as_str());
+            assert_eq!(calls.len(), 6);
+        }
+
+        let removed = id('d');
+        for confirmation in [
+            output(0, removed.as_str(), ""),
+            output(0, id('e').as_str(), ""),
+            output(0, "private invalid identity", ""),
+            output(1, "", "private permission denied"),
+            output(1, "", "private Cannot connect to the Docker daemon"),
+        ] {
+            let fake = FakeDocker::new(vec![
+                output(0, format!("{removed}\n"), ""),
+                output(1, "", format!("Error: No such container: {removed}")),
+                confirmation,
+            ]);
+            let error = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect_err("exact absence is required before refreshing");
+            assert!(
+                error
+                    .to_string()
+                    .contains("inspection failed (CommandFailed)")
+            );
+            assert!(!error.to_string().contains("private"));
+            assert_eq!(fake.calls().len(), 3);
+        }
+
+        for refreshed in [
+            vec![output(1, "", "private project listing failed")],
+            vec![output(0, format!("{removed}\n"), "")],
+            vec![
+                output(0, format!("{}\n", id('e')), ""),
+                output(1, "", format!("Error: No such object: {}", id('e'))),
+            ],
+        ] {
+            let mut outputs = vec![
+                output(0, format!("{removed}\n"), ""),
+                output(1, "", format!("Error: No such object: {removed}")),
+                output(1, "", format!("Error: No such object: {removed}")),
+            ];
+            outputs.extend(refreshed);
+            let expected_calls = outputs.len();
+            let fake = FakeDocker::new(outputs);
+            let error = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect_err("an unverified or unstable snapshot cannot become stopped or empty");
+            assert!(
+                error
+                    .to_string()
+                    .contains("inspection failed (CommandFailed)")
+            );
+            assert!(!error.to_string().contains("private"));
+            assert_eq!(fake.calls().len(), expected_calls, "refresh at most once");
+        }
+
+        let container = id('d');
+        let other_service = serde_json::json!({
+            "State":{"Status":"exited","ExitCode":0},
+            "Config":{"Labels":{"com.docker.compose.service":"other"}}
+        });
+        let fake = FakeDocker::new(vec![
+            output(0, format!("{container}\n"), ""),
+            output(0, other_service.to_string(), ""),
+        ]);
+        let missing = fake
+            .compose_state(
+                "dc2-finite-probe",
+                &["probe".into()],
+                &["probe".into()],
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+            )
+            .expect("successful inspection still checks the expected service");
+        assert_eq!(missing.state, RuntimeState::Failed);
+        assert_eq!(missing.services[0].state, RuntimeState::Missing);
+        assert!(missing.completion_candidates.is_empty());
     }
 
     #[test]
@@ -3673,5 +4093,59 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.kind(), DockerErrorKind::TimedOut);
+        let began = Instant::now();
+        {
+            let _cleanup = DockerDeadlineScope::enter(Instant::now() + Duration::from_millis(10));
+            let error = match cli.invoke(
+                DockerInvocation::new(vec!["version".into()], Duration::from_secs(2)).unwrap(),
+            ) {
+                Ok(_) => panic!("cleanup deadline must cap a longer command"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), DockerErrorKind::TimedOut);
+        }
+        assert!(began.elapsed() < Duration::from_millis(500));
+        let marker = temporary.path().join("deadline-marker");
+        std::fs::write(&executable, "#!/bin/sh\nprintf ran > \"$2\"\n").unwrap();
+        let invocation = || {
+            DockerInvocation::new(
+                vec!["version".into(), marker.as_os_str().to_owned()],
+                Duration::from_secs(2),
+            )
+            .unwrap()
+        };
+        {
+            let _outer = DockerDeadlineScope::enter(Instant::now() - Duration::from_millis(1));
+            {
+                let _inner = DockerDeadlineScope::enter(Instant::now() + Duration::from_secs(1));
+                assert!(matches!(
+                    cli.invoke(invocation()),
+                    Err(DockerError::Timeout { .. })
+                ));
+            }
+            assert!(matches!(
+                cli.invoke(invocation()),
+                Err(DockerError::Timeout { .. })
+            ));
+        }
+        assert!(
+            !marker.exists(),
+            "an expired nested scope must not launch a command"
+        );
+        cli.invoke(invocation())
+            .expect("ordinary Docker budgets must be restored");
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "ran");
+        std::fs::remove_file(&marker).unwrap();
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _cleanup =
+                    DockerDeadlineScope::enter(Instant::now() - Duration::from_millis(1));
+                std::panic::resume_unwind(Box::new(()));
+            })
+            .is_err()
+        );
+        cli.invoke(invocation())
+            .expect("unwinding must restore the previous deadline");
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "ran");
     }
 }

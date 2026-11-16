@@ -1,5 +1,763 @@
 use super::*;
 
+#[path = "wait.rs"]
+mod wait;
+
+#[test]
+fn explicit_linked_candidate_status_tracks_its_origin_by_deployment_id() {
+    let fixture = RouteWorld::new("checkout");
+    for args in [
+        vec!["add", ".devcoordinator.toml"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "Fixture source",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&fixture.world.worktree)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let linked = fixture.world._temporary.path().join("linked-candidate");
+    assert!(
+        std::process::Command::new("git")
+            .args(["worktree", "add", "--quiet", "--detach"])
+            .arg(&linked)
+            .current_dir(&fixture.world.worktree)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fixture.git.snapshots.lock().unwrap().insert(
+        linked.clone(),
+        crate::deployment_git::GitSnapshot {
+            commit: Some("b".repeat(40)),
+            dirty: false,
+            source_digest: "b".repeat(64),
+        },
+    );
+    let first = fixture.apply().unwrap();
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: linked.to_string_lossy().into_owned(),
+        commit: "b".repeat(40),
+    };
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read(&declaration).unwrap();
+    std::fs::write(&declaration, "schema = [\n").unwrap();
+    let preflight = fixture.deployments.preflight(
+        None,
+        None,
+        Some(&first.deployment_id),
+        Some(&candidate),
+        &fixture.caller,
+    );
+    let applied = fixture.deployments.apply_with_candidate(
+        None,
+        None,
+        Some(&first.deployment_id),
+        Some(&candidate),
+        &fixture.caller,
+    );
+    std::fs::write(&declaration, &original).unwrap();
+    eprintln!(
+        "malformed original declaration: candidate preflight={:?}, apply={:?}",
+        preflight
+            .as_ref()
+            .map(|result| result.ready)
+            .map_err(|error| error.code),
+        applied
+            .as_ref()
+            .map(|result| result.current_generation)
+            .map_err(|error| error.code)
+    );
+    assert!(
+        preflight.as_ref().is_ok_and(|result| result.ready),
+        "clean candidate preflight must read its own declaration"
+    );
+    let applied = applied.expect("clean candidate apply must read its own declaration");
+    assert!(applied.readiness.unwrap().ready);
+    assert!(
+        fixture
+            .status(&first.deployment_id)
+            .readiness
+            .unwrap()
+            .ready,
+        "status by ID must compare the selected candidate origin, not the older declared checkout"
+    );
+    let id = &first.deployment_id;
+    let stored = fixture.deployments.store.get(id).unwrap().unwrap();
+    let origin = fixture
+        .deployments
+        .store
+        .generation_origin(id, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(origin.path, linked);
+    assert_ne!(stored.worktree_id, origin.worktree_id);
+    assert!(
+        fixture
+            .reopen()
+            .status(None, None, Some(id), &fixture.caller)
+            .unwrap()
+            .readiness
+            .unwrap()
+            .ready
+    );
+    assert!(
+        fixture
+            .deployments
+            .status(
+                Some(fixture.world.worktree.to_str().unwrap()),
+                Some("web"),
+                None,
+                &fixture.caller
+            )
+            .unwrap()
+            .readiness
+            .unwrap()
+            .ready
+    );
+    fixture.git.snapshot.lock().unwrap().dirty = true;
+    assert!(
+        fixture.status(id).readiness.unwrap().ready,
+        "edits to the declared checkout must not rebind a candidate"
+    );
+    fixture
+        .git
+        .snapshots
+        .lock()
+        .unwrap()
+        .get_mut(&linked)
+        .unwrap()
+        .dirty = true;
+    assert_eq!(
+        fixture.status(id).readiness.unwrap().pending_apply,
+        Some(true)
+    );
+    assert!(
+        fixture
+            .deployments
+            .apply_with_candidate(None, None, Some(id), Some(&candidate), &fixture.caller)
+            .is_err()
+    );
+    assert_eq!(fixture.status(id).current_generation, Some(2));
+    fixture
+        .git
+        .snapshots
+        .lock()
+        .unwrap()
+        .get_mut(&linked)
+        .unwrap()
+        .dirty = false;
+    let missing = linked.with_extension("temporarily-moved");
+    std::fs::rename(&linked, &missing).unwrap();
+    let unavailable = fixture.status(id).readiness.unwrap();
+    assert!(!unavailable.ready);
+    assert_eq!(unavailable.source_state, "unknown");
+    assert!(!unavailable.blockers.is_empty());
+    std::fs::rename(&missing, &linked).unwrap();
+    fixture.git.snapshot.lock().unwrap().dirty = false;
+    let ordinary = fixture
+        .deployments
+        .apply(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert_eq!(ordinary.current_generation, Some(3));
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 3)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fixture.deployments.store.generation_origin(id, 2).unwrap(),
+        Some(origin)
+    );
+    fixture.git.snapshot.lock().unwrap().dirty = true;
+    assert_eq!(
+        fixture.status(id).readiness.unwrap().pending_apply,
+        Some(true)
+    );
+}
+
+#[test]
+fn explicit_worktree_candidate_keeps_identity_and_tracks_its_origin() {
+    let fixture = RouteWorld::new("worktree");
+    let first = fixture.apply().unwrap();
+    fixture.change();
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: fixture.world.worktree.to_string_lossy().into_owned(),
+        commit: "b".repeat(40),
+    };
+    let preflight = fixture
+        .deployments
+        .preflight(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert!(preflight.ready);
+    fixture.git.snapshot.lock().unwrap().dirty = true;
+    let blocked = fixture
+        .deployments
+        .preflight(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert!(!blocked.ready);
+    assert!(
+        blocked
+            .blockers
+            .iter()
+            .any(|blocker| blocker.message.contains("candidate source"))
+    );
+    fixture.git.snapshot.lock().unwrap().dirty = false;
+    let applied = fixture
+        .deployments
+        .apply_with_candidate(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert_eq!(applied.deployment_id, first.deployment_id);
+    assert_eq!(applied.current_generation, Some(2));
+    assert!(applied.readiness.unwrap().ready);
+    let retained = fixture
+        .deployments
+        .store
+        .generation(&first.deployment_id, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retained.path,
+        fixture
+            .deployments
+            .files
+            .generation_path(&first.deployment_id, 2)
+            .unwrap(),
+        "explicit worktree candidate must run from its retained generation"
+    );
+    let origin = fixture
+        .deployments
+        .store
+        .generation_origin(&first.deployment_id, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(origin.path, fixture.world.worktree);
+    assert!(
+        fixture
+            .status(&first.deployment_id)
+            .readiness
+            .unwrap()
+            .ready
+    );
+    assert_eq!(
+        applied.previous_generation, None,
+        "mutable original source is not a frozen rollback target"
+    );
+    let id = first.deployment_id.clone();
+    let legacy_path = fixture.world.worktree.to_string_lossy().into_owned();
+    fixture
+        .world
+        .database
+        .transaction(move |db| {
+            db.execute(
+                "UPDATE generations SET path=$1 WHERE deployment_id=$2 AND number=2",
+                crate::database::params![legacy_path, id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let upgraded = fixture
+        .deployments
+        .apply_with_candidate(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert_eq!(
+        upgraded.current_generation,
+        Some(3),
+        "legacy mutable candidate must be frozen even when its source is unchanged"
+    );
+    assert_ne!(upgraded.unchanged, Some(true));
+    let frozen = fixture
+        .deployments
+        .store
+        .generation(&first.deployment_id, 3)
+        .unwrap()
+        .unwrap()
+        .path;
+    let mutable = fixture.apply().unwrap();
+    assert_eq!(mutable.previous_generation, Some(3));
+    assert_eq!(
+        fixture
+            .deployments
+            .store
+            .generation(&first.deployment_id, 4)
+            .unwrap()
+            .unwrap()
+            .path,
+        fixture.world.worktree,
+        "ordinary worktree apply must keep developer editing semantics"
+    );
+    let restored = fixture
+        .deployments
+        .rollback(None, None, Some(&first.deployment_id), &fixture.caller)
+        .unwrap();
+    assert_eq!(restored.rolled_back_to, Some(3));
+    assert_eq!(
+        fixture
+            .deployments
+            .store
+            .generation(&first.deployment_id, 5)
+            .unwrap()
+            .unwrap()
+            .path,
+        frozen,
+        "rollback must keep the exact frozen source"
+    );
+    assert!(fixture.world.worktree.is_dir());
+
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read(&declaration).unwrap();
+    let mut failures = Vec::new();
+    for (state, bytes) in [("malformed", Some("schema = [\n")), ("removed", None)] {
+        if let Some(bytes) = bytes {
+            std::fs::write(&declaration, bytes).unwrap();
+        } else {
+            std::fs::remove_file(&declaration).unwrap();
+        }
+        for action in ["stop", "start", "restart"] {
+            match fixture.deployments.control(
+                action,
+                None,
+                None,
+                Some(&first.deployment_id),
+                None,
+                &fixture.caller,
+            ) {
+                Ok(status) => {
+                    assert_eq!(status.current_generation, restored.current_generation);
+                    if action != "stop" {
+                        assert_eq!(status.route_port, restored.route_port);
+                    }
+                }
+                Err(error) => {
+                    failures.push(format!("{action} with {state} declaration: {}", error.code))
+                }
+            }
+        }
+        assert_eq!(
+            fixture
+                .deployments
+                .store
+                .generation(&first.deployment_id, 5)
+                .unwrap()
+                .unwrap()
+                .path,
+            frozen
+        );
+        std::fs::write(&declaration, &original).unwrap();
+    }
+    assert!(
+        failures.is_empty(),
+        "saved runtime controls depend on mutable source: {failures:?}"
+    );
+}
+
+#[test]
+fn historical_process_logs_never_substitute_another_generation() {
+    let fixture = RouteWorld::new("worktree");
+    let first = fixture.apply().unwrap();
+    let legacy = fixture
+        .deployments
+        .files
+        .log_path(&first.deployment_id, "api")
+        .unwrap();
+    std::fs::write(legacy, "unrelated legacy startup\n").unwrap();
+    let logs = fixture
+        .deployments
+        .logs(
+            DeploymentLogsParams {
+                attempt: None,
+                deployment_id: Some(first.deployment_id.clone()),
+                path: None,
+                name: None,
+                component: "api".into(),
+                generation: Some(99),
+                tail_lines: 10,
+            },
+            &fixture.caller,
+        )
+        .unwrap();
+    assert!(
+        logs.tail.is_empty(),
+        "historical log substituted legacy output"
+    );
+    let path = fixture
+        .deployments
+        .files
+        .reserve_process_log(
+            &first.deployment_id,
+            "removed",
+            7,
+            fixture.caller.uid,
+            fixture.caller.gid,
+        )
+        .unwrap();
+    std::fs::write(path, "removed component startup\n").unwrap();
+    let retained = fixture
+        .deployments
+        .logs(
+            DeploymentLogsParams {
+                deployment_id: Some(first.deployment_id.clone()),
+                path: None,
+                name: None,
+                component: "removed".into(),
+                generation: Some(7),
+                attempt: None,
+                tail_lines: 10,
+            },
+            &fixture.caller,
+        )
+        .unwrap();
+    assert_eq!(retained.tail, "removed component startup");
+    assert_eq!(retained.process_log.unwrap().generation, Some(7));
+    let invalid = fixture
+        .deployments
+        .logs(
+            DeploymentLogsParams {
+                deployment_id: Some(first.deployment_id.clone()),
+                path: None,
+                name: None,
+                component: "api".into(),
+                generation: None,
+                attempt: Some(1),
+                tail_lines: 10,
+            },
+            &fixture.caller,
+        )
+        .unwrap_err();
+    assert_eq!(invalid.code, ErrorCode::ParamsInvalid);
+
+    // The two address forms share a retained log. Only the log read is being
+    // tested; repository registration must not wait for a domain writer.
+    let held = crate::request_responsiveness_tests::HeldLane::new(
+        fixture.world.database.clone(),
+        crate::database::Lane::Write,
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut observations = Vec::new();
+    std::thread::scope(|scope| {
+        for by_id in [true, false] {
+            let sender = sender.clone();
+            let deployments = fixture.deployments.clone();
+            let caller = fixture.caller.clone();
+            let params = DeploymentLogsParams {
+                deployment_id: by_id.then(|| first.deployment_id.clone()),
+                path: (!by_id).then(|| fixture.world.worktree.to_string_lossy().into_owned()),
+                name: (!by_id).then(|| "web".into()),
+                component: "removed".into(),
+                generation: Some(7),
+                attempt: None,
+                tail_lines: 10,
+            };
+            scope.spawn(move || {
+                let began = Instant::now();
+                let result = deployments.logs(params, &caller);
+                sender.send((by_id, began.elapsed(), result)).unwrap();
+            });
+        }
+        for _ in 0..2 {
+            if let Ok(result) = receiver.recv_timeout(Duration::from_secs(1)) {
+                observations.push(result);
+            }
+        }
+        // Always release the fixture's writers and join accepted reads before
+        // asserting, including the intentionally failing baseline.
+        drop(held);
+    });
+    observations.extend(receiver.try_iter());
+    let mut failures = Vec::new();
+    for (by_id, elapsed, result) in observations {
+        match result {
+            Ok(logs) => {
+                assert_eq!(logs.tail, "removed component startup");
+                if elapsed >= Duration::from_secs(1) {
+                    failures.push(format!(
+                        "by_id={by_id} waited {} ms for a writer",
+                        elapsed.as_millis()
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!("by_id={by_id}: {}", error.code)),
+        }
+    }
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read(&declaration).unwrap();
+    for (state, bytes) in [("malformed", Some("schema = [\n")), ("removed", None)] {
+        if let Some(bytes) = bytes {
+            std::fs::write(&declaration, bytes).unwrap();
+        } else {
+            std::fs::remove_file(&declaration).unwrap();
+        }
+        match fixture.deployments.logs(
+            DeploymentLogsParams {
+                deployment_id: Some(first.deployment_id.clone()),
+                path: None,
+                name: None,
+                component: "removed".into(),
+                generation: Some(7),
+                attempt: None,
+                tail_lines: 10,
+            },
+            &fixture.caller,
+        ) {
+            Ok(logs) => assert_eq!(logs.tail, "removed component startup"),
+            Err(error) => failures.push(format!(
+                "retained logs with {state} declaration: {}",
+                error.code
+            )),
+        }
+        assert!(
+            fixture
+                .deployments
+                .preflight(
+                    None,
+                    None,
+                    Some(&first.deployment_id),
+                    None,
+                    &fixture.caller
+                )
+                .is_err(),
+            "preflight must still validate desired source"
+        );
+        assert!(
+            fixture
+                .deployments
+                .apply(None, None, Some(&first.deployment_id), &fixture.caller)
+                .is_err(),
+            "apply must still validate desired source"
+        );
+        std::fs::write(&declaration, &original).unwrap();
+    }
+    assert!(
+        failures.is_empty(),
+        "retained log reads depend on writes or mutable source: {failures:?}"
+    );
+}
+
+#[test]
+fn process_unit_readiness_waits_through_activation_within_health_budget() {
+    let fixture = RouteWorld::new("worktree");
+    fixture.systemd.activation_polls.store(12, Ordering::SeqCst);
+    let applied = fixture.apply().unwrap();
+    assert_eq!(applied.state, "running");
+    assert!(applied.readiness.unwrap().ready);
+}
+
+#[test]
+fn mixed_candidate_rollback_uses_retained_configuration_and_restores_failed_snapshot() {
+    let fixture = RouteWorld::new("checkout");
+    let config_path = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read_to_string(&config_path).unwrap();
+    let first = fixture.apply().unwrap();
+    let id = &first.deployment_id;
+    let candidate_spec = original.replace("[\"serve\"]", "[\"serve-candidate\"]");
+    std::fs::write(&config_path, &candidate_spec).unwrap();
+    fixture.change();
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: fixture.world.worktree.to_string_lossy().into_owned(),
+        commit: "b".repeat(40),
+    };
+    fixture
+        .deployments
+        .apply_with_candidate(None, None, Some(id), Some(&candidate), &fixture.caller)
+        .unwrap();
+    let before = fixture.deployments.store.get(id).unwrap().unwrap();
+    std::fs::write(
+        &config_path,
+        original.replace("[\"serve\"]", "[\"unapplied-command\"]"),
+    )
+    .unwrap();
+    let route_path = fixture.deployments.config.routes_path();
+    let blocked_path = route_path.clone();
+    *fixture.systemd.listener_hook.lock().unwrap() = Some(Box::new(move || {
+        std::fs::rename(&blocked_path, blocked_path.with_extension("retained")).unwrap();
+        std::fs::create_dir(&blocked_path).unwrap();
+    }));
+    assert!(
+        fixture
+            .deployments
+            .rollback(None, None, Some(id), &fixture.caller)
+            .is_err()
+    );
+    let restored = fixture.deployments.store.get(id).unwrap().unwrap();
+    assert_eq!(restored.spec_json, before.spec_json);
+    assert_eq!(restored.spec_fingerprint, before.spec_fingerprint);
+    assert_eq!(restored.current_generation, before.current_generation);
+    assert_eq!(restored.previous_generation, before.previous_generation);
+    std::fs::remove_dir(&route_path).unwrap();
+    std::fs::rename(route_path.with_extension("retained"), &route_path).unwrap();
+    std::fs::write(&config_path, "schema = [\n").unwrap();
+    let to_ordinary = fixture
+        .deployments
+        .rollback(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, to_ordinary.current_generation.unwrap())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        stored_deployment_specification(&fixture.deployments.store.get(id).unwrap().unwrap())
+            .unwrap()
+            .components[0]
+            .command,
+        ["serve"]
+    );
+    let to_candidate = fixture
+        .deployments
+        .rollback(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, to_candidate.current_generation.unwrap())
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        stored_deployment_specification(&fixture.deployments.store.get(id).unwrap().unwrap())
+            .unwrap()
+            .components[0]
+            .command,
+        ["serve-candidate"]
+    );
+    assert_eq!(to_candidate.route_port, first.route_port);
+    fixture
+        .deployments
+        .control("restart", None, None, Some(id), None, &fixture.caller)
+        .unwrap();
+    assert_eq!(
+        stored_deployment_specification(&fixture.deployments.store.get(id).unwrap().unwrap())
+            .unwrap()
+            .components[0]
+            .command,
+        ["serve-candidate"]
+    );
+}
+
+#[test]
+fn explicit_candidate_origin_changes_require_a_new_generation_even_for_identical_content() {
+    let fixture = RouteWorld::new("checkout");
+    let first = fixture.apply().unwrap();
+    let id = &first.deployment_id;
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: fixture.world.worktree.to_string_lossy().into_owned(),
+        commit: "a".repeat(40),
+    };
+    let bind = || {
+        fixture
+            .deployments
+            .apply_with_candidate(None, None, Some(id), Some(&candidate), &fixture.caller)
+            .unwrap()
+    };
+    assert_eq!(bind().current_generation, Some(2));
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 1)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 2)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(bind().current_generation, Some(2));
+    let ordinary = fixture
+        .deployments
+        .apply(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert_eq!(ordinary.current_generation, Some(3));
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 3)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .deployments
+            .apply(None, None, Some(id), &fixture.caller)
+            .unwrap()
+            .current_generation,
+        Some(3)
+    );
+    assert_eq!(bind().current_generation, Some(4));
+    let before = fixture.deployments.store.generation_origin(id, 4).unwrap();
+    let rolled = fixture
+        .deployments
+        .rollback(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert_eq!(rolled.current_generation, Some(5));
+    assert!(
+        fixture
+            .deployments
+            .store
+            .generation_origin(id, 5)
+            .unwrap()
+            .is_none()
+    );
+    let rolled = fixture
+        .deployments
+        .rollback(None, None, Some(id), &fixture.caller)
+        .unwrap();
+    assert_eq!(rolled.current_generation, Some(6));
+    assert_eq!(
+        fixture.deployments.store.generation_origin(id, 6).unwrap(),
+        before
+    );
+    assert!(fixture.status(id).readiness.unwrap().ready);
+}
+
 #[test]
 fn explicit_candidate_keeps_deployment_identity_and_previous_generation() {
     let fixture = RouteWorld::new("checkout");
@@ -117,6 +875,23 @@ struct RouteWorld {
 }
 
 impl RouteWorld {
+    fn reopen(&self) -> Deployments {
+        let config = (*self.world.deployments.config).clone();
+        Deployments::with_runtime_adapters(
+            config.clone(),
+            self.world.database.clone(),
+            Registry::new(self.world.database.clone()),
+            Arc::new(MutationDocker::new()),
+            self.systemd.clone(),
+            Arc::new(ReadyNetwork),
+            self.git.clone(),
+            Arc::new(FixtureHealth),
+            DeploymentFiles::new(config.deployments_dir(), config.secrets_dir()),
+            Arc::new(FixturePorts),
+            Arc::new(HostClock),
+        )
+    }
+
     fn new(source: &str) -> Self {
         let mut world = World::new();
         // Let the real registry assign identities; World::new seeds synthetic IDs.
@@ -433,7 +1208,22 @@ fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
             move |connection| crate::ports::withdraw_conflict(connection, &id, "api")
         })
         .unwrap();
-    fixture.deployments.reconcile_routes().unwrap();
+    let declaration = fixture.world.worktree.join(".devcoordinator.toml");
+    let original = std::fs::read(&declaration).unwrap();
+    std::fs::write(&declaration, "schema = [\n").unwrap();
+    let reconciled = fixture.deployments.reconcile_routes();
+    let restarted = fixture
+        .systemd
+        .states
+        .lock()
+        .unwrap()
+        .get(&unit)
+        .is_some_and(|state| state == "running");
+    std::fs::write(&declaration, original).unwrap();
+    assert!(
+        reconciled.is_ok() && restarted,
+        "route recovery must use the recorded declaration: {reconciled:?}"
+    );
     let recovered = fixture.status(&first.deployment_id);
     assert_eq!(recovered.state, "running");
     assert_eq!(recovered.current_generation, first.current_generation);
@@ -454,6 +1244,182 @@ fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
             .unwrap()
             .iter()
             .any(|action| action == &format!("start:{unit}"))
+    );
+
+    // Hold the real reconciliation path inside live listener validation. A
+    // healthy status can already be visible here; the next mutation must hand
+    // off asynchronously rather than report a foreground conflict.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *fixture.systemd.listener_hook.lock().unwrap() = Some(Box::new(move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }));
+        let service = fixture.deployments.clone();
+        let reconciliation = tokio::task::spawn_blocking(move || service.reconcile_routes());
+        tokio::time::timeout(Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            fixture
+                .status(&first.deployment_id)
+                .readiness
+                .unwrap()
+                .ready
+        );
+        let admission = fixture
+            .deployments
+            .prepare_mutation_admission(None, None, Some(&first.deployment_id), &fixture.caller)
+            .unwrap()
+            .unwrap();
+        let crate::daemon::PreparedAdmission::Waiting(wait) = admission else {
+            panic!("maintenance was not held by the reconciliation hook");
+        };
+        let admitted = tokio::spawn(wait);
+        release_tx.send(()).unwrap();
+        reconciliation.await.unwrap().unwrap();
+        let hold = admitted.await.unwrap().unwrap();
+        assert!(
+            fixture
+                .deployments
+                .acquire_mutation(&first.deployment_id, MutationOwner::Maintenance,)
+                .is_err(),
+            "maintenance reacquired ahead of the admitted foreground mutation"
+        );
+        let restarted = fixture
+            .deployments
+            .control(
+                "restart",
+                None,
+                None,
+                Some(&first.deployment_id),
+                Some("api"),
+                &fixture.caller,
+            )
+            .unwrap();
+        assert_eq!(restarted.current_generation, first.current_generation);
+        assert_eq!(restarted.route_port, first.route_port);
+        drop(hold);
+        assert!(fixture.deployments.busy.entries.lock().unwrap().is_empty());
+
+        // A true foreground overlap remains Busy, and even a rejected execution
+        // releases the intent that kept maintenance from barging in.
+        let foreground = fixture
+            .deployments
+            .acquire_busy(&first.deployment_id)
+            .unwrap();
+        let crate::daemon::PreparedAdmission::Ready(hold) = fixture
+            .deployments
+            .foreground_admission(&first.deployment_id, Duration::from_secs(15))
+        else {
+            panic!("foreground conflict was turned into a maintenance wait");
+        };
+        assert_eq!(
+            fixture
+                .deployments
+                .control(
+                    "restart",
+                    None,
+                    None,
+                    Some(&first.deployment_id),
+                    Some("api"),
+                    &fixture.caller,
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::Busy
+        );
+        drop(hold);
+        drop(foreground);
+        assert!(fixture.deployments.busy.entries.lock().unwrap().is_empty());
+
+        let maintenance = crate::database::maintenance_context(|| {
+            fixture.deployments.acquire_busy(&first.deployment_id)
+        })
+        .unwrap();
+        let crate::daemon::PreparedAdmission::Waiting(wait) = fixture
+            .deployments
+            .foreground_admission(&first.deployment_id, Duration::ZERO)
+        else {
+            panic!("missing maintenance wait");
+        };
+        let error = match wait.await {
+            Ok(_) => panic!("held maintenance was admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::Busy);
+        assert!(error.message.contains("mutation was not started"));
+        let crate::daemon::PreparedAdmission::Waiting(cancelled) = fixture
+            .deployments
+            .foreground_admission(&first.deployment_id, Duration::from_secs(15))
+        else {
+            panic!("missing cancellable maintenance wait");
+        };
+        let cancelled = tokio::spawn(cancelled);
+        cancelled.abort();
+        let Err(cancelled) = cancelled.await else {
+            panic!("cancelled admission completed");
+        };
+        assert!(cancelled.is_cancelled());
+        assert_eq!(
+            fixture.deployments.busy.entries.lock().unwrap()[&first.deployment_id].pending,
+            0
+        );
+        drop(maintenance);
+        assert!(fixture.deployments.busy.entries.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn restoring_only_a_route_keeps_the_original_process_log_identity() {
+    let fixture = RouteWorld::new("checkout");
+    let first = fixture.apply().unwrap();
+    let read = || {
+        fixture
+            .deployments
+            .logs(
+                DeploymentLogsParams {
+                    deployment_id: Some(first.deployment_id.clone()),
+                    path: None,
+                    name: None,
+                    component: "api".into(),
+                    generation: Some(1),
+                    attempt: None,
+                    tail_lines: 10,
+                },
+                &fixture.caller,
+            )
+            .unwrap()
+    };
+    let before = read();
+    fixture
+        .world
+        .database
+        .transaction({
+            let id = first.deployment_id.clone();
+            move |connection| crate::ports::withdraw_conflict(connection, &id, "api")
+        })
+        .unwrap();
+    fixture.deployments.reconcile_routes().unwrap();
+    let after = read();
+    assert_eq!(after.tail, before.tail);
+    assert_eq!(
+        after.process_log.unwrap().attempt,
+        before.process_log.unwrap().attempt,
+        "restoring a route without starting the active unit created a fictional startup attempt"
+    );
+    assert!(
+        fixture
+            .status(&first.deployment_id)
+            .readiness
+            .unwrap()
+            .ready
     );
 }
 
@@ -510,7 +1476,7 @@ fn reconcile_does_not_restart_stopped_or_repair_a_mismatched_route_lease() {
             let id = first.deployment_id.clone();
             move |connection| {
                 connection.execute(
-                    "UPDATE domain_routes SET lease_id='foreign-lease' WHERE deployment_id=?1",
+                    "UPDATE domain_routes SET lease_id='foreign-lease' WHERE deployment_id=$1",
                     [&id],
                 )?;
                 Ok(())

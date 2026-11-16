@@ -1,11 +1,10 @@
-//! Fail-closed activation state machine for the one live Rust cutover.
+//! Fenced PostgreSQL activation, native upgrades, and delayed source retirement.
 //!
-//! Concrete host access is an adapter so the sequence can be exhaustively
-//! rehearsed. The database backup is restored when integrity fails or a failed
-//! candidate changed the schema beyond the captured prior installation. A
-//! same-schema startup or acceptance failure keeps intact data and restores
-//! units, links, private edge settings, and the socket. The Console source
-//! marker is verified separately against the checkout that still serves it.
+//! Concrete host access is an adapter for complete rollback rehearsals. Each
+//! attempt copies into a fresh database while the prior authority stays intact.
+//! Before write admission, failure restores the prior service/configuration;
+//! after admission, recovery preserves PostgreSQL writes and moves forward.
+//! Final source retirement requires separate post-activation live acceptance.
 
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
@@ -32,12 +31,23 @@ use crate::install::{
     render_daemon_unit_for_binary, render_edge_unit, render_tests_slice_unit,
 };
 
+#[path = "cutover/finalize.rs"]
+mod finalize;
+#[path = "cutover/native_recovery.rs"]
+mod native_recovery;
+#[cfg(feature = "selftest-fixtures")]
+#[path = "cutover/rehearsal.rs"]
+pub mod rehearsal;
+mod startup_guard;
+pub use finalize::{FinalizationConfig, FinalizationReceipt, LiveAcceptance, finalize_host};
+
 const DRAIN_FILE: &str = "test-drain.json";
 const ACTIVITY_FILE: &str = "test-activity.json";
 const LOCK_FILE: &str = "test-admission.lock";
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
 const MINIMUM_SUPPORTED_DATABASE_SCHEMA: u32 = 15;
+const MAXIMUM_LEGACY_SQLITE_SCHEMA: u32 = 34;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +74,12 @@ pub trait CutoverAdapter {
     fn start_rust(&mut self) -> Result<(), String>;
     fn verify_live(&mut self) -> Result<Vec<String>, String>;
     fn commit_activation(&mut self, snapshot: &Self::InstallationSnapshot) -> Result<(), String>;
+    fn writes_admitted(&self) -> bool {
+        false
+    }
+    fn finalization_required(&self) -> bool {
+        false
+    }
     fn stop_rust(&mut self) -> Result<(), String>;
     fn restore_installation(&mut self, snapshot: &Self::InstallationSnapshot)
     -> Result<(), String>;
@@ -123,26 +139,8 @@ fn activate_drained<A: CutoverAdapter>(
             ));
         }
     }
-    let backup = match adapter.backup_database() {
-        Ok(backup) => backup,
-        Err(error) => {
-            return Err(combine(
-                error,
-                "restore legacy socket",
-                adapter.restore_legacy_socket(),
-            ));
-        }
-    };
-    let snapshot = match adapter.capture_installation() {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            return Err(combine(
-                error,
-                "restore legacy socket",
-                adapter.restore_legacy_socket(),
-            ));
-        }
-    };
+    // The legacy process and its background writers stop before the frozen
+    // authority copy is captured. Accepted work and socket users already drained.
     if let Err(error) = adapter.stop_legacy() {
         let error = combine(
             error,
@@ -155,6 +153,36 @@ fn activate_drained<A: CutoverAdapter>(
             adapter.start_legacy(),
         ));
     }
+    let backup = match adapter.backup_database() {
+        Ok(backup) => backup,
+        Err(error) => {
+            let error = combine(
+                error,
+                "restore legacy socket",
+                adapter.restore_legacy_socket(),
+            );
+            return Err(combine(
+                error,
+                "restart prior services",
+                adapter.start_legacy(),
+            ));
+        }
+    };
+    let snapshot = match adapter.capture_installation() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let error = combine(
+                error,
+                "restore legacy socket",
+                adapter.restore_legacy_socket(),
+            );
+            return Err(combine(
+                error,
+                "restart prior services",
+                adapter.start_legacy(),
+            ));
+        }
+    };
     let activation = (|| {
         adapter.install_rust()?;
         adapter.start_rust()?;
@@ -164,7 +192,12 @@ fn activate_drained<A: CutoverAdapter>(
     })();
     match activation {
         Ok(checks) => Ok(CutoverReceipt {
-            status: "activated".to_owned(),
+            status: if adapter.finalization_required() {
+                "activated_awaiting_final_acceptance"
+            } else {
+                "activated"
+            }
+            .to_owned(),
             backup,
             database_restored: false,
             checks,
@@ -179,9 +212,16 @@ fn rollback<A: CutoverAdapter>(
     backup: &str,
     activation_error: String,
 ) -> Result<CutoverReceipt, String> {
+    if adapter.writes_admitted() {
+        return Err(format!(
+            "PostgreSQL authority is active; recovery must preserve its new writes and roll forward: {activation_error}"
+        ));
+    }
     let mut failures = Vec::new();
     if let Err(error) = adapter.stop_rust() {
-        failures.push(format!("stop Rust: {error}"));
+        return Err(format!(
+            "Rust activation failed: {activation_error}; cannot stop candidate writers: {error}; restoration was not attempted"
+        ));
     }
     if let Err(error) = adapter.restore_installation(snapshot) {
         failures.push(format!("restore installation: {error}"));
@@ -198,7 +238,9 @@ fn rollback<A: CutoverAdapter>(
     if let Err(error) = adapter.restore_legacy_socket() {
         failures.push(format!("restore legacy socket: {error}"));
     }
-    if let Err(error) = adapter.start_legacy() {
+    if failures.is_empty()
+        && let Err(error) = adapter.start_legacy()
+    {
         failures.push(format!("restart prior service: {error}"));
     }
     if failures.is_empty()
@@ -232,8 +274,11 @@ fn combine(primary: String, operation: &str, secondary: Result<(), String>) -> S
 
 #[derive(Clone, Debug)]
 pub struct HostCutoverConfig {
+    pub candidate_acceptance: PathBuf,
+    pub postgres: install::postgres::PostgresSetup,
     pub candidate_manifest: PathBuf,
     pub installed_manifest: PathBuf,
+    pub source_cache_dir: PathBuf,
     pub tmpfiles_path: PathBuf,
     pub transaction_dir: PathBuf,
     pub runtime_dir: PathBuf,
@@ -252,6 +297,8 @@ pub struct HostCutoverConfig {
     pub edge_unit: String,
     pub edge_state_dir: PathBuf,
     pub canary: bool,
+    /// Runtime-only, private-network service units for an owned integration fixture.
+    pub ephemeral_services: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -296,10 +343,13 @@ pub struct RecoveryReceipt {
 impl Default for HostCutoverConfig {
     fn default() -> Self {
         Self {
+            candidate_acceptance: "/etc/devcoordinator2/candidate-acceptance.json".into(),
+            postgres: install::postgres::PostgresSetup::default(),
             candidate_manifest: "/etc/devcoordinator2/candidate-install-manifest.json".into(),
             installed_manifest: "/etc/devcoordinator2/install-manifest.json".into(),
+            source_cache_dir: "/var/lib/devcoordinator2-sources".into(),
             tmpfiles_path: "/etc/tmpfiles.d/devcoordinator2.conf".into(),
-            transaction_dir: "/var/lib/devcoordinator2/cutover/rust-v2".into(),
+            transaction_dir: "/var/lib/devcoordinator2/cutover/postgres-v3".into(),
             runtime_dir: "/run/devcoordinator2".into(),
             socket_path: "/run/devcoordinator2/daemon.sock".into(),
             database_path: "/var/lib/devcoordinator2/authority.sqlite3".into(),
@@ -316,6 +366,7 @@ impl Default for HostCutoverConfig {
             edge_unit: "devcoordinator2-edge.service".to_owned(),
             edge_state_dir: "/var/lib/devcoordinator2-edge".into(),
             canary: false,
+            ephemeral_services: false,
         }
     }
 }
@@ -359,7 +410,27 @@ pub struct HostDrain {
     nonce: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthorityKind {
+    LegacySqlite,
+    Postgres,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PriorEdgeSource {
+    source: install::edge_source::PinnedSource,
+    installed_manifest: PathBuf,
+    manifest_sha256: String,
+    edge_unit_path: PathBuf,
+    edge_env: PathBuf,
+}
+
 pub struct HostCutover {
+    authority: AuthorityKind,
+    authority_marker_path: PathBuf,
+    frozen_companions: Vec<(PathBuf, String)>,
+    inherited_retirement_targets: Vec<Value>,
     config: HostCutoverConfig,
     runner: Arc<dyn CommandRunner>,
     manifest: InstallManifest,
@@ -369,6 +440,16 @@ pub struct HostCutover {
     tmpfiles_text: String,
     expected_owner: (u32, u32),
     fenced: bool,
+    admitted: bool,
+    acceptance_sha256: String,
+    frozen_source_sha256: Option<String>,
+    verified_backup_sha256: Option<String>,
+    postgres_started: bool,
+    prior_edge_source: Option<install::edge_source::PinnedSource>,
+    #[cfg(feature = "selftest-fixtures")]
+    rehearsal_inputs: bool,
+    #[cfg(feature = "selftest-fixtures")]
+    rehearsal_fail_edge_start: bool,
 }
 
 impl HostCutover {
@@ -550,6 +631,15 @@ impl HostCutover {
         runner: Arc<dyn CommandRunner>,
         expected_owner: (u32, u32),
     ) -> Result<Self, String> {
+        Self::new_owned_checked(config, runner, expected_owner, false)
+    }
+
+    fn new_owned_checked(
+        mut config: HostCutoverConfig,
+        runner: Arc<dyn CommandRunner>,
+        expected_owner: (u32, u32),
+        fixture_only: bool,
+    ) -> Result<Self, String> {
         match config.transaction_dir.symlink_metadata() {
             Ok(_) => return Err("cutover transaction directory already exists".to_owned()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -560,6 +650,125 @@ impl HostCutover {
             runner.as_ref(),
             expected_owner.0,
         )?;
+        let acceptance_sha256 = if fixture_only {
+            #[cfg(feature = "selftest-fixtures")]
+            {
+                rehearsal::verify_fixture_inputs(&config, &manifest, expected_owner.0)?
+            }
+            #[cfg(not(feature = "selftest-fixtures"))]
+            {
+                return Err("installer rehearsal support is not compiled".into());
+            }
+        } else {
+            install::postgres::verify_acceptance(
+                &config.candidate_acceptance,
+                &manifest,
+                expected_owner.0,
+            )?
+        };
+        config
+            .postgres
+            .verify_binaries(runner.as_ref(), expected_owner)?;
+        let installed_manifest = read_json_file(&config.installed_manifest)?;
+        let authority = if installed_manifest
+            .as_ref()
+            .and_then(|value| value.get("binaries"))
+            .and_then(Value::as_array)
+            .is_some_and(|binaries| {
+                binaries
+                    .iter()
+                    .any(|binary| binary["name"] == "devcoordinator2-migrate-authority")
+            }) {
+            AuthorityKind::Postgres
+        } else {
+            AuthorityKind::LegacySqlite
+        };
+        let mut inherited_retirement_targets = Vec::new();
+        if authority == AuthorityKind::Postgres {
+            let current_path = config
+                .postgres
+                .data_dir
+                .parent()
+                .ok_or("PostgreSQL data directory has no parent")?
+                .join("authority-current.json");
+            let current = finalize::private(&current_path, expected_owner.0)?;
+            if current["schema"] != 1
+                || current["source_commit"]
+                    != installed_manifest
+                        .as_ref()
+                        .and_then(|m| m.get("source_commit"))
+                        .cloned()
+                        .unwrap_or(Value::Null)
+            {
+                return Err(
+                    "current PostgreSQL authority binding does not match the installed source"
+                        .into(),
+                );
+            }
+            let transaction = Path::new(
+                current["transaction_dir"]
+                    .as_str()
+                    .ok_or("current PostgreSQL authority has no transaction binding")?,
+            );
+            if !transaction.is_absolute() {
+                return Err("current PostgreSQL transaction binding is not absolute".into());
+            }
+            let final_path = transaction.join("finalization.json");
+            let prior_finalization = if final_path.exists() {
+                let receipt: FinalizationReceipt =
+                    serde_json::from_value(finalize::private(&final_path, expected_owner.0)?)
+                        .map_err(|_| "prior PostgreSQL finalization receipt is invalid")?;
+                if receipt.schema != 1 || current["source_commit"] != receipt.source_commit {
+                    return Err("prior PostgreSQL finalization belongs to another source".into());
+                }
+                Some(receipt)
+            } else {
+                None
+            };
+            let pending_path = transaction.join("retirement-pending.json");
+            if prior_finalization
+                .as_ref()
+                .is_some_and(|receipt| receipt.status != "finalized")
+                || (prior_finalization.is_some() && pending_path.exists())
+            {
+                return Err(
+                    "finish the prior activation's exact finalization retry before another upgrade"
+                        .into(),
+                );
+            }
+            if pending_path.exists() {
+                let pending = finalize::private(&pending_path, expected_owner.0)?;
+                if pending["source_commit"] != current["source_commit"] {
+                    return Err(
+                        "prior PostgreSQL retirement binding belongs to another source".into(),
+                    );
+                }
+                inherited_retirement_targets = pending["retirement_targets"]
+                    .as_array()
+                    .filter(|targets| targets.len() <= 32)
+                    .cloned()
+                    .ok_or("prior PostgreSQL activation has invalid retirement targets")?;
+            } else if prior_finalization.is_none() {
+                return Err(
+                    "prior PostgreSQL activation has no retirement completion evidence".into(),
+                );
+            }
+        }
+        use sha2::Digest;
+        let candidate = sha2::Sha256::digest(config.transaction_dir.as_os_str().as_encoded_bytes());
+        config.postgres.database_name = format!(
+            "devcoordinator2_candidate_{}",
+            candidate[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let authority_marker_path = config
+            .postgres
+            .data_dir
+            .parent()
+            .ok_or("PostgreSQL data directory has no parent")?
+            .join("authority-current.json");
         let source_root = Path::new(&manifest.source_root);
         let daemon_binary = manifest
             .binaries
@@ -567,11 +776,29 @@ impl HostCutover {
             .find(|binary| binary.name == "devcoordinator2")
             .map(|binary| PathBuf::from(&binary.path))
             .ok_or_else(|| "candidate manifest has no control binary".to_owned())?;
-        let daemon_unit_text = render_daemon_unit_for_binary(source_root, &daemon_binary)?;
-        let edge_unit_text = render_edge_unit(source_root, config.canary)?;
+        for unit in [
+            &config.daemon_unit,
+            &config.edge_unit,
+            &config.postgres.unit,
+        ] {
+            if !unit.ends_with(".service")
+                || unit.len() > 128
+                || !unit.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'@')
+                })
+            {
+                return Err("cutover requires exact service unit names".into());
+            }
+        }
+        let (daemon_unit_text, edge_unit_text) =
+            render_host_units(&config, source_root, &daemon_binary)?;
         let tests_slice_unit_text = render_tests_slice_unit(source_root)?;
         let tmpfiles_text = install::state_tmpfiles(source_root, &config.tmpfiles_path)?;
         Ok(Self {
+            authority,
+            authority_marker_path,
+            frozen_companions: Vec::new(),
+            inherited_retirement_targets,
             config,
             runner,
             manifest,
@@ -581,13 +808,43 @@ impl HostCutover {
             tmpfiles_text,
             expected_owner,
             fenced: false,
+            admitted: false,
+            acceptance_sha256,
+            frozen_source_sha256: None,
+            verified_backup_sha256: None,
+            postgres_started: false,
+            prior_edge_source: None,
+            #[cfg(feature = "selftest-fixtures")]
+            rehearsal_inputs: fixture_only,
+            #[cfg(feature = "selftest-fixtures")]
+            rehearsal_fail_edge_start: false,
         })
     }
 
+    fn verify_acceptance_proof(&self) -> Result<String, String> {
+        #[cfg(feature = "selftest-fixtures")]
+        if self.rehearsal_inputs {
+            return rehearsal::verify_fixture_inputs(
+                &self.config,
+                &self.manifest,
+                self.expected_owner.0,
+            );
+        }
+        install::postgres::verify_acceptance(
+            &self.config.candidate_acceptance,
+            &self.manifest,
+            self.expected_owner.0,
+        )
+    }
+
     fn systemctl(&self, arguments: &[&str]) -> Result<(), String> {
+        let mut arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+        if self.config.ephemeral_services && arguments.first().is_some_and(|arg| arg == "enable") {
+            arguments.insert(1, "--runtime".into());
+        }
         let output = self.runner.run(&CommandRequest {
             program: self.config.systemctl.clone(),
-            args: arguments.iter().map(OsString::from).collect(),
+            args: arguments,
             environment: std::collections::BTreeMap::from([(
                 OsString::from("PATH"),
                 OsString::from("/usr/bin:/bin"),
@@ -615,8 +872,12 @@ impl HostCutover {
         }
     }
 
-    fn snapshot_targets(&self) -> [&Path; 8] {
+    fn snapshot_targets(&self) -> [&Path; 12] {
         [
+            &self.authority_marker_path,
+            &self.config.postgres.unit_path,
+            &self.config.postgres.config_path,
+            &self.config.instance_env,
             &self.config.daemon_unit_path,
             &self.config.edge_unit_path,
             &self.config.edge_env,
@@ -646,6 +907,296 @@ impl HostCutover {
         }
         Ok(())
     }
+
+    fn migrate_authority(&self, mode: &str, report_name: &str) -> Result<Value, String> {
+        self.migrate_at(
+            mode,
+            report_name,
+            &self.config.transaction_dir.join("authority-before.pgdump"),
+        )
+    }
+
+    fn migrate_at(&self, mode: &str, report_name: &str, archive: &Path) -> Result<Value, String> {
+        self.verify_candidate_binaries()?;
+        let source = self.config.transaction_dir.join("authority-before.sqlite3");
+        let archive = archive.to_owned();
+        let report = self.config.transaction_dir.join(report_name);
+        let mut args = vec![
+            "--mode".into(),
+            mode.into(),
+            "--source".into(),
+            source.into_os_string(),
+            "--database-config".into(),
+            self.config.postgres.config_path.clone().into_os_string(),
+            "--report".into(),
+            report.clone().into_os_string(),
+        ];
+        if matches!(mode, "backup" | "verify-backup" | "restore-candidate") {
+            args.extend(["--destination".into(), archive.into_os_string()]);
+        }
+        if mode == "verify-routes" {
+            args.extend([
+                "--state-dir".into(),
+                self.config
+                    .database_path
+                    .parent()
+                    .ok_or("authority state has no parent")?
+                    .as_os_str()
+                    .to_owned(),
+                "--edge-state".into(),
+                self.config.edge_state_dir.clone().into_os_string(),
+            ]);
+        }
+        let output = self.runner.run(&CommandRequest {
+            program: self.installed_binary("devcoordinator2-migrate-authority")?,
+            args,
+            environment: std::collections::BTreeMap::from([(
+                OsString::from("PATH"),
+                OsString::from("/usr/bin:/bin"),
+            )]),
+            clear_environment: true,
+        })?;
+        if !output.success || output.stdout_truncated || output.stderr_truncated {
+            let retain = |extension: &str, bytes: &[u8]| {
+                let path = report.with_extension(extension);
+                match path.symlink_metadata() {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        install::atomic_file(&path, bytes, 0o600, Some(self.expected_owner)).is_ok()
+                    }
+                    _ => false,
+                }
+            };
+            let stdout_retained = retain("stdout", output.stdout.as_bytes());
+            let stderr_retained = retain("stderr", output.stderr.as_bytes());
+            let metadata = serde_json::to_vec(&serde_json::json!({
+                "schema":1,
+                "operation":mode,
+                "source_commit":self.manifest.source_commit,
+                "success":output.success,
+                "stdout_captured_bytes":output.stdout.len(),
+                "stderr_captured_bytes":output.stderr.len(),
+                "stdout_truncated":output.stdout_truncated,
+                "stderr_truncated":output.stderr_truncated,
+                "stdout_retained":stdout_retained,
+                "stderr_retained":stderr_retained
+            }));
+            let metadata_retained = metadata
+                .as_ref()
+                .is_ok_and(|bytes| retain("command.json", bytes));
+            let diagnostics = if stdout_retained && stderr_retained && metadata_retained {
+                "private helper diagnostics retained"
+            } else {
+                "private helper diagnostics incomplete"
+            };
+            let capture = if output.stdout_truncated || output.stderr_truncated {
+                "helper output capture truncated"
+            } else {
+                "helper output capture complete"
+            };
+            return Err(format!(
+                "PostgreSQL authority {mode} failed; {capture}; {diagnostics}; legacy source remains retained"
+            ));
+        }
+        let metadata = report
+            .symlink_metadata()
+            .map_err(|_| "PostgreSQL migration did not retain its verification receipt")?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != self.expected_owner.0
+            || metadata.mode() & 0o777 != 0o600
+        {
+            return Err("PostgreSQL verification receipt is not private and owned".into());
+        }
+        let receipt =
+            read_json_file(&report)?.ok_or("PostgreSQL verification receipt is unavailable")?;
+        if matches!(mode, "import" | "verify") {
+            let checks = receipt["checks"]
+                .as_array()
+                .ok_or("PostgreSQL verification receipt has no table checks")?;
+            if checks.is_empty()
+                || checks.iter().any(|row| row["matched"] != true)
+                || receipt["source_unchanged"] != true
+                || receipt["foreign_keys_valid"] != true
+                || receipt["identities_restored"] != true
+                || receipt["committed"] != true
+            {
+                return Err(
+                    "PostgreSQL authority copy did not pass every equality and integrity check"
+                        .into(),
+                );
+            }
+        } else if receipt["verified"] != true {
+            return Err("PostgreSQL archive did not pass recovery verification".into());
+        }
+        Ok(receipt)
+    }
+
+    fn retain_prior_edge_source(&mut self) -> Result<(), String> {
+        if self.prior_edge_source.is_some() {
+            return Ok(());
+        }
+        let prior = install::read_and_verify_prior_manifest_owned(
+            &self.config.installed_manifest,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        if prior.source_root != self.manifest.source_root {
+            return Err("prior edge source belongs to another canonical installation".into());
+        }
+        let source = install::edge_source::prepare(
+            &prior,
+            &self.config.source_cache_dir,
+            self.expected_owner,
+            self.runner.as_ref(),
+        )?;
+        let binding = PriorEdgeSource {
+            source: source.clone(),
+            installed_manifest: self.config.installed_manifest.clone(),
+            manifest_sha256: install::hash_file(&self.config.installed_manifest)?,
+            edge_unit_path: self.config.edge_unit_path.clone(),
+            edge_env: self.config.edge_env.clone(),
+        };
+        install::ensure_owned_directory(&self.config.transaction_dir, 0o700, self.expected_owner)?;
+        install::atomic_file(
+            &self.config.transaction_dir.join("edge-source-before.json"),
+            &serde_json::to_vec_pretty(&binding).map_err(|_| "cannot retain prior edge source")?,
+            0o600,
+            Some(self.expected_owner),
+        )?;
+        self.prior_edge_source = Some(source);
+        Ok(())
+    }
+
+    fn verify_critical_reads(&self) -> Result<(), String> {
+        for (operation, params) in [
+            ("repository.list", serde_json::json!({"limit":1})),
+            ("deployment.list", serde_json::json!({})),
+            ("health.summary", serde_json::json!({})),
+        ] {
+            let output = self.runner.run(&CommandRequest {
+                program: self.installed_binary("devcoordinator2")?,
+                args: vec![
+                    "call".into(),
+                    operation.into(),
+                    "--params".into(),
+                    params.to_string().into(),
+                ],
+                environment: std::collections::BTreeMap::from([
+                    (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+                    (
+                        OsString::from("DEVCOORDINATOR2_INSTANCE_ENV"),
+                        self.config.instance_env.as_os_str().to_owned(),
+                    ),
+                ]),
+                clear_environment: true,
+            })?;
+            let value = serde_json::from_str::<Value>(&output.stdout)
+                .map_err(|_| format!("candidate {operation} returned no bounded typed result"))?;
+            if !output.success || output.stdout_truncated || !successful_v3_ping(&value) {
+                return Err(format!(
+                    "candidate {operation} failed before write admission"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn retain_activation_commit(&self, snapshot: &InstallationSnapshot) -> Result<(), String> {
+        self.verify_candidate_binaries()?;
+        let mut retirement_targets = self.inherited_retirement_targets.clone();
+        if self.authority == AuthorityKind::LegacySqlite {
+            if self.frozen_source_sha256.as_deref()
+                != Some(install::hash_file(&self.config.database_path)?.as_str())
+                || install::hash_file(
+                    &self.config.transaction_dir.join("authority-before.sqlite3"),
+                )? != snapshot.backup_sha256
+            {
+                return Err("frozen authority source changed before PostgreSQL admission".into());
+            }
+            retirement_targets.extend([serde_json::json!({"path":self.config.database_path,"sha256":self.frozen_source_sha256}),serde_json::json!({"path":self.config.transaction_dir.join("authority-before.sqlite3"),"sha256":snapshot.backup_sha256})]);
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let path =
+                    PathBuf::from(format!("{}{}", self.config.database_path.display(), suffix));
+                if let Ok(metadata) = path.symlink_metadata() {
+                    let Some((_, digest)) = self
+                        .frozen_companions
+                        .iter()
+                        .find(|(frozen, _)| frozen == &path)
+                    else {
+                        return Err(
+                            "legacy authority gained a companion after the source freeze".into(),
+                        );
+                    };
+                    if metadata.file_type().is_symlink()
+                        || !metadata.is_file()
+                        || metadata.uid() != self.expected_owner.0
+                        || install::hash_file(&path)? != *digest
+                    {
+                        return Err(
+                            "frozen SQLite companion changed before native admission".into()
+                        );
+                    }
+                    retirement_targets.push(serde_json::json!({"path":path,"sha256":digest}));
+                }
+            }
+        }
+        if self.verify_acceptance_proof()? != self.acceptance_sha256 {
+            return Err("candidate acceptance changed during activation".into());
+        }
+        self.verify_candidate_binaries()?;
+        let mut native = snapshot.clone();
+        native.schema = 3;
+        native.backup_sha256 =
+            install::hash_file(&self.config.transaction_dir.join("authority-before.pgdump"))?;
+        let activated_at_ms =
+            (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+        let fence = self.config.runtime_dir.join("daemon.pre-cutover.sock");
+        let fence_binding = owned_fence_binding(&fence, self.expected_owner.0)?;
+        let accepted = self
+            .config
+            .transaction_dir
+            .join("candidate-acceptance.json");
+        atomic_copy(
+            &self.config.candidate_acceptance,
+            &accepted,
+            self.expected_owner,
+        )?;
+        if install::hash_file(&accepted)? != self.acceptance_sha256 {
+            return Err("candidate acceptance changed before authority commitment".into());
+        }
+        let service_bindings = [
+            &self.config.daemon_unit_path,
+            &self.config.edge_unit_path,
+            &self.config.postgres.unit_path,
+        ]
+        .iter()
+        .map(|path| Ok(serde_json::json!({"path":path,"sha256":install::hash_file(path)?})))
+        .collect::<Result<Vec<_>, String>>()?;
+        let pending = serde_json::json!({"schema":1,"source_commit":self.manifest.source_commit,"activated_at_ms":activated_at_ms,"retirement_targets":retirement_targets,"postgres_config":self.config.postgres.config_path,"postgres_config_sha256":install::hash_file(&self.config.postgres.config_path)?,"database_name":self.config.postgres.database_name,"authority_marker":self.authority_marker_path,"installed_manifest":self.config.installed_manifest,"instance_env":self.config.instance_env,"instance_env_sha256":install::hash_file(&self.config.instance_env)?,"edge_env":self.config.edge_env,"edge_env_sha256":install::hash_file(&self.config.edge_env)?,"socket_path":self.config.socket_path,"postgres_unit":self.config.postgres.unit,"daemon_unit":self.config.daemon_unit,"edge_unit":self.config.edge_unit,"service_bindings":service_bindings,"candidate_acceptance":accepted,"candidate_acceptance_sha256":self.acceptance_sha256,"fence":fence_binding});
+        install::atomic_file(
+            &self.config.transaction_dir.join("retirement-pending.json"),
+            &serde_json::to_vec(&pending)
+                .map_err(|_| "cannot retain PostgreSQL activation boundary")?,
+            0o600,
+            Some(self.expected_owner),
+        )?;
+        write_snapshot(&native, "committed", self.expected_owner)?;
+        let current = serde_json::json!({"schema":1,"source_commit":self.manifest.source_commit,"transaction_dir":self.config.transaction_dir,"database_name":self.config.postgres.database_name,"activated_at_ms":activated_at_ms});
+        install::atomic_file(
+            &self.authority_marker_path,
+            &serde_json::to_vec(&current)
+                .map_err(|_| "cannot retain current PostgreSQL authority binding")?,
+            0o600,
+            Some(self.expected_owner),
+        )?;
+
+        Ok(())
+    }
+
+    fn verify_native_routes(&self) -> Result<(), String> {
+        self.migrate_authority("verify-routes", "native-routes-verified.json")
+            .map(|_| ())
+    }
 }
 
 impl CutoverAdapter for HostCutover {
@@ -653,6 +1204,11 @@ impl CutoverAdapter for HostCutover {
     type InstallationSnapshot = InstallationSnapshot;
 
     fn close_admission(&mut self) -> Result<Self::Drain, String> {
+        self.verify_candidate_binaries()?;
+        match self.config.installed_manifest.symlink_metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => self.retain_prior_edge_source()?,
+        }
         begin_drain(&self.config.runtime_dir, self.expected_owner)
     }
 
@@ -681,7 +1237,28 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn deployment_is_applying(&mut self) -> Result<bool, String> {
+        if self.authority == AuthorityKind::Postgres {
+            install::ensure_owned_directory(
+                &self.config.transaction_dir,
+                0o700,
+                self.expected_owner,
+            )?;
+            let receipt =
+                self.migrate_authority("inspect-postgres", "native-source-inspected.json")?;
+            if receipt["schema_version"]
+                .as_u64()
+                .is_none_or(|version| version < 35 || version > u64::from(DATABASE_SCHEMA_VERSION))
+            {
+                return Err("native source schema is not supported by this candidate".into());
+            }
+            return receipt["applying"]
+                .as_bool()
+                .ok_or_else(|| "native activity inspection did not return a typed result".into());
+        }
         let connection = open_database_read_only(&self.config.database_path)?;
+        if database_schema_from(&connection)? != "34" {
+            return Err("PostgreSQL cutover requires the complete frozen SQLite schema 34".into());
+        }
         connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM deployments WHERE state='applying')",
@@ -692,8 +1269,42 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn backup_database(&mut self) -> Result<String, String> {
+        startup_guard::require_active(
+            &self.config.transaction_dir,
+            &self.config.daemon_unit,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        startup_guard::require_active(
+            &startup_guard::edge_transaction(&self.config.transaction_dir),
+            &self.config.edge_unit,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        startup_guard::require_source_stopped(
+            &startup_guard::edge_transaction(&self.config.transaction_dir),
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            &self.config.edge_unit,
+            self.expected_owner.0,
+        )?;
+        startup_guard::require_source_stopped(
+            &self.config.transaction_dir,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            &self.config.daemon_unit,
+            self.expected_owner.0,
+        )?;
         install::ensure_owned_directory(&self.config.transaction_dir, 0o700, self.expected_owner)
             .map_err(|error| format!("cannot prepare cutover transaction: {error}"))?;
+        if self.authority == AuthorityKind::Postgres {
+            self.migrate_authority("backup", "source-native-backup.json")?;
+            self.migrate_authority("verify-backup", "source-native-backup-verified.json")?;
+            self.verified_backup_sha256 = Some(install::hash_file(
+                &self.config.transaction_dir.join("authority-before.pgdump"),
+            )?);
+            return path_text(&self.config.transaction_dir.join("authority-before.pgdump"));
+        }
         let backup = self.config.transaction_dir.join("authority-before.sqlite3");
         if backup.exists() {
             return Err("cutover database backup already exists".to_owned());
@@ -713,11 +1324,63 @@ impl CutoverAdapter for HostCutover {
         if !database_integrity(&backup)? {
             return Err("captured database backup failed integrity verification".into());
         }
+        drop(connection);
+        self.frozen_source_sha256 = Some(install::hash_file(&self.config.database_path)?);
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let path = PathBuf::from(format!("{}{}", self.config.database_path.display(), suffix));
+            if let Ok(metadata) = path.symlink_metadata() {
+                if metadata.file_type().is_symlink()
+                    || !metadata.is_file()
+                    || metadata.uid() != self.expected_owner.0
+                {
+                    return Err("frozen SQLite companion is not an owned regular file".into());
+                }
+                self.frozen_companions
+                    .push((path.clone(), install::hash_file(&path)?));
+            }
+        }
+
+        self.verified_backup_sha256 = Some(install::hash_file(&backup)?);
         path_text(&backup)
     }
 
     fn capture_installation(&mut self) -> Result<Self::InstallationSnapshot, String> {
-        self.capture_installation_for(false)
+        let mut snapshot = read_snapshot(&self.config.transaction_dir, self.expected_owner.0)?;
+        startup_guard::require_freezing(&snapshot)?;
+        startup_guard::unchanged(&snapshot, self.expected_owner.0)?;
+        startup_guard::unchanged_effective(
+            &snapshot,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        match self.config.installed_manifest.symlink_metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => self.retain_prior_edge_source()?,
+        }
+        startup_guard::unchanged(&snapshot, self.expected_owner.0)?;
+        startup_guard::unchanged_effective(
+            &snapshot,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            self.expected_owner.0,
+        )?;
+        snapshot.backup_sha256 = install::hash_file(&self.config.transaction_dir.join(
+            if self.authority == AuthorityKind::Postgres {
+                "authority-before.pgdump"
+            } else {
+                "authority-before.sqlite3"
+            },
+        ))?;
+        if self.verified_backup_sha256.as_deref() != Some(snapshot.backup_sha256.as_str()) {
+            return Err(
+                "freezing snapshot has no matching verified backup; preserve the start guard"
+                    .into(),
+            );
+        }
+        snapshot.status = "prepared".into();
+        write_snapshot(&snapshot, "prepared", self.expected_owner)?;
+        Ok(snapshot)
     }
 
     fn fence_legacy_socket(&mut self) -> Result<(), String> {
@@ -744,10 +1407,18 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn stop_legacy(&mut self) -> Result<(), String> {
-        self.systemctl_all(&[
-            ("stop", &self.config.edge_unit),
-            ("stop", &self.config.daemon_unit),
-        ])
+        if self.config.installed_manifest.symlink_metadata().is_ok() {
+            self.retain_prior_edge_source()?;
+        }
+        startup_guard::capture_freezing(
+            &self.config,
+            &self.manifest,
+            self.authority == AuthorityKind::Postgres,
+            &self.snapshot_targets(),
+            self.runner.as_ref(),
+            self.expected_owner,
+        )?;
+        startup_guard::stop_services(&self.config, self.runner.as_ref(), self.expected_owner)
     }
 
     fn install_rust(&mut self) -> Result<(), String> {
@@ -805,6 +1476,11 @@ impl CutoverAdapter for HostCutover {
             &self.manifest.source_commit,
             self.expected_owner.0,
         )?;
+        install::configure_edge_console_source(
+            &self.config.edge_env,
+            Path::new(&self.manifest.source_root),
+            self.expected_owner.0,
+        )?;
         replace_captured_target(
             &self.config.cli_link,
             &self.installed_binary("devcoordinator2")?,
@@ -813,10 +1489,63 @@ impl CutoverAdapter for HostCutover {
             &self.config.tooling_link,
             &self.installed_binary("devcoordinator2-tooling")?,
         )?;
-        self.systemctl(&["daemon-reload"])
+        install::set_env_value(
+            &self.config.instance_env,
+            "DEVCOORDINATOR2_DATABASE_CONFIG",
+            &path_text(&self.config.postgres.config_path)?,
+        )?;
+        self.config.postgres.prepare(
+            Path::new(&self.manifest.source_root),
+            self.runner.as_ref(),
+            self.expected_owner,
+        )?;
+        self.systemctl(&["daemon-reload"])?;
+        self.systemctl(&["enable", &self.config.postgres.unit])?;
+        self.systemctl(&["start", &self.config.postgres.unit])?;
+        self.postgres_started = true;
+        self.config.postgres.bootstrap(self.runner.as_ref())?;
+        if self.authority == AuthorityKind::LegacySqlite {
+            self.migrate_authority("import", "import.json")?;
+            self.systemctl(&["restart", &self.config.postgres.unit])?;
+            self.config.postgres.wait_ready(self.runner.as_ref())?;
+            self.migrate_authority("verify", "restart-verified.json")?;
+            self.migrate_authority("backup", "postgres-backup.json")?;
+            self.migrate_authority("verify-backup", "postgres-backup-verified.json")?;
+        } else {
+            self.migrate_authority("restore-candidate", "native-candidate-restored.json")?;
+            self.migrate_authority("verify-backup", "native-candidate-copy-verified.json")?;
+            self.migrate_authority("migrate", "native-candidate-migrated.json")?;
+            self.systemctl(&["restart", &self.config.postgres.unit])?;
+            self.config.postgres.wait_ready(self.runner.as_ref())?;
+            let archive = self
+                .config
+                .transaction_dir
+                .join("authority-candidate.pgdump");
+            self.migrate_at("backup", "native-candidate-backup.json", &archive)?;
+            self.migrate_at(
+                "verify-backup",
+                "native-candidate-restart-verified.json",
+                &archive,
+            )?;
+        }
+        Ok(())
     }
 
     fn start_rust(&mut self) -> Result<(), String> {
+        startup_guard::release_services(
+            &self.config.transaction_dir,
+            &self.config.daemon_unit,
+            &self.config.edge_unit,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            self.expected_owner,
+        )?;
+        #[cfg(feature = "selftest-fixtures")]
+        if self.rehearsal_fail_edge_start {
+            // Only the marker-validated fixture constructor can arm this. A
+            // real Node startup fails; no command or success response is mocked.
+            install::set_env_value(&self.config.edge_env, "EDGE_BASE_DOMAIN", "")?;
+        }
         self.systemctl_all(&[
             ("enable", &self.config.daemon_unit),
             ("restart", &self.config.daemon_unit),
@@ -835,7 +1564,7 @@ impl CutoverAdapter for HostCutover {
         loop {
             let output = self.runner.run(&CommandRequest {
                 program: binary.clone(),
-                args: vec!["ping".into()],
+                args: vec!["call".into(), "ping".into()],
                 environment: std::collections::BTreeMap::from([
                     (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
                     (
@@ -846,44 +1575,77 @@ impl CutoverAdapter for HostCutover {
                 clear_environment: true,
             })?;
             let response = serde_json::from_str::<Value>(&output.stdout).ok();
-            if output.success && response.as_ref().is_some_and(successful_v2_ping) {
+            if output.success
+                && response.as_ref().is_some_and(|response| {
+                    successful_v3_ping(response)
+                        && response["data"]["source_commit"].as_str()
+                            == Some(self.manifest.source_commit.as_str())
+                        && response["data"]["socket"].as_str() == self.config.socket_path.to_str()
+                })
+            {
                 break;
             }
-            if !response.as_ref().is_some_and(retryable_v2_ping)
+            if !response.as_ref().is_some_and(retryable_v3_ping)
                 || std::time::Instant::now() >= deadline
             {
-                return Err(command_failure("v2 ping", &output.stderr, &output.stdout));
+                return Err(command_failure("v3 ping", &output.stderr, &output.stdout));
             }
             self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
         self.systemctl(&["is-active", "--quiet", &self.config.edge_unit])?;
-        verify_reconciled_routes(&self.config.database_path, &self.config.edge_state_dir)?;
+        self.verify_native_routes()?;
+        self.verify_critical_reads()?;
+        self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
+        self.systemctl(&["is-active", "--quiet", &self.config.edge_unit])?;
         Ok(vec![
             "route-lease-edge-reconciled".to_owned(),
-            "v2-cli-ping".to_owned(),
+            "v3-cli-ping".to_owned(),
             "rust-daemon-active".to_owned(),
             "node-edge-active".to_owned(),
+            if self.authority == AuthorityKind::LegacySqlite {
+                "postgres-import-equal-after-restart"
+            } else {
+                "native-authority-upgrade-verified"
+            }
+            .to_owned(),
+            "postgres-backup-restored-and-verified".to_owned(),
+            "frozen-candidate-acceptance".to_owned(),
+            "critical-read-api".to_owned(),
         ])
     }
 
     fn commit_activation(&mut self, snapshot: &Self::InstallationSnapshot) -> Result<(), String> {
-        write_snapshot(snapshot, "committed", self.expected_owner)?;
-        let fence = self.config.runtime_dir.join("daemon.pre-cutover.sock");
-        if fence.exists() {
-            std::fs::remove_file(&fence)
-                .map_err(|error| format!("cannot retire legacy socket fence: {error}"))?;
-        }
+        self.retain_activation_commit(snapshot)?;
+        // The durable authority choice is irreversible even if the final
+        // fence unlink fails. Recovery verifies and finishes this same commit.
+        self.admitted = true;
+        let pending = finalize::private(
+            &self.config.transaction_dir.join("retirement-pending.json"),
+            self.expected_owner.0,
+        )?;
+        release_committed_fence(&self.config.runtime_dir, &pending, self.expected_owner.0)?;
         self.fenced = false;
+        self.admitted = true;
         Ok(())
     }
 
+    fn writes_admitted(&self) -> bool {
+        self.admitted
+    }
+
+    fn finalization_required(&self) -> bool {
+        true
+    }
+
     fn stop_rust(&mut self) -> Result<(), String> {
-        self.systemctl_all(&[
-            ("stop", &self.config.edge_unit),
-            ("stop", &self.config.daemon_unit),
-        ])
+        startup_guard::stop_services(&self.config, self.runner.as_ref(), self.expected_owner)?;
+        if self.postgres_started {
+            self.systemctl(&["stop", &self.config.postgres.unit])?;
+            self.postgres_started = false;
+        }
+        Ok(())
     }
 
     fn restore_installation(
@@ -902,6 +1664,13 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn database_matches_backup(&mut self, backup: &str) -> Result<bool, String> {
+        if self.authority == AuthorityKind::Postgres {
+            self.systemctl(&["start", &self.config.postgres.unit])?;
+            self.config.postgres.wait_ready(self.runner.as_ref())?;
+            self.migrate_authority("verify-backup", "native-source-rollback-verified.json")?;
+            return Ok(true);
+        }
+
         if !database_integrity(&self.config.database_path)? {
             return Ok(false);
         }
@@ -912,6 +1681,13 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn restore_database(&mut self, backup: &str) -> Result<(), String> {
+        if self.authority == AuthorityKind::Postgres {
+            return Err("native source database is preserved; restore its captured configuration rather than overwriting PostgreSQL data".into());
+        }
+
+        if self.admitted {
+            return Err("cannot restore SQLite after PostgreSQL writes were admitted".into());
+        }
         if !database_integrity(Path::new(backup))? {
             return Err("cutover database backup failed integrity verification".to_owned());
         }
@@ -942,13 +1718,45 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn start_legacy(&mut self) -> Result<(), String> {
-        // The prior daemon may differ from the Console assets, which continue
-        // to come directly from the current canonical checkout.
-        install::refresh_edge_source_revision(
-            &self.config.edge_env,
+        if let Ok(snapshot) = read_snapshot(&self.config.transaction_dir, self.expected_owner.0)
+            && snapshot.status == "freezing"
+        {
+            let config = RecoveryConfig {
+                transaction_dir: self.config.transaction_dir.clone(),
+                runtime_dir: self.config.runtime_dir.clone(),
+                socket_path: self.config.socket_path.clone(),
+                database_path: self.config.database_path.clone(),
+                systemctl: self.config.systemctl.clone(),
+                daemon_unit: self.config.daemon_unit.clone(),
+                edge_unit: self.config.edge_unit.clone(),
+                edge_state_dir: self.config.edge_state_dir.clone(),
+                source_root: self.manifest.source_root.clone().into(),
+                edge_env: self.config.edge_env.clone(),
+            };
+            startup_guard::resume_freezing(
+                &config,
+                &snapshot,
+                self.runner.as_ref(),
+                self.expected_owner,
+            )?;
+            return Ok(());
+        }
+        restore_prior_edge_source(
+            &self.config.transaction_dir,
             Path::new(&self.manifest.source_root),
-            self.expected_owner.0,
+            &self.config.edge_env,
+            None,
             self.runner.as_ref(),
+            self.expected_owner,
+        )?;
+        self.systemctl(&["daemon-reload"])?;
+        startup_guard::release_services(
+            &self.config.transaction_dir,
+            &self.config.daemon_unit,
+            &self.config.edge_unit,
+            &self.config.systemctl,
+            self.runner.as_ref(),
+            self.expected_owner,
         )?;
         self.systemctl_all(&[
             ("restart", &self.config.daemon_unit),
@@ -961,13 +1769,220 @@ impl CutoverAdapter for HostCutover {
     }
 }
 
-fn successful_v2_ping(response: &Value) -> bool {
-    response.get("protocol").and_then(Value::as_u64) == Some(2)
+fn restore_prior_edge_source(
+    transaction: &Path,
+    source_root: &Path,
+    edge_env: &Path,
+    snapshot: Option<&InstallationSnapshot>,
+    runner: &dyn CommandRunner,
+    owner: (u32, u32),
+) -> Result<(), String> {
+    let binding =
+        read_prior_edge_source(transaction, source_root, edge_env, snapshot, runner, owner)?;
+    install::edge_source::bind(
+        &binding.source,
+        &binding.edge_unit_path,
+        edge_env,
+        "devcoordinator2-edge",
+        owner.0,
+        runner,
+    )
+}
+
+/// Validate the retained binding without changing source, units or environment.
+fn read_prior_edge_source(
+    transaction: &Path,
+    source_root: &Path,
+    edge_env: &Path,
+    snapshot: Option<&InstallationSnapshot>,
+    runner: &dyn CommandRunner,
+    owner: (u32, u32),
+) -> Result<PriorEdgeSource, String> {
+    let binding: PriorEdgeSource = serde_json::from_value(finalize::private(
+        &transaction.join("edge-source-before.json"),
+        owner.0,
+    )?)
+    .map_err(|_| "prior edge source binding is invalid")?;
+    if binding.source.repository != source_root || binding.edge_env != edge_env {
+        return Err("prior edge source belongs to another installation".into());
+    }
+    if let Some(snapshot) = snapshot {
+        for path in [
+            &binding.installed_manifest,
+            &binding.edge_unit_path,
+            &binding.edge_env,
+        ] {
+            if !snapshot
+                .entries
+                .iter()
+                .any(|entry| Path::new(&entry.path) == path)
+            {
+                return Err("prior edge source is outside the captured installation".into());
+            }
+        }
+    }
+    let manifest = install::read_and_verify_prior_manifest_owned(
+        &binding.installed_manifest,
+        runner,
+        owner.0,
+    )?;
+    if manifest.source_commit != binding.source.source_commit
+        || install::hash_file(&binding.installed_manifest)? != binding.manifest_sha256
+    {
+        return Err("prior edge manifest no longer matches its captured source".into());
+    }
+    Ok(binding)
+}
+
+fn render_host_units(
+    config: &HostCutoverConfig,
+    source: &Path,
+    daemon: &Path,
+) -> Result<(String, String), String> {
+    let path = |path: &Path| -> Result<String, String> {
+        let value = path_text(path)?;
+        if !path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+            || value.bytes().any(|byte| {
+                byte.is_ascii_whitespace() || matches!(byte, b'%' | b'\\' | b'\'' | b'"')
+            })
+        {
+            return Err("service bindings require exact absolute unit paths".into());
+        }
+        Ok(value)
+    };
+    let instance = path(&config.instance_env)?;
+    let state = path(
+        config
+            .database_path
+            .parent()
+            .ok_or("authority state directory is unavailable")?,
+    )?;
+    let runtime = path(&config.runtime_dir)?;
+    let etc = path(
+        config
+            .instance_env
+            .parent()
+            .ok_or("instance environment has no parent")?,
+    )?;
+    let daemon=render_daemon_unit_for_binary(source,daemon)?
+        .replace("devcoordinator2-postgres.service",&config.postgres.unit)
+        .replace("EnvironmentFile=-/etc/devcoordinator2/instance.env",&format!("EnvironmentFile=-{instance}\nEnvironment=DEVCOORDINATOR2_INSTANCE_ENV={instance}"))
+        .replace("ReadWritePaths=/home /var/lib/devcoordinator2 /run/devcoordinator2 /etc/devcoordinator2",&format!("ReadWritePaths=/home {state} {runtime} {etc}"));
+    let edge_env = path(&config.edge_env)?;
+    let edge_state = path(&config.edge_state_dir)?;
+    let credentials = config
+        .edge_env
+        .parent()
+        .ok_or("edge environment has no parent")?
+        .join("edge");
+    let credential = path(&credentials)?;
+    let mut edge = render_edge_unit(source, config.canary)?
+        .replace(
+            "EnvironmentFile=/etc/devcoordinator2/edge.env",
+            &format!("EnvironmentFile={edge_env}"),
+        )
+        .replace("/etc/devcoordinator2/edge/", &format!("{credential}/"))
+        .replace(
+            "Environment=EDGE_STATE_DIR=/var/lib/devcoordinator2-edge",
+            &format!("Environment=EDGE_STATE_DIR={edge_state}"),
+        )
+        .replace(
+            "ReadOnlyPaths=-/var/lib/devcoordinator2/public",
+            &format!("ReadOnlyPaths=-{state}/public"),
+        );
+    if config.edge_state_dir != Path::new("/var/lib/devcoordinator2-edge") {
+        edge = edge.replace(
+            "StateDirectory=devcoordinator2-edge\n",
+            &format!("ReadWritePaths={edge_state}\n"),
+        );
+    }
+    if !daemon.contains(&format!("EnvironmentFile=-{instance}\n"))
+        || !daemon.contains(&format!(
+            "Environment=DEVCOORDINATOR2_INSTANCE_ENV={instance}\n"
+        ))
+        || !edge.contains(&format!("EnvironmentFile={edge_env}\n"))
+        || !edge.contains(&format!("Environment=EDGE_STATE_DIR={edge_state}\n"))
+        || !edge.contains(&format!(
+            "LoadCredential=session.secret:{credential}/session.secret\n"
+        ))
+    {
+        return Err("source units do not bind the configured instance and credential paths".into());
+    }
+    let daemon = if config.ephemeral_services {
+        #[cfg(not(feature = "selftest-fixtures"))]
+        return Err("ephemeral service profiles require the installer rehearsal feature".into());
+        #[cfg(feature = "selftest-fixtures")]
+        {
+            let root = path(&rehearsal::service_root(config)?)?;
+            edge = edge.replace(
+                "[Service]\n",
+                &format!("[Service]\nPrivateNetwork=yes\nTimeoutStopSec=15\nStandardOutput=append:{root}/service-logs/edge.log\nStandardError=append:{root}/service-logs/edge.log\n"),
+            );
+            let daemon = daemon
+                .replace("ProtectSystem=full\n", "ProtectSystem=strict\n")
+                .replace(
+                    &format!("ReadWritePaths=/home {state} {runtime} {etc}\n"),
+                    &format!("ReadWritePaths={root}\n"),
+                )
+                .replace("[Service]\n", &format!("[Service]\nPrivateTmp=yes\nTimeoutStopSec=15\nStandardOutput=append:{root}/service-logs/daemon.log\nStandardError=append:{root}/service-logs/daemon.log\n"));
+            let writable = format!("ReadWritePaths={root}");
+            let mut writable_directives = daemon
+                .lines()
+                .filter(|line| line.starts_with("ReadWritePaths="));
+            if !daemon.lines().any(|line| line == "ProtectSystem=strict")
+                || writable_directives.next() != Some(writable.as_str())
+                || writable_directives.next().is_some()
+            {
+                return Err("fixture daemon does not isolate writes to its owned root".into());
+            }
+            daemon
+        }
+    } else {
+        daemon
+    };
+    Ok((daemon, edge))
+}
+
+fn successful_v3_ping(response: &Value) -> bool {
+    response.get("protocol").and_then(Value::as_u64) == Some(3)
         && response.get("ok") == Some(&Value::Bool(true))
 }
 
-fn retryable_v2_ping(response: &Value) -> bool {
-    response.get("protocol").and_then(Value::as_u64) == Some(2)
+fn owned_fence_binding(path: &Path, owner: u32) -> Result<Value, String> {
+    let metadata = path.symlink_metadata().map_err(
+        |_| "the exact committed activation fence is unavailable; preserve PostgreSQL authority",
+    )?;
+    if metadata.file_type().is_symlink()
+        || !(metadata.file_type().is_socket() || cfg!(test) && metadata.is_file())
+        || metadata.uid() != owner
+    {
+        return Err("committed activation fence is not owned by this installation".into());
+    }
+    Ok(
+        serde_json::json!({"path":path,"identity":file_identity(&metadata),"uid":metadata.uid(),"gid":metadata.gid(),"mode":metadata.mode()}),
+    )
+}
+
+fn release_committed_fence(runtime: &Path, pending: &Value, owner: u32) -> Result<(), String> {
+    let fence = runtime.join("daemon.pre-cutover.sock");
+    if owned_fence_binding(&fence, owner)? != pending["fence"] {
+        return Err("committed activation fence changed; PostgreSQL remains authoritative".into());
+    }
+    std::fs::remove_file(&fence).map_err(|_| "cannot release exact committed activation fence")?;
+    File::open(runtime)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "cannot seal committed activation admission")?;
+    Ok(())
+}
+
+fn retryable_v3_ping(response: &Value) -> bool {
+    response.get("protocol").and_then(Value::as_u64) == Some(3)
         && response.get("ok") == Some(&Value::Bool(false))
         && response
             .get("error")
@@ -989,6 +2004,25 @@ pub fn recover_host(
     let invalid_target = |error| format!("recovery target invalid: {error}");
     let snapshot =
         read_snapshot(&config.transaction_dir, expected_owner.0).map_err(invalid_target)?;
+    if snapshot.status == "freezing" {
+        startup_guard::require_freezing(&snapshot)?;
+        startup_guard::validate_freezing_source(config, &snapshot, runner, expected_owner)?;
+        let drain = begin_drain(&config.runtime_dir, expected_owner)?;
+        let receipt = startup_guard::resume_freezing(config, &snapshot, runner, expected_owner)?;
+        end_drain(&drain)?;
+        return Ok(receipt);
+    }
+    if snapshot.schema == 3 && snapshot.status == "committed" {
+        return native_recovery::finish_activation(config, &snapshot, runner, expected_owner);
+    }
+    if snapshot.schema == 3
+        && !matches!(
+            snapshot.status.as_str(),
+            "prepared" | "activating" | "rolling_back"
+        )
+    {
+        return Err("PostgreSQL authority has crossed admission; recovery must preserve PostgreSQL writes and roll forward".into());
+    }
     if !matches!(
         snapshot.status.as_str(),
         "prepared" | "activating" | "rolling_back"
@@ -1024,6 +2058,9 @@ pub fn recover_host(
         {
             return Err("recovery target belongs to a different installed candidate".into());
         }
+    }
+    if snapshot.schema == 3 {
+        return native_recovery::recover(config, &snapshot, runner, expected_owner);
     }
     let backup_path = config.transaction_dir.join("authority-before.sqlite3");
     if snapshot.bootstrap && snapshot.backup_sha256.is_empty() {
@@ -1069,11 +2106,14 @@ pub fn recover_host(
     // Share activation's atomic admission boundary with edge maintenance, and
     // keep the recovery marker present until source and route checks finish.
     let recovery_drain = begin_drain(&config.runtime_dir, expected_owner)?;
+    startup_guard::apply_recovery(config, &snapshot, runner, expected_owner)?;
     run_systemctl_all(
         runner,
         &config.systemctl,
         &[("stop", &config.daemon_unit), ("stop", &config.edge_unit)],
     )?;
+    startup_guard::require_stopped(&config.systemctl, runner, &config.daemon_unit)?;
+    startup_guard::require_stopped(&config.systemctl, runner, &config.edge_unit)?;
     for entry in snapshot.entries.iter().rev() {
         restore_entry(entry)?;
     }
@@ -1100,13 +2140,24 @@ pub fn recover_host(
             return Err("cutover database backup failed integrity verification".to_owned());
         }
     };
-    install::refresh_edge_source_revision(
-        &config.edge_env,
+    restore_prior_edge_source(
+        &config.transaction_dir,
         &config.source_root,
-        expected_owner.0,
+        &config.edge_env,
+        Some(&snapshot),
         runner,
+        expected_owner,
     )?;
+    run_systemctl(runner, &config.systemctl, &["daemon-reload"])?;
     restore_socket(&config.runtime_dir, &config.socket_path)?;
+    startup_guard::release_services(
+        &config.transaction_dir,
+        &config.daemon_unit,
+        &config.edge_unit,
+        &config.systemctl,
+        runner,
+        expected_owner,
+    )?;
     run_systemctl_all(
         runner,
         &config.systemctl,
@@ -1222,7 +2273,8 @@ fn read_snapshot(
         read_json_file(&path)?.ok_or_else(|| "installation snapshot is unavailable".to_owned())?;
     let snapshot: InstallationSnapshot = serde_json::from_value(value)
         .map_err(|error| format!("installation snapshot is invalid: {error}"))?;
-    if snapshot.schema != 2 || Path::new(&snapshot.transaction_dir) != transaction_dir {
+    if !matches!(snapshot.schema, 2 | 3) || Path::new(&snapshot.transaction_dir) != transaction_dir
+    {
         return Err("installation snapshot identity does not match its transaction".to_owned());
     }
     Ok(snapshot)
@@ -1503,7 +2555,9 @@ fn bridge_observation(value: &Value) -> bool {
     else {
         return false;
     };
-    request.protocol == 2
+    // Protocol 2 is inspected only while draining the old source at its
+    // one-time cutover; the candidate daemon itself accepts protocol 3 only.
+    matches!(request.protocol, 2 | 3)
         && !request.id.is_empty()
         && request.id.len() <= 64
         && request.id.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -1712,17 +2766,67 @@ fn remove_file_if_present(path: &Path) -> Result<(), String> {
 }
 
 fn atomic_copy(source: &Path, destination: &Path, owner: (u32, u32)) -> Result<(), String> {
-    let mut file = unix_fs::open(
+    let mut input = unix_fs::open(
         source,
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     )
     .map(File::from)
-    .map_err(|error| format!("cannot open database backup: {error}"))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read database backup: {error}"))?;
-    install::atomic_file(destination, &bytes, 0o600, Some(owner))
+    .map_err(|_| "cannot open frozen database backup")?;
+    let before = input
+        .metadata()
+        .map_err(|_| "cannot inspect frozen database backup")?;
+    if !before.is_file() {
+        return Err("frozen database backup is not a regular file".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or("database restore destination has no parent")?;
+    let name = destination
+        .file_name()
+        .ok_or("database restore destination has no leaf")?;
+    let directory = unix_fs::open(
+        parent,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|_| "cannot open database restore directory")?;
+    let temporary = OsString::from(format!(".authority-restore-{}", random_hex(8)?));
+    let result = (|| {
+        let mut output = unix_fs::openat(
+            &directory,
+            &temporary,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map(File::from)
+        .map_err(|_| "cannot create private database restore temporary")?;
+        if unsafe { libc::fchown(output.as_raw_fd(), owner.0, owner.1) } != 0 {
+            return Err("cannot retain database restore ownership".to_owned());
+        }
+        let copied =
+            std::io::copy(&mut input, &mut output).map_err(|_| "database backup copy failed")?;
+        let after = input
+            .metadata()
+            .map_err(|_| "cannot recheck database backup")?;
+        if copied != before.len() || file_identity(&before) != file_identity(&after) {
+            return Err("database backup changed during restore".into());
+        }
+        output
+            .sync_all()
+            .map_err(|_| "cannot seal database restore temporary")?;
+        unix_fs::renameat(&directory, &temporary, &directory, name)
+            .map_err(|_| "cannot atomically restore database backup")?;
+        directory
+            .sync_all()
+            .map_err(|_| "cannot seal database restore directory")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = unix_fs::unlinkat(&directory, &temporary, unix_fs::AtFlags::empty());
+    }
+    result
 }
 
 fn open_database_read_only(path: &Path) -> Result<Connection, String> {
@@ -1737,17 +2841,14 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
         .pragma_update(None, "query_only", true)
         .map_err(|error| format!("cannot protect Coordinator database read: {error}"))?;
     let schema = database_schema_from(&connection)?;
-    if !supported_database_schema(&schema) {
+    if !(MINIMUM_SUPPORTED_DATABASE_SCHEMA..=MAXIMUM_LEGACY_SQLITE_SCHEMA)
+        .any(|supported| schema == supported.to_string())
+    {
         return Err(format!(
-            "cutover requires database schema {MINIMUM_SUPPORTED_DATABASE_SCHEMA} through {DATABASE_SCHEMA_VERSION}, found {schema}"
+            "legacy recovery requires SQLite schema {MINIMUM_SUPPORTED_DATABASE_SCHEMA} through {MAXIMUM_LEGACY_SQLITE_SCHEMA}, found {schema}"
         ));
     }
     Ok(connection)
-}
-
-fn supported_database_schema(schema: &str) -> bool {
-    (MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION)
-        .any(|supported| schema == supported.to_string())
 }
 
 fn database_schema(path: &Path) -> Result<String, String> {
@@ -1807,7 +2908,9 @@ fn database_integrity(path: &Path) -> Result<bool, String> {
         [],
         |row| row.get::<_, String>(0),
     ) {
-        Ok(schema) => Ok(supported_database_schema(&schema)),
+        Ok(schema) => Ok(schema.parse::<u32>().is_ok_and(|version| {
+            (MINIMUM_SUPPORTED_DATABASE_SCHEMA..=MAXIMUM_LEGACY_SQLITE_SCHEMA).contains(&version)
+        })),
         Err(error) if sqlite_corruption(&error) => Ok(false),
         Err(error) => Err(format!("cannot confirm database schema: {error}")),
     }
@@ -1945,6 +3048,11 @@ mod tests {
         };
         let health = request("health.summary", serde_json::json!({}));
         assert!(bridge_observation(&health));
+        let mut native = health.clone();
+        native["protocol"] = serde_json::json!(3);
+        assert!(bridge_observation(&native));
+        native["protocol"] = serde_json::json!(4);
+        assert!(!bridge_observation(&native));
         assert!(bridge_observation(&request(
             "event.wait",
             serde_json::json!({
@@ -2193,9 +3301,9 @@ mod tests {
                 "fence_legacy_socket",
                 "wait_for_connections",
                 "deployment_is_applying",
+                "stop_legacy",
                 "backup_database",
                 "capture_installation",
-                "stop_legacy",
                 "install_rust",
                 "start_rust",
                 "verify_live",
@@ -2313,6 +3421,7 @@ mod tests {
 
     #[derive(Default)]
     struct HostFake {
+        fragment: PathBuf,
         commit: String,
         checkout_commit: Option<String>,
         upstream_commit: Option<String>,
@@ -2322,6 +3431,8 @@ mod tests {
         fail_reload: AtomicUsize,
         fail_stop: bool,
         loaded_units: bool,
+        backup_verification_failure: Option<crate::install::CommandOutput>,
+        no_prior: bool,
         retryable_ping_failures: AtomicUsize,
         requests: Mutex<Vec<CommandRequest>>,
     }
@@ -2329,15 +3440,101 @@ mod tests {
     impl CommandRunner for HostFake {
         fn run(&self, request: &CommandRequest) -> Result<crate::install::CommandOutput, String> {
             self.requests.lock().unwrap().push(request.clone());
-            if request.args.first() == Some(&OsString::from("show")) {
+            if request.program == Path::new("/usr/bin/busctl") {
+                if self.no_prior
+                    && request.args.iter().any(|a| a == "LoadUnit")
+                    && request
+                        .args
+                        .last()
+                        .is_some_and(|a| !self.fragment.with_file_name(a).exists())
+                {
+                    return Err("unconfigured unit cannot be loaded".into());
+                }
+                let data = if request.args.iter().any(|a| a == "LoadUnit") {
+                    serde_json::json!([format!(
+                        "/org/freedesktop/systemd1/unit/{}",
+                        request.args.last().unwrap().to_string_lossy()
+                    )])
+                } else {
+                    let unit = Path::new(&request.args[3]).file_name().unwrap();
+                    let fragment = self.fragment.with_file_name(unit);
+                    let directory = self
+                        .fragment
+                        .with_file_name(format!("{}.d", unit.to_string_lossy()));
+                    let paths = std::fs::read_dir(directory)
+                        .into_iter()
+                        .flatten()
+                        .map(|p| p.unwrap().path())
+                        .collect::<Vec<_>>();
+                    match request.args.last().and_then(|a| a.to_str()).unwrap() {
+                        "FragmentPath" => {
+                            serde_json::json!(fragment)
+                        }
+                        "LoadState" => serde_json::json!("loaded"),
+                        "DropInPaths" => serde_json::json!(paths),
+                        "Conditions" => serde_json::json!(
+                            paths
+                                .iter()
+                                .flat_map(|p| {
+                                    std::fs::read_to_string(p)
+                                        .unwrap_or_default()
+                                        .lines()
+                                        .filter_map(|line| {
+                                            line.strip_prefix("ConditionPathExists=!")
+                                        })
+                                        .map(|active| {
+                                            serde_json::json!([
+                                                "ConditionPathExists",
+                                                false,
+                                                true,
+                                                active,
+                                                0
+                                            ])
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                                .collect::<Vec<_>>()
+                        ),
+                        _ => return Err("unexpected systemd fixture property".into()),
+                    }
+                };
                 return Ok(crate::install::CommandOutput {
                     success: true,
-                    stdout: if self.loaded_units {
-                        "loaded\n"
+                    stdout: serde_json::json!({"data":data}).to_string(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.program.file_name() == Some(std::ffi::OsStr::new("systemctl"))
+                && request.args.first().is_some_and(|a| a == "show")
+            {
+                if request.args.iter().any(|a| a == "--value") {
+                    let loaded = self.loaded_units
+                        || request
+                            .args
+                            .last()
+                            .is_some_and(|unit| self.fragment.with_file_name(unit).is_file());
+                    return Ok(crate::install::CommandOutput {
+                        success: true,
+                        stdout: if loaded { "loaded\n" } else { "not-found\n" }.into(),
+                        stderr: String::new(),
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                    });
+                }
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: if self.no_prior
+                        && request
+                            .args
+                            .last()
+                            .is_some_and(|a| !self.fragment.with_file_name(a).exists())
+                    {
+                        "LoadState=not-found\nActiveState=inactive\nMainPID=0\n".into()
                     } else {
-                        "not-found\n"
-                    }
-                    .to_owned(),
+                        "LoadState=loaded\nActiveState=inactive\nMainPID=0\n".into()
+                    },
                     stderr: String::new(),
                     stdout_truncated: false,
                     stderr_truncated: false,
@@ -2345,26 +3542,88 @@ mod tests {
             }
             if request.program == Path::new("/usr/bin/git") && request.args.len() >= 5 {
                 let args = &request.args[4..];
+                let git_root = Path::new(&request.args[3]);
+                let pinned = git_root
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| {
+                        matches!(name.len(), 40 | 64)
+                            && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    });
                 let stdout =
                     if args == ["rev-parse", "--show-toplevel"] {
                         request.args[3].to_string_lossy().into_owned()
                     } else if args == ["branch", "--show-current"] {
-                        "main".to_owned()
+                        if pinned.is_some() {
+                            String::new()
+                        } else {
+                            "main".to_owned()
+                        }
                     } else if args == ["status", "--porcelain", "--untracked-files=all"] {
                         let stopped =
                             self.requests.lock().unwrap().iter().any(|request| {
                                 request.args.first() == Some(&OsString::from("stop"))
                             });
-                        if self.dirty_checkout || (self.dirty_checkout_after_stop && stopped) {
+                        if pinned.is_none()
+                            && (self.dirty_checkout || (self.dirty_checkout_after_stop && stopped))
+                        {
                             " M console/workspace.js\n".to_owned()
                         } else {
                             String::new()
                         }
                     } else if args == ["rev-parse", "HEAD"] {
-                        self.checkout_commit
-                            .as_ref()
-                            .unwrap_or(&self.commit)
-                            .clone()
+                        pinned.map(str::to_owned).unwrap_or_else(|| {
+                            self.checkout_commit
+                                .as_ref()
+                                .unwrap_or(&self.commit)
+                                .clone()
+                        })
+                    } else if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"] {
+                        let root = if pinned.is_some() {
+                            git_root.parent().unwrap().parent().unwrap().join("source")
+                        } else {
+                            git_root.to_owned()
+                        };
+                        root.join(".git").to_string_lossy().into_owned()
+                    } else if args.first().is_some_and(|arg| arg == "worktree") {
+                        assert_eq!(
+                            &args[..4],
+                            ["worktree", "add", "--detach", "--"].map(OsString::from)
+                        );
+                        let checkout = Path::new(&args[4]);
+                        std::fs::create_dir_all(checkout.join("edge")).unwrap();
+                        std::fs::create_dir_all(checkout.join("console")).unwrap();
+                        std::fs::write(checkout.join(".git"), "fixture pointer").unwrap();
+                        std::fs::write(
+                            checkout.join("edge/devcoordinator2-edge.mjs"),
+                            "fixture edge source\n",
+                        )
+                        .unwrap();
+                        std::fs::write(
+                            checkout.join("console/index.html"),
+                            "fixture Console source\n",
+                        )
+                        .unwrap();
+                        String::new()
+                    } else if args.first().is_some_and(|arg| arg == "ls-tree") {
+                        let digest = |bytes: &[u8]| {
+                            Sha256::digest(bytes)
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        };
+                        format!(
+                            "100644 blob {}\tedge/devcoordinator2-edge.mjs\0\
+                            100644 blob {}\tconsole/index.html\0",
+                            digest(b"fixture edge source\n"),
+                            digest(b"fixture Console source\n")
+                        )
+                    } else if args.first().is_some_and(|arg| arg == "hash-object") {
+                        args.iter()
+                            .skip(3)
+                            .map(|path| install::hash_file(&git_root.join(path)).unwrap())
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     } else if args == ["rev-parse", "refs/remotes/origin/main"] {
                         self.upstream_commit
                             .as_ref()
@@ -2399,16 +3658,159 @@ mod tests {
                     stderr_truncated: false,
                 });
             }
-            if request.args == [OsString::from("--source-commit")] {
+            if request.program == Path::new("/usr/bin/setpriv")
+                && request
+                    .args
+                    .iter()
+                    .any(|arg| arg.to_string_lossy().ends_with("/initdb"))
+            {
+                let directory = PathBuf::from(
+                    &request
+                        .args
+                        .windows(2)
+                        .find(|pair| pair[0] == "--pgdata")
+                        .unwrap()[1],
+                );
+                std::fs::write(directory.join("PG_VERSION"), "17\n").unwrap();
+            }
+            if request.program == Path::new("/usr/bin/id") {
                 return Ok(crate::install::CommandOutput {
                     success: true,
-                    stdout: self.commit.clone(),
+                    stdout: if request.args.first().is_some_and(|v| v == "-g") {
+                        rustix::process::getgid().as_raw().to_string()
+                    } else {
+                        rustix::process::getuid().as_raw().to_string()
+                    },
                     stderr: String::new(),
                     stdout_truncated: false,
                     stderr_truncated: false,
                 });
             }
-            if request.args == [OsString::from("ping")] {
+            if request.args == [OsString::from("--version")]
+                && request
+                    .program
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        [
+                            "postgres",
+                            "initdb",
+                            "psql",
+                            "pg_dump",
+                            "pg_restore",
+                            "pg_isready",
+                        ]
+                        .contains(&name)
+                    })
+            {
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: format!(
+                        "{} (PostgreSQL) 17.6\n",
+                        request.program.file_name().unwrap().to_string_lossy()
+                    ),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.program.file_name()
+                == Some(std::ffi::OsStr::new("devcoordinator2-migrate-authority"))
+                && request.args.first().is_some_and(|v| v == "--mode")
+            {
+                let argument = |name: &str| {
+                    request
+                        .args
+                        .windows(2)
+                        .find(|pair| pair[0] == name)
+                        .map(|pair| PathBuf::from(&pair[1]))
+                        .unwrap()
+                };
+                let mode = request.args[1].to_string_lossy();
+                if mode == "verify-backup"
+                    && let Some(output) = &self.backup_verification_failure
+                {
+                    return Ok(output.clone());
+                }
+                if mode == "backup" {
+                    std::fs::write(
+                        argument("--destination"),
+                        b"PGDMP fixture native authority archive",
+                    )
+                    .unwrap();
+                }
+                let receipt = if mode == "inspect-postgres" {
+                    serde_json::json!({"verified":true,"applying":false,"schema_version":35})
+                } else if matches!(mode.as_ref(), "import" | "verify") {
+                    serde_json::json!({"checks":[{"matched":true}],"source_unchanged":true,"foreign_keys_valid":true,"identities_restored":true,"committed":true})
+                } else if matches!(
+                    mode.as_ref(),
+                    "backup" | "verify-backup" | "verify-recoverable-backup"
+                ) {
+                    serde_json::json!({"verified":true,"archive_sha256":install::hash_file(&argument("--destination")).unwrap(),"isolated_restore_removed":true})
+                } else {
+                    serde_json::json!({"verified":true})
+                };
+                let path = argument("--report");
+                std::fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: "private verification receipt retained".into(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.program.file_name() == Some(std::ffi::OsStr::new("devcoordinator2"))
+                && request.args.first().is_some_and(|arg| arg == "call")
+                && request.args.get(1).is_some_and(|arg| {
+                    matches!(
+                        arg.to_str(),
+                        Some("repository.list" | "deployment.list" | "health.summary")
+                    )
+                })
+            {
+                let operation = request.args[1].to_str().unwrap();
+                let expected_params = if operation == "repository.list" {
+                    "{\"limit\":1}"
+                } else {
+                    "{}"
+                };
+                if request.args
+                    != ["call", operation, "--params", expected_params].map(OsString::from)
+                {
+                    return Err("candidate verification requires the exact v3 call argv".into());
+                }
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: serde_json::json!({"protocol":3,"id":"x","ok":true,"data":{}})
+                        .to_string(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.args == [OsString::from("--source-commit")] {
+                return Ok(crate::install::CommandOutput {
+                    success: true,
+                    stdout: if request
+                        .program
+                        .components()
+                        .any(|part| part.as_os_str() == "previous-release")
+                    {
+                        "b".repeat(40)
+                    } else {
+                        self.commit.clone()
+                    },
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                });
+            }
+            if request.program.file_name() == Some(std::ffi::OsStr::new("devcoordinator2"))
+                && request.args == [OsString::from("call"), OsString::from("ping")]
+            {
                 if self
                     .retryable_ping_failures
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
@@ -2418,7 +3820,7 @@ mod tests {
                 {
                     return Ok(crate::install::CommandOutput {
                         success: false,
-                        stdout: "{\"protocol\":2,\"id\":\"x\",\"ok\":false,\"error\":{\"code\":\"daemon_unavailable\",\"message\":\"not ready\",\"detail\":\"\"}}\n".to_owned(),
+                        stdout: "{\"protocol\":3,\"id\":\"x\",\"ok\":false,\"error\":{\"code\":\"daemon_unavailable\",\"message\":\"not ready\",\"detail\":\"\"}}\n".to_owned(),
                         stderr: String::new(),
                         stdout_truncated: false,
                         stderr_truncated: false,
@@ -2429,7 +3831,17 @@ mod tests {
                     stdout: if self.fail_ping {
                         String::new()
                     } else {
-                        "{\"protocol\":2,\"id\":\"x\",\"ok\":true,\"data\":{}}\n".to_owned()
+                        let instance = request
+                            .environment
+                            .get(std::ffi::OsStr::new("DEVCOORDINATOR2_INSTANCE_ENV"))
+                            .unwrap();
+                        let socket = Path::new(instance)
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join("run/daemon.sock");
+                        serde_json::json!({"protocol":3,"id":"x","ok":true,"data":{"source_commit":self.commit,"socket":socket}}).to_string()
                     },
                     stderr: if self.fail_ping {
                         "ping failed".to_owned()
@@ -2440,6 +3852,11 @@ mod tests {
                     stderr_truncated: false,
                 });
             }
+            if request.program.file_name() == Some(std::ffi::OsStr::new("devcoordinator2")) {
+                return Err(
+                    "unexpected candidate control argv; legacy commands are refused".into(),
+                );
+            }
             Ok(crate::install::CommandOutput {
                 success: true,
                 stdout: String::new(),
@@ -2448,6 +3865,29 @@ mod tests {
                 stderr_truncated: false,
             })
         }
+    }
+
+    fn assert_candidate_read_calls(requests: &[CommandRequest]) {
+        let actual = requests
+            .iter()
+            .filter(|request| {
+                request.program.file_name() == Some(std::ffi::OsStr::new("devcoordinator2"))
+                    && request.args != [OsString::from("--source-commit")]
+            })
+            .map(|request| request.args.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            vec![
+                vec!["call", "ping"],
+                vec!["call", "repository.list", "--params", "{\"limit\":1}"],
+                vec!["call", "deployment.list", "--params", "{}"],
+                vec!["call", "health.summary", "--params", "{}"],
+            ]
+            .into_iter()
+            .map(|args| args.into_iter().map(OsString::from).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+        );
     }
 
     struct HostWorld {
@@ -2462,12 +3902,62 @@ mod tests {
         commit: String,
     }
 
+    impl HostWorld {
+        fn rollback_edge_env(&self) -> String {
+            let source = self
+                .config
+                .candidate_manifest
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("source");
+            self.old_edge_env.replace(
+                &format!("EDGE_CONSOLE_DIR={}/console", source.display()),
+                &format!(
+                    "EDGE_CONSOLE_DIR={}/console",
+                    self.config.source_cache_dir.join("b".repeat(40)).display()
+                ),
+            )
+        }
+        fn rollback_edge_unit(&self) -> String {
+            let source = self
+                .config
+                .candidate_manifest
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("source");
+            self.old_edge_unit.replace(
+                source.to_str().unwrap(),
+                self.config
+                    .source_cache_dir
+                    .join("b".repeat(40))
+                    .to_str()
+                    .unwrap(),
+            )
+        }
+    }
+
     fn host_world() -> HostWorld {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
         let source = root.join("source");
         std::fs::create_dir_all(source.join("deploy")).unwrap();
         std::fs::create_dir_all(source.join("edge")).unwrap();
+        std::fs::create_dir_all(source.join("console")).unwrap();
+        std::fs::create_dir_all(source.join(".git")).unwrap();
+        std::fs::write(
+            source.join("edge/devcoordinator2-edge.mjs"),
+            "fixture edge source\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("console/index.html"),
+            "fixture Console source\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(source.join("target/release")).unwrap();
         std::fs::write(
             source.join("deploy/devcoordinator2.tmpfiles.conf"),
@@ -2476,12 +3966,12 @@ mod tests {
         .unwrap();
         std::fs::write(
             source.join("deploy/devcoordinator2.service"),
-            "[Service]\nExecStart=/home/DevCoordinator2/target/release/devcoordinator2 daemon\n",
+            include_str!("../../../deploy/devcoordinator2.service"),
         )
         .unwrap();
         std::fs::write(
             source.join("deploy/devcoordinator2-edge.service"),
-            "[Service]\nExecStart=/usr/bin/node /home/DevCoordinator2/edge/devcoordinator2-edge.mjs\nProtectHome=read-only\nReadOnlyPaths=/home/DevCoordinator2\n",
+            include_str!("../../../deploy/devcoordinator2-edge.service"),
         )
         .unwrap();
         std::fs::write(
@@ -2489,12 +3979,32 @@ mod tests {
             include_str!("../../../deploy/devcoordinator2-tests.slice"),
         )
         .unwrap();
+        std::fs::write(
+            source.join("deploy/devcoordinator2-postgres.service"),
+            include_str!("../../../deploy/devcoordinator2-postgres.service"),
+        )
+        .unwrap();
+        let pg_bin = root.join("postgres-bin");
+        std::fs::create_dir(&pg_bin).unwrap();
+        for name in [
+            "postgres",
+            "initdb",
+            "psql",
+            "pg_dump",
+            "pg_restore",
+            "pg_isready",
+        ] {
+            let path = pg_bin.join(name);
+            std::fs::write(&path, "fixture tool").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let commit = "c".repeat(40);
         let mut receipts = Vec::new();
         for name in [
             "devcoordinator2",
             "devcoordinator2-executor",
             "devcoordinator2-tooling",
+            "devcoordinator2-migrate-authority",
         ] {
             let path = source.join("target/release").join(name);
             let bytes = format!("binary-{name}").into_bytes();
@@ -2523,6 +4033,29 @@ mod tests {
         );
         let candidate_manifest = root.join("etc/candidate.json");
         crate::install::write_manifest(&candidate_manifest, &manifest, expected_owner).unwrap();
+        let candidate_acceptance = root.join("etc/candidate-acceptance.json");
+        let acceptance = install::postgres::CandidateAcceptance {
+            schema: 1,
+            result: "passed".into(),
+            source_commit: manifest.source_commit.clone(),
+            binaries: manifest
+                .binaries
+                .iter()
+                .map(|binary| (binary.name.clone(), binary.sha256.clone()))
+                .collect(),
+            checks: install::postgres::ACCEPTANCE_CHECKS
+                .iter()
+                .map(|name| (*name).into())
+                .collect(),
+        };
+        install::atomic_file(
+            &candidate_acceptance,
+            &serde_json::to_vec(&acceptance).unwrap(),
+            0o600,
+            Some(expected_owner),
+        )
+        .unwrap();
+
         let runtime_dir = root.join("run");
         std::fs::create_dir(&runtime_dir).unwrap();
         std::fs::write(
@@ -2550,11 +4083,13 @@ mod tests {
         let database_path = state.join("authority.sqlite3");
         let connection = Connection::open(&database_path).unwrap();
         connection
-            .execute_batch(include_str!("../../control/src/schema.sql"))
+            .execute_batch(include_str!(
+                "../../persistence/tests/fixtures/sqlite-schema-34/schema.sql"
+            ))
             .unwrap();
         connection
             .execute(
-                "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','15')",
+                "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','34')",
                 [],
             )
             .unwrap();
@@ -2572,12 +4107,14 @@ mod tests {
         let old_daemon = "ExecStart=/usr/bin/python3 -m devcoordinator2.daemon\n".to_owned();
         let old_cli = "#!/usr/bin/python3\n".to_owned();
         let old_edge_unit = format!(
-            "[Service]\nExecStart=/usr/bin/node {}\n",
-            source.join("edge/devcoordinator2-edge.mjs").display()
+            "[Service]\nExecStart=/usr/bin/node {}\nReadOnlyPaths={}\n",
+            source.join("edge/devcoordinator2-edge.mjs").display(),
+            source.display()
         );
         let old_edge_env = format!(
-            "EDGE_BASE_DOMAIN=example.test\nUNRELATED=retained-private-setting\nEDGE_UI_SOURCE_REVISION=git:{}\n",
-            "b".repeat(40)
+            "EDGE_BASE_DOMAIN=example.test\nUNRELATED=retained-private-setting\nEDGE_UI_SOURCE_REVISION=git:{}\nEDGE_CONSOLE_DIR={}/console\n",
+            "b".repeat(40),
+            source.display()
         );
         let edge_env = root.join("etc/edge.env");
         std::fs::write(&edge_env, &old_edge_env).unwrap();
@@ -2587,19 +4124,57 @@ mod tests {
         std::fs::write(&tests_slice_unit_path, "old test slice\n").unwrap();
         std::fs::write(&cli_link, &old_cli).unwrap();
         std::fs::write(&tooling_link, "old tooling\n").unwrap();
-        std::fs::write(
+        let previous = source.join("target/previous-release");
+        std::fs::create_dir_all(&previous).unwrap();
+        let binaries = [
+            "devcoordinator2",
+            "devcoordinator2-executor",
+            "devcoordinator2-tooling",
+        ]
+        .into_iter()
+        .map(|name| {
+            let path = previous.join(name);
+            std::fs::write(&path, "prior fixture binary").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            install::BinaryReceipt {
+                name: name.into(),
+                path: path.to_string_lossy().into_owned(),
+                sha256: install::hash_file(&path).unwrap(),
+                bytes: std::fs::metadata(&path).unwrap().len(),
+                source_commit: "b".repeat(40),
+            }
+        })
+        .collect();
+        install::write_manifest(
             &installed_manifest,
-            serde_json::to_vec(&serde_json::json!({
-                "source_root": source,
-                "source_commit": "b".repeat(40),
-            }))
-            .unwrap(),
+            &InstallManifest {
+                schema: 1,
+                product: "devcoordinator2".into(),
+                package_version: env!("CARGO_PKG_VERSION").into(),
+                source_root: source.to_string_lossy().into_owned(),
+                source_commit: "b".repeat(40),
+                built_at: "fixture".into(),
+                binaries,
+            },
+            expected_owner,
         )
         .unwrap();
         HostWorld {
             config: HostCutoverConfig {
+                candidate_acceptance,
+                postgres: install::postgres::PostgresSetup {
+                    account: "fixture-pg".into(),
+                    database_name: "devcoordinator2_fixture".into(),
+                    bin_dir: pg_bin,
+                    data_dir: root.join("pg-state/data"),
+                    socket_dir: root.join("pg-run"),
+                    config_path: root.join("etc/postgres.json"),
+                    unit_path: root.join("system/devcoordinator2-postgres.service"),
+                    unit: "devcoordinator2-postgres.service".into(),
+                },
                 candidate_manifest,
                 installed_manifest,
+                source_cache_dir: root.join("rollback-sources"),
                 tmpfiles_path: root.join("etc/tmpfiles.conf"),
                 transaction_dir: root.join("transaction"),
                 runtime_dir,
@@ -2618,6 +4193,7 @@ mod tests {
                 edge_unit: "devcoordinator2-edge.service".to_owned(),
                 edge_state_dir: root.join("edge-state"),
                 canary: false,
+                ephemeral_services: false,
             },
             expected_owner,
             old_daemon,
@@ -2914,7 +4490,15 @@ mod tests {
 
     #[test]
     fn concrete_host_adapter_installs_verified_files_and_commits_snapshot() {
-        let world = host_world();
+        let mut world = host_world();
+        let transactions = world
+            .config
+            .database_path
+            .parent()
+            .unwrap()
+            .join("install-transactions");
+        std::fs::create_dir(&transactions).unwrap();
+        world.config.transaction_dir = transactions.join("candidate");
         let edge_env = world.config.instance_env.with_file_name("edge.env");
         let prior_edge_metadata = std::fs::metadata(&edge_env).unwrap();
         let prior_rule =
@@ -2922,12 +4506,71 @@ mod tests {
         std::fs::write(&world.config.tmpfiles_path, prior_rule).unwrap();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        for args in [
+            vec!["ping"],
+            vec!["repository.list", "--params", "{\"limit\":1}"],
+            vec!["call", "repository.list", "--params", "{}"],
+            vec!["call", "deployment.list", "--params", "{}", "extra"],
+            vec!["call", "health.summary"],
+        ] {
+            let malformed = CommandRequest {
+                program: host.installed_binary("devcoordinator2").unwrap(),
+                args: args.into_iter().map(OsString::from).collect(),
+                environment: Default::default(),
+                clear_environment: true,
+            };
+            assert!(HostFake::default().run(&malformed).is_err());
+        }
         let receipt = activate(&mut host).unwrap();
-        assert_eq!(receipt.status, "activated");
+        assert_candidate_read_calls(&runner.requests.lock().unwrap());
+        let daemon_unit = std::fs::read_to_string(&world.config.daemon_unit_path).unwrap();
+        assert!(daemon_unit.contains(&format!(
+            "EnvironmentFile=-{}\n",
+            world.config.instance_env.display()
+        )));
+        assert!(daemon_unit.contains(&format!(
+            "Environment=DEVCOORDINATOR2_INSTANCE_ENV={}\n",
+            world.config.instance_env.display()
+        )));
+        let edge_unit = std::fs::read_to_string(&world.config.edge_unit_path).unwrap();
+        assert!(edge_unit.contains(&format!(
+            "EnvironmentFile={}\n",
+            world.config.edge_env.display()
+        )));
+        assert!(edge_unit.contains(&format!(
+            "Environment=EDGE_STATE_DIR={}\n",
+            world.config.edge_state_dir.display()
+        )));
+        assert!(edge_unit.contains(&format!(
+            "ReadWritePaths={}\n",
+            world.config.edge_state_dir.display()
+        )));
+        let edge_directives = edge_unit
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<Vec<_>>();
+        assert!(
+            edge_directives
+                .iter()
+                .all(|line| !line.contains("/etc/devcoordinator2/")
+                    && !line.contains("/var/lib/devcoordinator2")
+                    && *line != "StateDirectory=devcoordinator2-edge")
+        );
+        assert!(daemon_unit.lines().any(|line| line == "ProtectSystem=full"));
+        assert!(daemon_unit.contains(&format!(
+            "ReadWritePaths=/home {} {} {}\n",
+            world.config.database_path.parent().unwrap().display(),
+            world.config.runtime_dir.display(),
+            world.config.instance_env.parent().unwrap().display(),
+        )));
+        assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
         assert_eq!(
             std::fs::read_to_string(&edge_env).unwrap(),
             world.old_edge_env.replace(&"b".repeat(40), &world.commit)
@@ -2950,12 +4593,27 @@ mod tests {
                 .unwrap()
                 .contains("retained-private-setting")
         );
-        assert_eq!(
-            std::fs::metadata(&world.config.database_path)
-                .unwrap()
-                .mode()
-                & 0o777,
-            0o600
+        assert!(world.config.database_path.is_file());
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("authority-before.pgdump")
+                .is_file()
+        );
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("retirement-pending.json")
+                .is_file()
+        );
+        assert!(world.config.postgres.config_path.is_file());
+        assert!(
+            !receipt
+                .checks
+                .iter()
+                .any(|check| check == "legacy-authority-source-retired")
         );
         assert_eq!(
             std::fs::metadata(world.config.database_path.parent().unwrap())
@@ -2968,7 +4626,10 @@ mod tests {
             std::fs::read_to_string(&world.config.tmpfiles_path).unwrap(),
             prior_rule.replace("0750", "0751")
         );
-        assert!(Path::new(&receipt.backup).is_file());
+        assert!(
+            Path::new(&receipt.backup).is_file(),
+            "rollback source stays protected until post-activation live acceptance"
+        );
         assert!(
             std::fs::read_to_string(&world.config.daemon_unit_path)
                 .unwrap()
@@ -2986,6 +4647,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snapshot.status, "committed");
+        assert_eq!(snapshot.schema, 3);
+        assert_eq!(
+            snapshot.backup_sha256,
+            install::hash_file(&world.config.transaction_dir.join("authority-before.pgdump"))
+                .unwrap()
+        );
         assert!(
             !world
                 .config
@@ -2994,6 +4661,453 @@ mod tests {
                 .exists()
         );
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        let retained_sha = install::hash_file(&world.config.database_path).unwrap();
+        let commands_before = runner.requests.lock().unwrap().len();
+        let error =
+            rollback(&mut host, &snapshot, &receipt.backup, "live failure".into()).unwrap_err();
+        assert!(error.contains("preserve its new writes"));
+        assert_eq!(commands_before, runner.requests.lock().unwrap().len());
+        assert_eq!(
+            retained_sha,
+            install::hash_file(&world.config.database_path).unwrap()
+        );
+        let finalization = FinalizationConfig {
+            transaction_dir: world.config.transaction_dir.clone(),
+            installed_manifest: world.config.installed_manifest.clone(),
+            live_acceptance: world.config.transaction_dir.join("live-acceptance.json"),
+        };
+        assert!(finalize_host(&finalization, runner.as_ref(), world.expected_owner).is_err());
+        assert!(world.config.database_path.is_file());
+        let mut live = LiveAcceptance {
+            schema: 1,
+            result: "passed".into(),
+            source_commit: host.manifest.source_commit.clone(),
+            edge_source_commit: host.manifest.source_commit.clone(),
+            binaries: host
+                .manifest
+                .binaries
+                .iter()
+                .map(|binary| (binary.name.clone(), binary.sha256.clone()))
+                .collect(),
+            checked_at_ms: (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+                as u64,
+            checks: vec!["critical-api".into()],
+            evidence: vec!["fixture:live-journey-receipt".into()],
+        };
+        install::atomic_file(
+            &finalization.live_acceptance,
+            &serde_json::to_vec(&live).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        assert!(finalize_host(&finalization, runner.as_ref(), world.expected_owner).is_err());
+        assert!(world.config.database_path.is_file());
+        live.checks = finalize::LIVE_CHECKS
+            .iter()
+            .map(|check| (*check).into())
+            .collect();
+        install::atomic_file(
+            &finalization.live_acceptance,
+            &serde_json::to_vec(&live).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        let pending_marker =
+            std::fs::read(world.config.transaction_dir.join("retirement-pending.json")).unwrap();
+        let finalized =
+            finalize_host(&finalization, runner.as_ref(), world.expected_owner).unwrap();
+        assert_eq!(finalized.status, "finalized");
+        assert_eq!(finalized.retired_sources, 2);
+        assert!(!world.config.database_path.exists());
+        assert!(!Path::new(&receipt.backup).exists());
+        assert!(
+            !world
+                .config
+                .transaction_dir
+                .join("retirement-pending.json")
+                .exists()
+        );
+        // A crash after the terminal receipt but before removing the marker
+        // must finish that last exact cleanup on an idempotent retry.
+        install::atomic_file(
+            &world.config.transaction_dir.join("retirement-pending.json"),
+            &pending_marker,
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        assert_eq!(
+            finalize_host(&finalization, runner.as_ref(), world.expected_owner).unwrap(),
+            finalized
+        );
+        assert!(
+            !world
+                .config
+                .transaction_dir
+                .join("retirement-pending.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn native_upgrade_restores_into_a_fresh_candidate_and_retains_prior_authority_on_failure() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
+            ..HostFake::default()
+        });
+        let mut first =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        activate(&mut first).unwrap();
+        let prior_config = std::fs::read(&world.config.postgres.config_path).unwrap();
+        let prior_marker = std::fs::read(&first.authority_marker_path).unwrap();
+        let mut candidate = world.config.clone();
+        candidate.transaction_dir = world._temporary.path().join("native-upgrade");
+        std::fs::remove_file(&first.authority_marker_path).unwrap();
+        assert!(
+            HostCutover::new_owned(candidate.clone(), runner.clone(), world.expected_owner)
+                .is_err()
+        );
+        install::atomic_file(
+            &first.authority_marker_path,
+            &prior_marker,
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        let unfinished = FinalizationReceipt {
+            schema: 1,
+            status: "retiring".into(),
+            source_commit: first.manifest.source_commit.clone(),
+            live_acceptance_sha256: "1".repeat(64),
+            postgres_archive_sha256: "2".repeat(64),
+            retired_sources: 0,
+        };
+        let prior_finalization = world.config.transaction_dir.join("finalization.json");
+        install::atomic_file(
+            &prior_finalization,
+            &serde_json::to_vec(&unfinished).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        assert!(
+            HostCutover::new_owned(candidate.clone(), runner.clone(), world.expected_owner)
+                .is_err()
+        );
+        std::fs::remove_file(prior_finalization).unwrap();
+        // The fixture's replacement daemon binds the newly exposed endpoint.
+        std::fs::write(&candidate.socket_path, b"prior native daemon endpoint").unwrap();
+        let failing = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
+            fail_ping: true,
+            ..HostFake::default()
+        });
+        let mut upgrade =
+            HostCutover::new_owned(candidate.clone(), failing.clone(), world.expected_owner)
+                .unwrap();
+        assert_eq!(upgrade.authority, AuthorityKind::Postgres);
+        assert_ne!(
+            upgrade.config.postgres.database_name,
+            first.config.postgres.database_name
+        );
+        assert!(
+            activate(&mut upgrade)
+                .unwrap_err()
+                .contains("without replacing the intact database")
+        );
+        assert_eq!(
+            std::fs::read(&candidate.postgres.config_path).unwrap(),
+            prior_config
+        );
+        assert_eq!(
+            std::fs::read(&upgrade.authority_marker_path).unwrap(),
+            prior_marker
+        );
+        let modes = failing
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.args.first().is_some_and(|arg| arg == "--mode"))
+            .map(|request| request.args[1].to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(modes.iter().any(|mode| mode == "restore-candidate"));
+        assert!(modes.iter().any(|mode| mode == "migrate"));
+        assert!(!modes.iter().any(|mode| mode == "import"));
+        assert!(
+            world.config.database_path.is_file(),
+            "inherited SQLite retirement stays protected"
+        );
+        let mut cold_config = world.config.clone();
+        cold_config.transaction_dir = world._temporary.path().join("native-upgrade-interrupted");
+        let mut cold =
+            HostCutover::new_owned(cold_config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        cold.fence_legacy_socket().unwrap();
+        cold.stop_legacy().unwrap();
+        cold.backup_database().unwrap();
+        cold.capture_installation().unwrap();
+        cold.install_rust().unwrap();
+        assert_ne!(
+            std::fs::read(&cold_config.postgres.config_path).unwrap(),
+            prior_config
+        );
+        let recovered = recover_host(
+            &RecoveryConfig {
+                transaction_dir: cold_config.transaction_dir.clone(),
+                runtime_dir: cold_config.runtime_dir.clone(),
+                socket_path: cold_config.socket_path.clone(),
+                database_path: cold_config.database_path.clone(),
+                systemctl: cold_config.systemctl.clone(),
+                daemon_unit: cold_config.daemon_unit.clone(),
+                edge_unit: cold_config.edge_unit.clone(),
+                edge_state_dir: cold_config.edge_state_dir.clone(),
+                source_root: PathBuf::from(&cold.manifest.source_root),
+                edge_env: cold_config.edge_env.clone(),
+            },
+            runner.as_ref(),
+            world.expected_owner,
+        )
+        .unwrap();
+        assert_eq!(recovered.status, "recovered");
+        assert!(!recovered.database_restored);
+        assert_eq!(
+            std::fs::read(&cold_config.postgres.config_path).unwrap(),
+            prior_config
+        );
+        assert_eq!(
+            std::fs::read(&cold.authority_marker_path).unwrap(),
+            prior_marker
+        );
+        let mut successful_config = world.config.clone();
+        successful_config.transaction_dir = world._temporary.path().join("native-upgrade-retry");
+        let mut successful =
+            HostCutover::new_owned(successful_config, runner.clone(), world.expected_owner)
+                .unwrap();
+        let drain = successful.close_admission().unwrap();
+        successful.wait_for_quiescence(&drain).unwrap();
+        successful.fence_legacy_socket().unwrap();
+        successful.wait_for_connections().unwrap();
+        assert!(!successful.deployment_is_applying().unwrap());
+        successful.stop_legacy().unwrap();
+        successful.backup_database().unwrap();
+        let prepared = successful.capture_installation().unwrap();
+        successful.install_rust().unwrap();
+        successful.start_rust().unwrap();
+        successful.verify_live().unwrap();
+        // Model process death after the durable native commitment and before
+        // the final fence unlink. No old installation may be restored now.
+        successful.retain_activation_commit(&prepared).unwrap();
+        end_drain(&drain).unwrap();
+        let recovery = RecoveryConfig {
+            transaction_dir: successful.config.transaction_dir.clone(),
+            runtime_dir: successful.config.runtime_dir.clone(),
+            socket_path: successful.config.socket_path.clone(),
+            database_path: successful.config.database_path.clone(),
+            systemctl: successful.config.systemctl.clone(),
+            daemon_unit: successful.config.daemon_unit.clone(),
+            edge_unit: successful.config.edge_unit.clone(),
+            edge_state_dir: successful.config.edge_state_dir.clone(),
+            source_root: PathBuf::from(&successful.manifest.source_root),
+            edge_env: successful.config.edge_env.clone(),
+        };
+        let current = read_json_file(&successful.authority_marker_path)
+            .unwrap()
+            .unwrap();
+        let mut wrong = current.clone();
+        wrong["database_name"] = Value::String("another_owned_candidate".into());
+        install::atomic_file(
+            &successful.authority_marker_path,
+            &serde_json::to_vec(&wrong).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        assert!(recover_host(&recovery, runner.as_ref(), world.expected_owner).is_err());
+        assert!(
+            successful
+                .config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .exists()
+        );
+        install::atomic_file(
+            &successful.authority_marker_path,
+            &serde_json::to_vec(&current).unwrap(),
+            0o600,
+            Some(world.expected_owner),
+        )
+        .unwrap();
+        let unchanged_sqlite = install::hash_file(&world.config.database_path).unwrap();
+        let before_recovery = runner.requests.lock().unwrap().len();
+        let receipt = recover_host(&recovery, runner.as_ref(), world.expected_owner).unwrap();
+        assert_candidate_read_calls(&runner.requests.lock().unwrap()[before_recovery..]);
+        assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
+        assert!(!receipt.database_restored);
+        assert_eq!(
+            install::hash_file(&world.config.database_path).unwrap(),
+            unchanged_sqlite
+        );
+        assert!(
+            !successful
+                .config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .exists()
+        );
+        assert!(
+            successful
+                .config
+                .transaction_dir
+                .join("activation-recovery.json")
+                .is_file()
+        );
+        assert!(
+            !runner
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .skip(before_recovery)
+                .any(
+                    |request| request.args.first().is_some_and(|arg| arg == "stop")
+                        || request.args.windows(2).any(|pair| pair[0] == "--mode"
+                            && matches!(pair[1].to_str(), Some("import" | "restore-candidate")))
+                )
+        );
+        assert!(
+            successful
+                .config
+                .transaction_dir
+                .join("authority-before.pgdump")
+                .is_file()
+        );
+        assert!(
+            !successful
+                .config
+                .transaction_dir
+                .join("authority-before.sqlite3")
+                .exists()
+        );
+        let pending = read_json_file(
+            &successful
+                .config
+                .transaction_dir
+                .join("retirement-pending.json"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(pending["retirement_targets"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn postgres_preparation_preserves_unknown_data_and_reuses_only_its_private_binding() {
+        let world = host_world();
+        let postgres = world.config.postgres.bin_dir.join("postgres");
+        let saved_postgres = world.config.postgres.bin_dir.join("postgres.fixture-saved");
+        std::fs::rename(&postgres, &saved_postgres).unwrap();
+        let preflight_runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
+            ..HostFake::default()
+        });
+        let error = HostCutover::new_owned(
+            world.config.clone(),
+            preflight_runner.clone(),
+            world.expected_owner,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("required before cutover"));
+        assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        assert!(
+            !preflight_runner
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.program == world.config.systemctl)
+        );
+        std::fs::rename(&saved_postgres, &postgres).unwrap();
+        let runner = HostFake {
+            commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
+            ..HostFake::default()
+        };
+        let mut setup = world.config.postgres.clone();
+        setup.unit = "devcoordinator2-rustint-fixture-postgres.service".into();
+        let source = PathBuf::from(
+            read_json_file(&world.config.candidate_manifest)
+                .unwrap()
+                .unwrap()["source_root"]
+                .as_str()
+                .unwrap(),
+        );
+        std::fs::create_dir_all(&setup.data_dir).unwrap();
+        std::fs::write(setup.data_dir.join("PG_VERSION"), "17\n").unwrap();
+        std::fs::write(setup.data_dir.join("valuable"), b"preserve these bytes").unwrap();
+        let before = std::fs::metadata(&setup.data_dir).unwrap().mode();
+        assert!(
+            setup
+                .prepare(&source, &runner, world.expected_owner)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(setup.data_dir.join("valuable")).unwrap(),
+            b"preserve these bytes"
+        );
+        assert_eq!(std::fs::metadata(&setup.data_dir).unwrap().mode(), before);
+        std::fs::remove_file(setup.data_dir.join("PG_VERSION")).unwrap();
+        std::fs::remove_file(setup.data_dir.join("valuable")).unwrap();
+        setup
+            .prepare(&source, &runner, world.expected_owner)
+            .unwrap();
+        setup
+            .prepare(&source, &runner, world.expected_owner)
+            .unwrap();
+        let config = std::fs::read_to_string(setup.data_dir.join("postgresql.conf")).unwrap();
+        let private_config = read_json_file(&setup.config_path).unwrap().unwrap();
+        assert_eq!(
+            private_config["data_directory"].as_str(),
+            setup.data_dir.to_str()
+        );
+        assert!(config.contains("listen_addresses = ''"));
+        assert!(config.contains("log_parameter_max_length_on_error = 0"));
+        assert!(config.contains("log_statement = 'none'"));
+        assert!(config.contains("log_min_error_statement = 'panic'"));
+        assert!(config.contains("log_error_verbosity = 'terse'"));
+        let private_before = install::hash_file(&setup.config_path).unwrap();
+        let marker = setup
+            .data_dir
+            .parent()
+            .unwrap()
+            .join("authority-install.json");
+        std::fs::write(&marker, b"{\"schema\":1,\"product\":\"another-authority\"}").unwrap();
+        std::fs::set_permissions(&setup.data_dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert!(
+            setup
+                .prepare(&source, &runner, world.expected_owner)
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::metadata(&setup.data_dir).unwrap().mode() & 0o777,
+            0o750
+        );
+        assert_eq!(
+            install::hash_file(&setup.config_path).unwrap(),
+            private_before
+        );
+        assert!(
+            !std::fs::read_to_string(&setup.unit_path)
+                .unwrap()
+                .contains("Before=devcoordinator2.service")
+        );
     }
 
     #[test]
@@ -3003,6 +5117,7 @@ mod tests {
             let changed_commit = "d".repeat(40);
             let runner = Arc::new(HostFake {
                 commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
                 checkout_commit: (failure == "source").then_some(changed_commit.clone()),
                 dirty_checkout: failure == "dirty",
                 ..HostFake::default()
@@ -3026,17 +5141,18 @@ mod tests {
             };
             assert!(error.contains(expected_error), "{failure}: {error}");
             assert!(!error.contains("retained-private-setting"));
-            let marker = match failure {
-                "source" => format!("git:{changed_commit}"),
-                "dirty" => String::new(),
-                // A rejected binary never starts an installation transaction.
-                _ => format!("git:{}", "b".repeat(40)),
-            };
+            let environment = std::fs::read_to_string(&world.config.edge_env).unwrap();
+            assert!(environment.contains("UNRELATED=retained-private-setting\n"));
+            assert!(
+                environment.contains(&format!("EDGE_UI_SOURCE_REVISION=git:{}\n", "b".repeat(40)))
+            );
             assert_eq!(
-                std::fs::read_to_string(&world.config.edge_env).unwrap(),
-                world
-                    .old_edge_env
-                    .replace(&format!("git:{}", "b".repeat(40)), &marker)
+                environment,
+                if failure == "source" {
+                    world.rollback_edge_env()
+                } else {
+                    world.old_edge_env.clone()
+                }
             );
             assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
             assert!(
@@ -3052,67 +5168,81 @@ mod tests {
             );
             assert_eq!(
                 std::fs::read_to_string(&world.config.edge_unit_path).unwrap(),
-                world.old_edge_unit
+                if failure == "source" {
+                    world.rollback_edge_unit()
+                } else {
+                    world.old_edge_unit.clone()
+                }
             );
             let prior_manifest: Value =
                 serde_json::from_slice(&std::fs::read(&world.config.installed_manifest).unwrap())
                     .unwrap();
             assert_eq!(prior_manifest["source_commit"], "b".repeat(40));
             if failure == "dirty" {
-                assert!(error.contains("rollback incomplete"));
-                assert!(error.contains("marker was cleared"));
                 assert!(
                     !runner.requests.lock().unwrap().iter().any(|request| {
                         request.args.first() == Some(&OsString::from("restart"))
                     })
                 );
-                let snapshot =
-                    read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
-                assert_eq!(snapshot.status, "rolling_back");
+                assert!(!world.config.transaction_dir.exists());
             }
         }
     }
 
     #[test]
     fn concrete_host_adapter_activates_supported_schemas_and_rejects_unknown_schemas() {
-        for schema in 15..=DATABASE_SCHEMA_VERSION {
-            let world = host_world();
-            let connection = Connection::open(&world.config.database_path).unwrap();
+        let world = host_world();
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        for unsupported in ["14", "15", "33", "35", "36", "invalid"] {
             connection
                 .execute(
                     "UPDATE meta SET value=?1 WHERE key='schema_version'",
-                    [schema.to_string()],
+                    [unsupported],
                 )
                 .unwrap();
-            let runner = Arc::new(HostFake {
-                commit: world.commit.clone(),
-                ..HostFake::default()
-            });
-            let mut host =
-                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
-
-            let receipt = activate(&mut host).unwrap();
-            assert_eq!(receipt.status, "activated");
-            assert!(database_integrity(&world.config.database_path).unwrap());
-            assert_eq!(
-                database_schema(&world.config.database_path).unwrap(),
-                schema.to_string()
+            assert!(
+                host.deployment_is_applying()
+                    .unwrap_err()
+                    .contains("schema")
             );
-            for unsupported in [
-                "14".to_owned(),
-                (DATABASE_SCHEMA_VERSION + 1).to_string(),
-                "invalid".to_owned(),
-            ] {
-                connection
-                    .execute(
-                        "UPDATE meta SET value=?1 WHERE key='schema_version'",
-                        [unsupported],
-                    )
-                    .unwrap();
-                assert!(open_database_read_only(&world.config.database_path).is_err());
-                assert!(!database_integrity(&world.config.database_path).unwrap());
-            }
+            assert!(
+                !runner
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request.args.first().is_some_and(|action| action == "stop"))
+            );
         }
+        connection
+            .execute("UPDATE meta SET value='34' WHERE key='schema_version'", [])
+            .unwrap();
+        drop(connection);
+        let receipt = activate(&mut host).unwrap();
+        assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
+        assert!(world.config.database_path.is_file());
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("authority-before.pgdump")
+                .is_file()
+        );
+        assert!(
+            world
+                .config
+                .transaction_dir
+                .join("retirement-pending.json")
+                .is_file()
+        );
     }
 
     #[test]
@@ -3120,6 +5250,7 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             retryable_ping_failures: AtomicUsize::new(1),
             ..HostFake::default()
         });
@@ -3129,14 +5260,14 @@ mod tests {
 
         let receipt = activate(&mut host).unwrap();
 
-        assert_eq!(receipt.status, "activated");
+        assert_eq!(receipt.status, "activated_awaiting_final_acceptance");
         assert_eq!(
             runner
                 .requests
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|request| request.args == [OsString::from("ping")])
+                .filter(|request| request.args == [OsString::from("call"), OsString::from("ping")])
                 .count(),
             2
         );
@@ -3147,10 +5278,12 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
         std::fs::create_dir_all(&world.config.transaction_dir).unwrap();
         let backup = world
             .config
@@ -3175,10 +5308,13 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        host.stop_legacy().unwrap();
         host.backup_database().unwrap();
         let snapshot = host.capture_installation().unwrap();
         host.fence_legacy_socket().unwrap();
@@ -3261,56 +5397,57 @@ mod tests {
 
     #[test]
     fn all_supported_schemas_preserve_intact_data_after_failed_activation() {
-        for schema in MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION {
-            let world = host_world();
-            let connection = Connection::open(&world.config.database_path).unwrap();
-            connection
-                .execute(
-                    "UPDATE meta SET value=?1 WHERE key='schema_version'",
-                    [schema.to_string()],
-                )
+        let schema = 34;
+        let world = host_world();
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        connection
+            .execute(
+                "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                [schema.to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO meta(key,value) VALUES('preserve-on-failure','current-data')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(database_integrity(&world.config.database_path).unwrap());
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
+            fail_ping: true,
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
                 .unwrap();
+        let error = activate(&mut host).unwrap_err();
+        assert!(
+            error.contains("without replacing the intact database"),
+            "schema {schema}: {error}"
+        );
+        let backup = world
+            .config
+            .transaction_dir
+            .join("authority-before.sqlite3");
+        assert!(database_integrity(&backup).unwrap());
+        assert_eq!(
+            database_schema(&world.config.database_path).unwrap(),
+            schema.to_string()
+        );
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        assert_eq!(
             connection
-                .execute(
-                    "INSERT INTO meta(key,value) VALUES('preserve-on-failure','current-data')",
+                .query_row(
+                    "SELECT value FROM meta WHERE key='preserve-on-failure'",
                     [],
+                    |r| r.get::<_, String>(0)
                 )
-                .unwrap();
-            drop(connection);
-            assert!(database_integrity(&world.config.database_path).unwrap());
-            let runner = Arc::new(HostFake {
-                commit: world.commit.clone(),
-                fail_ping: true,
-                ..HostFake::default()
-            });
-            let mut host =
-                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
-            let error = activate(&mut host).unwrap_err();
-            assert!(
-                error.contains("without replacing the intact database"),
-                "schema {schema}: {error}"
-            );
-            let backup = world
-                .config
-                .transaction_dir
-                .join("authority-before.sqlite3");
-            assert!(database_integrity(&backup).unwrap());
-            assert_eq!(
-                database_schema(&world.config.database_path).unwrap(),
-                schema.to_string()
-            );
-            let connection = Connection::open(&world.config.database_path).unwrap();
-            assert_eq!(
-                connection
-                    .query_row(
-                        "SELECT value FROM meta WHERE key='preserve-on-failure'",
-                        [],
-                        |r| r.get::<_, String>(0)
-                    )
-                    .unwrap(),
-                "current-data"
-            );
-        }
+                .unwrap(),
+            "current-data"
+        );
     }
 
     #[test]
@@ -3320,11 +5457,13 @@ mod tests {
         let prior_edge_metadata = std::fs::metadata(&edge_env).unwrap();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             fail_ping: true,
             ..HostFake::default()
         });
         let mut host =
-            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
         let error = activate(&mut host).unwrap_err();
         assert!(error.contains("without replacing the intact database"));
         assert_eq!(
@@ -3349,7 +5488,7 @@ mod tests {
         assert_eq!(snapshot.status, "rolled_back");
         assert_eq!(
             std::fs::read_to_string(&edge_env).unwrap(),
-            world.old_edge_env.replace(&"b".repeat(40), &world.commit)
+            world.rollback_edge_env()
         );
         let edge_metadata = std::fs::metadata(&edge_env).unwrap();
         assert_eq!(
@@ -3366,10 +5505,109 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(&world.config.edge_unit_path).unwrap(),
-            world.old_edge_unit
+            world.rollback_edge_unit()
         );
         assert!(database_integrity(&world.config.database_path).unwrap());
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        for (success, stdout_truncated, stderr_truncated, existing_stderr) in [
+            (false, false, false, false),
+            (true, true, false, false),
+            (true, false, true, false),
+            (false, false, false, true),
+        ] {
+            let world = host_world();
+            let output = crate::install::CommandOutput {
+                success,
+                stdout: "private callback stdout\n".into(),
+                stderr: "private callback diagnosis\nprivate cleanup diagnosis\n".into(),
+                stdout_truncated,
+                stderr_truncated,
+            };
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                backup_verification_failure: Some(output.clone()),
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            let report = world
+                .config
+                .transaction_dir
+                .join("postgres-backup-verified.json");
+            if existing_stderr {
+                install::ensure_owned_directory(
+                    &world.config.transaction_dir,
+                    0o700,
+                    world.expected_owner,
+                )
+                .unwrap();
+                install::atomic_file(
+                    &report.with_extension("stderr"),
+                    b"first retained diagnostic\n",
+                    0o600,
+                    Some(world.expected_owner),
+                )
+                .unwrap();
+            }
+            let error = activate(&mut host).unwrap_err();
+            assert!(error.contains("PostgreSQL authority verify-backup failed"));
+            assert!(error.contains(if existing_stderr {
+                "private helper diagnostics incomplete"
+            } else {
+                "private helper diagnostics retained"
+            }));
+            assert!(error.contains(if stdout_truncated || stderr_truncated {
+                "helper output capture truncated"
+            } else {
+                "helper output capture complete"
+            }));
+            assert!(error.contains("without replacing the intact database"));
+            assert!(!error.contains("private callback"));
+            assert!(!error.contains("private cleanup"));
+            assert!(!report.exists());
+            let stdout = report.with_extension("stdout");
+            let stderr = report.with_extension("stderr");
+            let metadata = report.with_extension("command.json");
+            assert_eq!(std::fs::read_to_string(&stdout).unwrap(), output.stdout);
+            assert_eq!(
+                std::fs::read_to_string(&stderr).unwrap(),
+                if existing_stderr {
+                    "first retained diagnostic\n"
+                } else {
+                    output.stderr.as_str()
+                }
+            );
+            let value = read_json_file(&metadata).unwrap().unwrap();
+            assert_eq!(value["operation"], "verify-backup");
+            assert_eq!(value["source_commit"], world.commit);
+            assert_eq!(value["success"], success);
+            assert_eq!(value["stdout_truncated"], stdout_truncated);
+            assert_eq!(value["stderr_truncated"], stderr_truncated);
+            assert_eq!(value["stdout_captured_bytes"], output.stdout.len());
+            assert_eq!(value["stderr_captured_bytes"], output.stderr.len());
+            assert_eq!(value["stdout_retained"], true);
+            assert_eq!(value["stderr_retained"], !existing_stderr);
+            for path in [&stdout, &stderr, &metadata] {
+                let retained = path.symlink_metadata().unwrap();
+                assert!(retained.is_file());
+                assert_eq!(retained.uid(), world.expected_owner.0);
+                assert_eq!(retained.mode() & 0o777, 0o600);
+            }
+            assert_eq!(
+                read_snapshot(&world.config.transaction_dir, world.expected_owner.0)
+                    .unwrap()
+                    .status,
+                "rolled_back"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&world.config.daemon_unit_path).unwrap(),
+                world.old_daemon
+            );
+            assert!(world.config.socket_path.exists());
+            assert!(database_integrity(&world.config.database_path).unwrap());
+            assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        }
     }
 
     #[test]
@@ -3377,6 +5615,7 @@ mod tests {
         let world = host_world();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
             ..HostFake::default()
         });
         let missing = RecoveryConfig::default();
@@ -3399,6 +5638,7 @@ mod tests {
         let mut host =
             HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
                 .unwrap();
+        host.stop_legacy().unwrap();
         host.backup_database().unwrap();
         let snapshot = host.capture_installation().unwrap();
         write_snapshot(&snapshot, "committed", world.expected_owner).unwrap();
@@ -3447,6 +5687,284 @@ mod tests {
 
     #[test]
     fn offline_recovery_replays_persisted_snapshot_after_interrupted_install() {
+        for fault in [
+            "dirty_source",
+            "stale_source",
+            "changed_pin",
+            "late_dirty_source",
+        ] {
+            let world = host_world();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                    .unwrap();
+            host.stop_legacy().unwrap();
+            let source_root = PathBuf::from(&host.manifest.source_root);
+            let pin: PriorEdgeSource = serde_json::from_value(
+                finalize::private(
+                    &world.config.transaction_dir.join("edge-source-before.json"),
+                    world.expected_owner.0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let pinned_file = pin.source.checkout.join("console/index.html");
+            if fault == "changed_pin" {
+                std::fs::write(&pinned_file, b"changed pinned source must be retained").unwrap();
+            }
+            let data_before = install::hash_file(&world.config.database_path).unwrap();
+            let static_before = host
+                .snapshot_targets()
+                .into_iter()
+                .map(|path| serde_json::to_value(capture_entry(path).unwrap()).unwrap())
+                .collect::<Vec<_>>();
+            let recovery_runner = HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                dirty_checkout: fault == "dirty_source",
+                dirty_checkout_after_stop: fault == "late_dirty_source",
+                upstream_commit: (fault == "stale_source").then(|| "e".repeat(40)),
+                ..HostFake::default()
+            };
+            let config = RecoveryConfig {
+                transaction_dir: world.config.transaction_dir.clone(),
+                runtime_dir: world.config.runtime_dir.clone(),
+                socket_path: world.config.socket_path.clone(),
+                database_path: world.config.database_path.clone(),
+                systemctl: world.config.systemctl.clone(),
+                daemon_unit: world.config.daemon_unit.clone(),
+                edge_unit: world.config.edge_unit.clone(),
+                edge_state_dir: world.config.edge_state_dir.clone(),
+                source_root,
+                edge_env: world.config.edge_env.clone(),
+            };
+            assert!(
+                recover_host(&config, &recovery_runner, world.expected_owner).is_err(),
+                "{fault}"
+            );
+            assert_eq!(
+                install::hash_file(&world.config.database_path).unwrap(),
+                data_before
+            );
+            let static_after = host
+                .snapshot_targets()
+                .into_iter()
+                .map(|path| serde_json::to_value(capture_entry(path).unwrap()).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(static_after, static_before, "{fault}");
+            for (transaction, unit) in [
+                (
+                    world.config.transaction_dir.clone(),
+                    &world.config.daemon_unit,
+                ),
+                (
+                    startup_guard::edge_transaction(&world.config.transaction_dir),
+                    &world.config.edge_unit,
+                ),
+            ] {
+                startup_guard::require_active(
+                    &transaction,
+                    unit,
+                    runner.as_ref(),
+                    world.expected_owner.0,
+                )
+                .unwrap();
+            }
+            let calls = recovery_runner.requests.lock().unwrap();
+            assert!(
+                !calls
+                    .iter()
+                    .any(|request| request.args.first().is_some_and(|arg| arg == "restart")),
+                "{fault}"
+            );
+            if fault != "late_dirty_source" {
+                assert!(
+                    !calls.iter().any(|request| request.program.file_name()
+                        == Some(std::ffi::OsStr::new("systemctl"))
+                        || request.program.file_name() == Some(std::ffi::OsStr::new("busctl"))),
+                    "source must be checked before recovery changes services"
+                );
+            }
+            if fault == "changed_pin" {
+                assert_eq!(
+                    std::fs::read(pinned_file).unwrap(),
+                    b"changed pinned source must be retained"
+                );
+            }
+        }
+        {
+            let world = host_world();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                no_prior: true,
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            std::fs::remove_file(&world.config.daemon_unit_path).unwrap();
+            std::fs::remove_file(&world.config.installed_manifest).unwrap();
+            host.stop_legacy().unwrap();
+            host.backup_database().unwrap();
+            let prepared = host.capture_installation().unwrap();
+            assert_eq!(prepared.status, "prepared");
+            assert!(!prepared.backup_sha256.is_empty());
+        }
+        // Early recovery preserves static bindings and never accepts an
+        // unverified archive. Historical prepared snapshots keep their shape.
+        for drift in [false, true] {
+            let world = host_world();
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fragment: world.config.daemon_unit_path.clone(),
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                    .unwrap();
+            host.stop_legacy().unwrap();
+            let frozen =
+                read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
+            assert_eq!(frozen.status, "freezing");
+            assert!(frozen.backup_sha256.is_empty());
+            startup_guard::require_active(
+                &startup_guard::edge_transaction(&world.config.transaction_dir),
+                &world.config.edge_unit,
+                runner.as_ref(),
+                world.expected_owner.0,
+            )
+            .unwrap();
+            let snapshot_path = world
+                .config
+                .transaction_dir
+                .join("installation-snapshot.json");
+            let original = std::fs::read(&snapshot_path).unwrap();
+            for schema in [2, 3] {
+                let mut historical = frozen.clone();
+                historical.schema = schema;
+                historical.backup_sha256 = "0".repeat(64);
+                write_snapshot(&historical, "prepared", world.expected_owner).unwrap();
+                let parsed =
+                    read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
+                assert_eq!(parsed.schema, schema);
+                assert_eq!(parsed.status, "prepared");
+                assert_eq!(
+                    serde_json::to_value(parsed.entries).unwrap(),
+                    serde_json::to_value(&frozen.entries).unwrap()
+                );
+            }
+            install::atomic_file(&snapshot_path, &original, 0o600, Some(world.expected_owner))
+                .unwrap();
+            let archive = world
+                .config
+                .transaction_dir
+                .join("authority-before.sqlite3");
+            if drift {
+                host.backup_database().unwrap();
+                std::fs::write(&world.config.instance_env, b"# changed original setting\n")
+                    .unwrap();
+            } else {
+                Connection::open(&world.config.database_path)
+                    .unwrap()
+                    .backup(rusqlite::MAIN_DB, &archive, None)
+                    .unwrap();
+            }
+            assert!(host.capture_installation().is_err());
+            assert_eq!(std::fs::read(&snapshot_path).unwrap(), original);
+            startup_guard::require_active(
+                &world.config.transaction_dir,
+                &world.config.daemon_unit,
+                runner.as_ref(),
+                world.expected_owner.0,
+            )
+            .unwrap();
+            let recovery = RecoveryConfig {
+                transaction_dir: world.config.transaction_dir.clone(),
+                runtime_dir: world.config.runtime_dir.clone(),
+                socket_path: world.config.socket_path.clone(),
+                database_path: world.config.database_path.clone(),
+                systemctl: world.config.systemctl.clone(),
+                daemon_unit: world.config.daemon_unit.clone(),
+                edge_unit: world.config.edge_unit.clone(),
+                edge_state_dir: world.config.edge_state_dir.clone(),
+                source_root: PathBuf::from(
+                    read_json_file(&world.config.candidate_manifest)
+                        .unwrap()
+                        .unwrap()["source_root"]
+                        .as_str()
+                        .unwrap(),
+                ),
+                edge_env: world.config.edge_env.clone(),
+            };
+            if drift {
+                assert!(recover_host(&recovery, runner.as_ref(), world.expected_owner).is_err());
+                assert_eq!(
+                    std::fs::read(&world.config.instance_env).unwrap(),
+                    b"# changed original setting\n"
+                );
+                startup_guard::require_active(
+                    &world.config.transaction_dir,
+                    &world.config.daemon_unit,
+                    runner.as_ref(),
+                    world.expected_owner.0,
+                )
+                .unwrap();
+                startup_guard::require_active(
+                    &startup_guard::edge_transaction(&world.config.transaction_dir),
+                    &world.config.edge_unit,
+                    runner.as_ref(),
+                    world.expected_owner.0,
+                )
+                .unwrap();
+            } else {
+                Connection::open(&world.config.database_path)
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO meta(key,value) VALUES('early-recovery-live','retained')",
+                        [],
+                    )
+                    .unwrap();
+                let recovered =
+                    recover_host(&recovery, runner.as_ref(), world.expected_owner).unwrap();
+                assert!(!recovered.database_restored);
+                for transaction in [
+                    world.config.transaction_dir.clone(),
+                    startup_guard::edge_transaction(&world.config.transaction_dir),
+                ] {
+                    assert_eq!(
+                        finalize::private(
+                            &transaction.join("daemon-start-guard.json"),
+                            world.expected_owner.0
+                        )
+                        .unwrap()["released"],
+                        true
+                    );
+                }
+                assert_eq!(
+                    Connection::open(&world.config.database_path)
+                        .unwrap()
+                        .query_row(
+                            "SELECT value FROM meta WHERE key='early-recovery-live'",
+                            [],
+                            |r| r.get::<_, String>(0)
+                        )
+                        .unwrap(),
+                    "retained"
+                );
+                assert!(
+                    !runner
+                        .requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|r| r.args.iter().any(|a| a == "inspect-postgres"))
+                );
+            }
+        }
         let mut failed_cases = Vec::new();
         for state in ["clean", "initial_dirty", "initial_stale", "late_dirty"] {
             let result = std::panic::catch_unwind(|| {
@@ -3454,6 +5972,7 @@ mod tests {
                 let prior_edge_metadata = std::fs::metadata(&world.config.edge_env).unwrap();
                 let runner = Arc::new(HostFake {
                     commit: world.commit.clone(),
+                    fragment: world.config.daemon_unit_path.clone(),
                     ..HostFake::default()
                 });
                 let mut host = HostCutover::new_owned(
@@ -3465,9 +5984,9 @@ mod tests {
                 let drain = host.close_admission().unwrap();
                 host.fence_legacy_socket().unwrap();
                 host.wait_for_quiescence(&drain).unwrap();
+                host.stop_legacy().unwrap();
                 host.backup_database().unwrap();
                 host.capture_installation().unwrap();
-                host.stop_legacy().unwrap();
                 host.install_rust().unwrap();
                 assert_eq!(
                     std::fs::read_to_string(&world.config.edge_env).unwrap(),
@@ -3498,6 +6017,7 @@ mod tests {
 
                 let recovery_runner = HostFake {
                     commit: world.commit.clone(),
+                    fragment: world.config.daemon_unit_path.clone(),
                     upstream_commit: (state == "initial_stale").then(|| "e".repeat(40)),
                     dirty_checkout: state == "initial_dirty",
                     dirty_checkout_after_stop: state == "late_dirty",
@@ -3563,9 +6083,9 @@ mod tests {
                     );
                     return;
                 }
-                let marker = if state == "late_dirty" {
+                let expected_env = if state == "late_dirty" {
                     let error = recovery.unwrap_err();
-                    assert!(error.contains("marker was cleared"));
+                    assert!(error.contains("source binding is unverified"));
                     assert!(!error.contains("retained-private-setting"));
                     assert!(
                         !recovery_runner
@@ -3577,7 +6097,7 @@ mod tests {
                                 request.args.first() == Some(&OsString::from("restart"))
                             })
                     );
-                    String::new()
+                    world.old_edge_env.clone()
                 } else {
                     let receipt = recovery.unwrap();
                     assert_eq!(receipt.status, "recovered");
@@ -3589,13 +6109,11 @@ mod tests {
                             .unwrap()
                             .contains("retained-private-setting")
                     );
-                    format!("git:{}", world.commit)
+                    world.rollback_edge_env()
                 };
                 assert_eq!(
                     std::fs::read_to_string(&world.config.edge_env).unwrap(),
-                    world
-                        .old_edge_env
-                        .replace(&format!("git:{}", "b".repeat(40)), &marker)
+                    expected_env
                 );
                 let edge_metadata = std::fs::metadata(&world.config.edge_env).unwrap();
                 assert_eq!(
@@ -3612,7 +6130,11 @@ mod tests {
                 );
                 assert_eq!(
                     std::fs::read_to_string(&world.config.edge_unit_path).unwrap(),
-                    world.old_edge_unit
+                    if state == "late_dirty" {
+                        world.old_edge_unit.clone()
+                    } else {
+                        world.rollback_edge_unit()
+                    }
                 );
                 assert_eq!(
                     std::fs::read_to_string(&world.config.daemon_unit_path).unwrap(),

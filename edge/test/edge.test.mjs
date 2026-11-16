@@ -22,6 +22,7 @@ import { startIssuer } from './fixture-issuer.mjs';
 import { createPageLocalization } from '../lib/localization.mjs';
 
 const BASE = 'example.test';
+const CONSOLE_DOCUMENT = '<!doctype html><title>Prepared Console fixture</title>';
 let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port; let pendingWaitHooks; let edgeConfig;
 
 function document(routes, access, generation) {
@@ -86,21 +87,24 @@ before(async () => {
     let buf = '';
     socket.on('data', (c) => { buf += c; if (buf.endsWith('\n')) {
       const req = JSON.parse(buf); daemonCalls.push(req);
-      assert.equal(req.protocol, 2);
+      assert.equal(req.protocol, 3);
       assert.deepEqual(Object.keys(req).sort(), ['client', 'id', 'operation', 'params', 'protocol']);
       if (req.operation === 'event.wait' && pendingWaitHooks) {
         socket.once('close', pendingWaitHooks.closed);
         pendingWaitHooks.received();
         return;
       }
-      socket.end(`${JSON.stringify({ protocol: 2, id: req.id, ok: true, data: { echoed: req.operation, identity: req.client.identity, params: req.params } })}\n`);
+      socket.end(`${JSON.stringify({ protocol: 3, id: req.id, ok: true, data: { echoed: req.operation, identity: req.client.identity, params: req.params } })}\n`);
     } });
   });
   await new Promise((r) => daemon.listen(daemonSock, r));
+  const consoleDir = path.join(tmp, 'console');
+  await fs.mkdir(consoleDir);
+  await fs.writeFile(path.join(consoleDir, 'index.html'), CONSOLE_DOCUMENT);
   edgeConfig = { baseDomain: BASE, consoleHost: `console.${BASE}`, httpPort: 0, httpOnly: true,
     sessionSecret: 'test-secret-at-least-16-bytes', oidcIssuer: issuer.url, oidcClientId: 'test-client',
     oidcClientSecret: 'test-secret', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'),
-    daemonSocket: daemonSock, consoleDir: '' };
+    daemonSocket: daemonSock, consoleDir, uiSourceRevision: 'git:edge-static-fixture' };
   edge = await createEdge(edgeConfig, { log: { info() {}, warn() {}, error: (...a) => console.error('EDGE', ...a), debug() {} } });
   [port] = await edge.listen();
 });
@@ -159,10 +163,17 @@ test('public route proxies without sign-in; authenticated route demands sign-in'
 });
 
 test('sign-in admits the invited identity via the daemon and enforces grants per request', async () => {
+  const anonymousConsole = await get('/');
+  assert.equal(anonymousConsole.status, 302);
+  assert.ok(!anonymousConsole.body.includes(CONSOLE_DOCUMENT));
   const session = await signIn();
   assert.ok(session, 'session cookie issued');
+  const consoleDocument = await get('/', { cookie: session });
+  assert.equal(consoleDocument.status, 200);
+  assert.equal(consoleDocument.body, CONSOLE_DOCUMENT);
+  assert.equal(consoleDocument.headers['x-ui-source-revision'], 'git:edge-static-fixture');
   const accept = daemonCalls.find((c) => c.operation === 'user.accept_invitation');
-  assert.equal(accept.protocol, 2);
+  assert.equal(accept.protocol, 3);
   assert.equal(accept.client.identity, 'dev@example.test');
   assert.equal(accept.client.kind, 'edge');
   const ok = await get('/hello', { host: `app.${BASE}`, cookie: session });
@@ -183,21 +194,21 @@ test('sign-in admits the invited identity via the daemon and enforces grants per
   await publish(edge.store.current().routes, { owners: ['dev@example.test'], grants: [] }, 3);
   assert.equal((await get('/hello', { host: `app.${BASE}`, cookie: session })).status, 200);
   // Console API bridge carries the identity to the daemon; unauthenticated is 401.
-  const api = await get('/api/v2/deployment.list', { cookie: session, method: 'POST', body: {} });
+  const api = await get('/api/v3/deployment.list', { cookie: session, method: 'POST', body: {} });
   assert.equal(api.status, 200);
   assert.equal(JSON.parse(api.body).data.identity, 'dev@example.test');
-  const capacity = await get('/api/v2/test.capacity.get', {
+  const capacity = await get('/api/v3/test.capacity.get', {
     cookie: session, method: 'POST', body: {},
   });
   assert.equal(capacity.status, 200);
   assert.equal(JSON.parse(capacity.body).data.echoed, 'test.capacity.get');
   assert.ok(daemonCalls.some((c) => c.operation === 'test.capacity.get'));
-  const logCatalog = await get('/api/v2/test.log.catalog', {
+  const logCatalog = await get('/api/v3/test.log.catalog', {
     cookie: session, method: 'POST', body: { path: '/repo', run_id: 't-run' },
   });
   assert.equal(logCatalog.status, 200);
   assert.equal(JSON.parse(logCatalog.body).data.echoed, 'test.log.catalog');
-  const failureContext = await get('/api/v2/test.log.failure_context', {
+  const failureContext = await get('/api/v3/test.log.failure_context', {
     cookie: session, method: 'POST', body: { path: '/repo', check: 'unit' },
   });
   assert.equal(failureContext.status, 200);
@@ -205,18 +216,18 @@ test('sign-in admits the invited identity via the daemon and enforces grants per
     'test.log.failure_context');
   assert.ok(daemonCalls.some((c) => c.operation === 'test.log.catalog'
     && c.client.identity === 'dev@example.test'));
-  assert.equal((await get('/api/v2/deployment.list', { method: 'POST', body: {} })).status, 401);
+  assert.equal((await get('/api/v3/deployment.list', { method: 'POST', body: {} })).status, 401);
   // ping is the daemon's one dotless operation and passes; other dotless words
   // are grammar garbage and never reach the daemon.
-  const ping = await get('/api/v2/ping', { cookie: session, method: 'POST', body: {} });
+  const ping = await get('/api/v3/ping', { cookie: session, method: 'POST', body: {} });
   assert.equal(ping.status, 200);
   assert.ok(daemonCalls.some((c) => c.operation === 'ping'));
-  assert.equal((await get('/api/v2/bogus', { cookie: session, method: 'POST' })).status, 400);
+  assert.equal((await get('/api/v3/bogus', { cookie: session, method: 'POST' })).status, 400);
   assert.ok(!daemonCalls.some((c) => c.operation === 'bogus'));
-  assert.equal((await get('/api/v2/test..get', { cookie: session, method: 'POST' })).status, 400);
+  assert.equal((await get('/api/v3/test..get', { cookie: session, method: 'POST' })).status, 400);
   const legacy = await get('/api/deployment.list', { cookie: session, method: 'POST', body: {} });
   assert.equal(legacy.status, 400);
-  assert.equal(JSON.parse(legacy.body).protocol, 2);
+  assert.equal(JSON.parse(legacy.body).protocol, 3);
   assert.equal(JSON.parse(legacy.body).error.code, 'protocol_unsupported');
 });
 
@@ -267,7 +278,7 @@ test('disconnecting a Console event wait closes the daemon subscription', async 
   const closed = new Promise((resolve) => { closedResolve = resolve; });
   pendingWaitHooks = { received: receivedResolve, closed: closedResolve };
   const request = http.request({
-    host: '127.0.0.1', port, path: '/api/v2/event.wait', method: 'POST',
+    host: '127.0.0.1', port, path: '/api/v3/event.wait', method: 'POST',
     headers: { host: `console.${BASE}`, cookie: session, 'content-type': 'application/json' },
   });
   request.on('error', () => {});
@@ -316,13 +327,15 @@ test('trusted Console access uses a direct loopback peer and never a forwarded i
     req.end(body);
   });
   try {
-    assert.equal((await call('/')).status, 200);
+    const consoleDocument = await call('/');
+    assert.equal(consoleDocument.status, 200);
+    assert.equal(consoleDocument.text, CONSOLE_DOCUMENT);
     const before = daemonCalls.length;
-    const local = await call('/api/v2/user.whoami', { method: 'POST', body: '{}' });
+    const local = await call('/api/v3/user.whoami', { method: 'POST', body: '{}' });
     assert.equal(local.status, 200);
     assert.equal(daemonCalls.length, before + 1);
     assert.equal(daemonCalls.at(-1).client.identity, undefined);
-    assert.equal((await call('/api/v2/user.whoami', { method: 'POST', body: '{}', headers: { origin: 'http://untrusted.example' } })).status, 401);
+    assert.equal((await call('/api/v3/user.whoami', { method: 'POST', body: '{}', headers: { origin: 'http://untrusted.example' } })).status, 401);
     assert.equal((await call('/', { headers: { forwarded: 'for=127.0.0.1' } })).status, 302);
     assert.equal((await call('/', { headers: { host: `app.${BASE}` } })).status, 302);
   } finally {

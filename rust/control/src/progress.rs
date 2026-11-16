@@ -357,9 +357,9 @@ impl ProgressService {
         let repository_id = repository_id.to_owned();
         let tasks = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT task_id,seq,position,parent_task_id,release_id,title,kind,status,estimated_loc,elaboration_needed FROM tasks WHERE repository_id=?1 ORDER BY seq",
+                    "SELECT task_id,seq,position,parent_task_id,release_id,title,kind,status,estimated_loc,elaboration_needed FROM tasks WHERE repository_id=$1 ORDER BY seq",
                 )?;
                 Ok(statement
                     .query_map([repository_id], |row| {
@@ -402,12 +402,12 @@ impl ProgressService {
         let end = iso(window.aligned_end_ms)?;
         let events = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT subject_id,event,from_value,to_value,at FROM plan_events WHERE repository_id=?1 AND subject_kind='task' AND at>=?2 AND at<?3 ORDER BY event_id",
+                    "SELECT subject_id,event,from_value,to_value,at FROM plan_events WHERE repository_id=$1 AND subject_kind='task' AND at>=$2 AND at<$3 ORDER BY event_id",
                 )?;
                 Ok(statement
-                    .query_map(rusqlite::params![repository_id,start,end], |row| {
+                    .query_map(crate::database::params![repository_id,start,end], |row| {
                         let at: String = row.get(4)?;
                         Ok(PlanEvent {
                             subject_id: row.get(0)?,
@@ -560,10 +560,10 @@ impl ProgressService {
     fn next_release(&self, repository_id: &str) -> Result<Option<Release>, ProtocolError> {
         let repository_id = repository_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT release_id,name,status FROM releases WHERE repository_id=?1 AND status IN ('planned','requested') AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases') ORDER BY seq LIMIT 1",
+                        "SELECT release_id,name,status FROM releases WHERE repository_id=$1 AND status IN ('planned','requested') AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases') ORDER BY seq LIMIT 1",
                         [repository_id],
                         |row| Ok(Release { id:row.get(0)?,name:row.get(1)?,status:row.get(2)? }),
                     )
@@ -648,13 +648,13 @@ impl ProgressService {
         let repository_id = repository_id.to_owned();
         let events = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT subject_id,at FROM plan_events WHERE repository_id=?1 AND subject_kind='task' AND event='status' AND to_value='done' AND at>=?2 AND at<?3 ORDER BY event_id",
+                    "SELECT subject_id,at FROM plan_events WHERE repository_id=$1 AND subject_kind='task' AND event='status' AND to_value='done' AND at>=$2 AND at<$3 ORDER BY event_id",
                 )?;
                 Ok(statement
                     .query_map(
-                        rusqlite::params![repository_id,iso(cutoff).map_err(DatabaseError::Domain)?,iso(now_ms.saturating_add(1000)).map_err(DatabaseError::Domain)?],
+                        crate::database::params![repository_id,iso(cutoff).map_err(DatabaseError::Domain)?,iso(now_ms.saturating_add(1000)).map_err(DatabaseError::Domain)?],
                         |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)),
                     )?
                     .collect::<Result<Vec<_>,_>>()?)
@@ -705,9 +705,9 @@ impl ProgressService {
         let repository_id = repository_id.to_owned();
         let reopened = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT subject_id FROM plan_events WHERE repository_id=?1 AND subject_kind='task' AND event='status' AND from_value='done' AND to_value!='done' ORDER BY event_id",
+                    "SELECT subject_id FROM plan_events WHERE repository_id=$1 AND subject_kind='task' AND event='status' AND from_value='done' AND to_value!='done' ORDER BY event_id",
                 )?;
                 Ok(statement
                     .query_map([repository_id], |row| row.get::<_,String>(0))?
@@ -1168,7 +1168,7 @@ fn database_error(error: DatabaseError) -> ProtocolError {
     }
 }
 
-use rusqlite::OptionalExtension;
+use crate::database::OptionalExtension;
 
 #[cfg(test)]
 mod tests {
@@ -1176,24 +1176,10 @@ mod tests {
     use crate::config::Config;
     use crate::platform::FixedClock;
     use crate::test_state::{initial_summary, terminal_status};
-    use crate::usage::RepositoryProbe;
     use devcoordinator2_executor_protocol::{ProofKind, ValidationTier};
     use std::collections::HashSet;
-    use std::path::Path;
     use tempfile::tempdir;
     use time::macros::datetime;
-
-    struct NoProbe;
-    impl RepositoryProbe for NoProbe {
-        fn probe(
-            &self,
-            _source: &crate::config::CodexUsageSource,
-            _repository: &Path,
-            _now_ms: u64,
-        ) -> Result<(String, u32, u32), String> {
-            Err("source_unavailable".into())
-        }
-    }
 
     #[test]
     fn progress_uses_plan_order_test_history_and_truthful_missing_tokens() {
@@ -1220,9 +1206,9 @@ mod tests {
         let registered = registry.register(&repository, uid, gid).unwrap();
         let repository_id = registered.repository_id.clone();
         database.transaction(move |transaction| {
-            transaction.execute("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at) VALUES('v1111111111111111',?1,1,'September','release','planned','2026-09-01T00:00:00Z','uid:1','2026-09-01T00:00:00Z')",[&repository_id])?;
-            transaction.execute("INSERT INTO tasks(task_id,repository_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at) VALUES('p1111111111111111',?1,'v1111111111111111',1,0,'Finished outcome','done',NULL,NULL,NULL,NULL,'goal','done',100,0,'2026-09-03T08:00:00Z','uid:1','2026-09-03T10:00:00Z')",[&repository_id])?;
-            transaction.execute("INSERT INTO tasks(task_id,repository_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at) VALUES('p2222222222222222',?1,'v1111111111111111',2,1,'Open owner-facing title','open',NULL,'internal-code test_name',NULL,NULL,'improvement','in_progress',NULL,0,'2026-09-03T09:00:00Z','uid:1','2026-09-03T11:00:00Z')",[&repository_id])?;
+            transaction.execute("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at) VALUES('v1111111111111111',$1,1,'September','release','planned','2026-09-01T00:00:00Z','uid:1','2026-09-01T00:00:00Z')",[&repository_id])?;
+            transaction.execute("INSERT INTO tasks(task_id,repository_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at) VALUES('p1111111111111111',$1,'v1111111111111111',1,0,'Finished outcome','done',NULL,NULL,NULL,NULL,'goal','done',100,0,'2026-09-03T08:00:00Z','uid:1','2026-09-03T10:00:00Z')",[&repository_id])?;
+            transaction.execute("INSERT INTO tasks(task_id,repository_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at) VALUES('p2222222222222222',$1,'v1111111111111111',2,1,'Open owner-facing title','open',NULL,'internal-code test_name',NULL,NULL,'improvement','in_progress',NULL,0,'2026-09-03T09:00:00Z','uid:1','2026-09-03T11:00:00Z')",[&repository_id])?;
             for values in [
                 ("p1111111111111111","created",None,None,"2026-09-03T08:00:00Z",None),
                 ("p1111111111111111","estimate",None,Some("100"),"2026-09-03T08:01:00Z",None),
@@ -1230,7 +1216,7 @@ mod tests {
                 ("p2222222222222222","created",None,None,"2026-09-03T09:00:00Z",None),
                 ("p2222222222222222","status",Some("done"),Some("in_progress"),"2026-09-03T11:00:00Z",Some("internal-code test_name")),
             ] {
-                transaction.execute("INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at,note) VALUES(?1,'task',?2,?3,?4,?5,'uid:1',?6,?7)",rusqlite::params![repository_id,values.0,values.1,values.2,values.3,values.4,values.5])?;
+                transaction.execute("INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at,note) VALUES($1,'task',$2,$3,$4,$5,'uid:1',$6,$7)",crate::database::params![repository_id,values.0,values.1,values.2,values.3,values.4,values.5])?;
             }
             Ok(())
         }).unwrap();
@@ -1288,8 +1274,7 @@ mod tests {
             codex_usage_sources: Vec::new(),
         };
         let clock = Arc::new(FixedClock(datetime!(2026-09-04 12:00 UTC)));
-        let usage =
-            CodexUsage::with_probe(config, database.clone(), clock.clone(), Arc::new(NoProbe));
+        let usage = CodexUsage::with_clock(config, database.clone(), clock.clone());
         let progress = ProgressService::with_clock(database, registry, usage, clock);
         let report = progress
             .repository(ProgressRepositoryParams {

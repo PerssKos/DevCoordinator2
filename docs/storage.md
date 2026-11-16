@@ -8,31 +8,31 @@ their services are stopped.
 
 ## Inspect and remove
 
-Use `devcoordinator2 storage --help` for the current grammar. Start with
-`storage scan --idempotency-key <unique-key>` and follow the returned `job_id`
-through `storage job status` and `event wait`. Discovery runs in the background
-under the shared admission broker. `storage inventory` supports project,
-filesystem, kind, safety and name filters, with bounded offset pagination.
-`storage show <artifact-id>` exposes safety, ownership, size, last verified use,
-dependencies and the effective deletion deadline. `storage history` retains
-per-item results after data removal.
+Discover operations with `devcoordinator2 operations --prefix storage.` and
+inspect one input using `devcoordinator2 schema <operation>`. Invoke all operations
+through `devcoordinator2 call <operation> --params JSON` or `--params-file FILE`.
+Start `storage.scan` with an `idempotency_key`; follow its `job_id` through
+`storage.job.status` and `event.wait`. Discovery runs through bounded maintenance
+workers. `storage.inventory` supports project, filesystem, kind, safety and name
+filters with bounded offset pagination. `storage.artifact.get` exposes one
+artifact's safety, ownership, size, last use and dependencies. `storage.history`
+retains per-item results after removal.
 
-Protect an artifact with `storage protect <artifact-id> --expected-revision
-<revision>`; use `--remove` to remove that explicit pin. Removing a pin does not
-override a current deployment, consumer, lease, required backup or missing
-observation. Leases use `storage lease set --file <request.json>` and
-`storage lease release <lease-id>`; clients renew them while tracked data is
-needed. Lease duration is bounded to one day per renewal.
+`storage.protection.set` changes an explicit pin using `artifact_id`,
+`expected_revision` and `protected`. Removing a pin never overrides current use,
+leases, required backups or missing observations. Use `storage.lease.set` and
+`storage.lease.release`; renew active-use leases while data is needed. Lease
+duration remains bounded to one day per renewal.
 
-Prepare exact targets with `storage cleanup plan --artifact-id <id>` (repeat
-the option for more targets). Include `--include-persistent-data` only when the
-existing authorization covers permanent data. The returned plan lists every
-consumer, mount and backing directory needed for removal and each blocking
-reason. Review the target names and effects, then call `storage cleanup start
---plan-id <plan-id> --idempotency-key <unique-key>`. The same key returns the
-original job on retries. Follow its events and retain its terminal receipt;
-`storage job cancel <job-id>` prevents subsequent steps but does not undo
-already completed removals.
+Prepare exact targets with `storage.cleanup.plan` and its `artifact_ids` array.
+Set `include_persistent_data` only when existing authorization covers permanent
+data. Review every returned consumer, mount, directory and blocking reason, then
+call `storage.cleanup.start` with `plan_id` and `idempotency_key`. Repeating the
+same key returns the original job. Follow its events and retain its terminal
+receipt. `storage.job.cancel` prevents subsequent steps and does not undo
+completed removals. Running discovery checks cancellation before each batch and
+releases its execution slot between batches so queued cleanup can advance during
+a long scan.
 
 Selecting a directory also lists known nested directories affected by that
 removal. Their protection and ownership checks still apply. Aliases and nested
@@ -62,8 +62,7 @@ is cached or transferred between callers.
 ## Legacy Docker ownership
 
 Observed deployments remain read-only through ordinary deployment controls.
-For an independently verified retired group, call `storage legacy-register
---deployment-id <id> --expected-inventory-revision <revision> --reason <reason>`.
+For an independently verified retired group, call `storage.legacy_register` with `deployment_id`, `expected_inventory_revision` and `reason`.
 The reason records the existing disposal authorization. Registration refreshes
 native safety evidence for all known members and grants cleanup ownership as
 one transaction; it does not recreate or adopt the deployment as an application.
@@ -93,8 +92,7 @@ endpoints require a provider and are reported as unavailable. Root acceptance
 uses a separate Docker daemon and a private network namespace for these checks.
 
 Global defaults are three inactive days for build outputs, dependencies and
-caches, and fourteen for other unused disposable resources. Use `storage policy
-show` or `storage policy set --file <request.json>` for global settings; include
+caches, and fourteen for other unused disposable resources. Use `storage.policy.get` or `storage.policy.set` for global settings; include
 `repository_id` for a project override. Unknown past activity starts at the
 first verified observation. Current use and leases extend the inactivity
 baseline. Hourly discovery and relevant lifecycle events refresh the inventory;
@@ -115,10 +113,10 @@ Discovery and state changes carry a persistent sequence. A slow earlier scan
 cannot restore removed inventory or overwrite newer use, protection or failed
 safety checks, including across a daemon restart.
 
-`storage roots set --file <request.json>` declares a directory containing
+`storage.roots.set` declares a directory containing
 generated outputs, dependency caches, backups or unrecognized data. Roots bind
 the actual directory identity; links and replacements require fresh review.
-Unrecognized directories are visible but blocked until `storage register`
+Unrecognized directories are visible but blocked until `storage.register`
 records verified ownership and disposal intent. Canonical sources, credentials,
 chat history and the authoritative Coordinator database remain protected.
 Generated directories containing recognized credential or chat metadata are
@@ -135,6 +133,13 @@ explicit pins. Generic backup roots contain `backup-manifest.json` with a
 paths and their `sha256` digests. Native installation snapshots use their
 existing database verification. Missing or damaged evidence never counts toward
 the required recovery floor.
+
+Register native installation backups only at the exact configured state
+directory's `cutover` child, with root kind `backup`. Its direct finalized
+generations use the recorded database hash and read-only SQLite verification;
+unfinished transactions, extra files or directories, aliases and changed root
+identities remain blocked. Cleanup removes only the native snapshot files and
+keeps the authority directory and all other state descendants protected.
 
 Governed test evidence remains under its existing age/depth retention service.
 Storage protection and active leases, required release/review evidence and open

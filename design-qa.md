@@ -955,6 +955,19 @@ Comparison history: the initial implementation was revised to keep the inspector
 
 final result: blocked
 
+## Performance loading progress and token-detail repair — 2026-11-15
+
+The selected current Product Design continuation is the adjusted child `sa883456b1cc80992`, batch `k62a66b8af96ee389`, with parent `s059881c2d3594edd`. The retained source image is the generated-image artifact `exec-7475c8e8-f84e-4cec-8bb8-deb3926edc1a.png`, SHA-256 `c1d649763a8023f28a601bf9361b874a79f8bc36ec5efd2fe2cf2b8c0ca38b59`, actual viewport 1975×796. It shows the selected inline spinner beside Overview usage with a measured remaining-time estimate. The parent and the two rejected first-pass options remain retained historical records.
+
+The implementation shows that inline signal after one second of an owned token read. It uses an indeterminate spinner and an explicit estimate only after three comparable completed source reads; otherwise it says the remaining time is unknown, and an overrun says it is taking longer than estimated. The collector deadline is never presented as an ETA. Token-detail popovers now show provider components when supplied and a clear unavailable message for breakdowns that do not contain those components, instead of a list of empty dashes.
+
+The current rendered journey passed 583 checks across both themes and widths 390, 927, 1239, 1440 and 1001 pixels, including delayed reads, remaining-time estimates, mobile visibility, reloads, review continuation and token-detail popovers. Formal run `formal-web-ui-mwi2izco-2cbb43a4` passed all 32 light/dark cells at widths 390, 1001, 1443 and 2153 pixels. The separate manual receipt passed all 32 cells. Evidence is retained in `/tmp/performance-progress-formal/` (`report12.json`, `manual-review.json`, `review-queue12.json`, screenshots) and `/tmp/performance-progress-browser-final2/`. The formal run has two existing intentional narrow-table scroll warnings and no P0-P2 finding.
+
+This visual review covers the selected adjusted state and the delayed pending state; live source identity and live timing remain deployment checks. The source comparison is limited to the one-window selected mockup and its pending state; no current mockup exists for unrelated Console routes. The current Product Design audit remains pending until the live candidate is deployed and its source identity is verified.
+
+final result: blocked
+
+
 ## Usage selection visibility and completeness chrome repair (2026-10-08)
 
 ### Source and implementation
@@ -996,3 +1009,49 @@ final result: blocked
 The selected Usage worktree-scope direction is implemented in the Console and has a focused rendered journey. The current evidence covers the anchored checkbox scope control, consolidated selection, partial selection, empty selection, and canonical `codex` grouping; the formal browser receipt, manual screenshot receipt, Product Design audit, and live source-identity verification remain outstanding for this new surface.
 
 The remaining blocker is delivery of the CodexMulti producer build containing schema 9 worktree attribution. Until that build is installed and exercised through the Coordinator collector, per-worktree totals remain explicitly unavailable while consolidated historical totals remain valid.
+
+## Performance usage recovery — 2026-11-15
+
+The current repair restores pending period and lifetime measurements, keeps outcome attribution on one query path, and prevents the outcome table from wrapping headings into individual characters at intermediate widths. It preserves the existing Console controls and visual language.
+
+The current fixture journey passed 343 checks. Formal run `formal-web-ui-mwh63f6r-2c5c30c9` passed all 24 light/dark cells at 390, 599, 600, 601, 999, 1000, 1001, 1249, 1250, 1251, 1443 and 1920 CSS pixels. Every initial and full-page image was manually reviewed after the formal pass. The initial review found a P2 table-width defect at 1001 pixels; the existing stacked layout now applies through 1250 pixels, and the complete formal/manual rerun passed.
+
+Current implementation evidence is retained in the private fixture bundle `/tmp/formal-web-ui-verification-Ts4QMX/`, including `report.json`, `manual-review.json`, and the numbered initial/full-page screenshots. These images use synthetic measurements and prove layout and interaction only. They do not establish live usage availability or full assistive-technology conformance.
+
+The Product Design catalog was refreshed and the audit/design-QA contracts were loaded. The previously approved Performance Cost Matrix image is retained as a legacy record, with no current Performance continuation selection. It cannot be silently promoted to a current design source. The owner has been asked whether the existing Console layout should be the reference for this repair. Until that reference is confirmed, there is no valid current source/implementation comparison, and no Product Design pass is claimed.
+
+Typography, colors, assets and copy retain the existing Console system. The responsive repair changes only when the existing outcome/review columns stack. The independent live-data acceptance must still verify measured totals, activity and outcomes after the reviewed deployment. The prior historical comparisons above remain preserved; this entry does not replace their source images or reinterpret their decisions.
+
+final result: blocked
+
+## Performance activity retention follow-up — 2026-11-15
+
+Live verification after the usage recovery found measured headlines but missing activity rows and chart groups. The compact review response fallback had removed the known breakdowns from the dedicated Performance response. The follow-up preserves those measurements, fills a missing repository activity aggregate from measured activity rows, and keeps the refreshed overview headline when returning from a review. Repeated activity names now include their recorded phase so users can distinguish the rows.
+
+The rendered journey passed 373 checks, including a 40-row activity table with unavailable costs and refresh/review continuation. Formal run `formal-web-ui-mwhcryr8-ee6f36c8` passed all 24 light/dark viewport cells. Every initial and full-page capture was reviewed, and the separate manual receipt passed all 24 cells. Evidence is retained in `/tmp/formal-web-ui-verification-chzXya/`. A browser probe confirmed that the existing narrow table scroll exposes the rightmost values without document overflow. No P0-P2 visual finding remains in this fixture; the compact overflow-legend wrapping is minor existing polish.
+
+These synthetic measurements establish rendered behavior only. Real repository acceptance remains required after deployment, and the current visual reference question in the preceding recovery entry is still unanswered. No source-comparison or qualified delivery pass is claimed.
+
+final result: blocked
+
+## Performance measurement scope correction — 2026-11-15
+
+Final review found that named-workstream reviews could display repository activity and components beside a smaller scoped total. Chart bucket popovers also reused aggregate component details. The Console now uses scoped outcome cost for review totals, omits the unrelated repository matrix for a named workstream, and leaves unsupported bucket details unavailable. Repository overviews, unscoped review matrices, and each outcome's own cost remain available.
+
+The expanded rendered journey passed 463 checks across both themes and five widths. It reproduced 14 failures before the correction and now covers distinct repository/workstream totals, known and unknown scoped components, both chart bucket types, and outcome continuation. Formal run `formal-web-ui-mwhe921u-c4fe6068` and its separate manual receipt passed all 48 cells: dense overview and selected workstream review in light/dark at the same 12 widths as the preceding runs. Both captures for every cell were reviewed; no P0-P2 finding remains. Private evidence: `/tmp/formal-web-ui-verification-0tHLd5/`. Two initial setup failures are retained separately and are not passing evidence.
+
+This verifies synthetic rendered behavior and the scope correction, not real source availability. The current visual reference remains unconfirmed as documented above, so source comparison and qualified visual delivery remain pending.
+
+final result: blocked
+
+## Performance fresh-load and reload recovery — 2026-11-15
+
+The repeated live report exposed a shared query-completion problem. On the deployed source, an ordinary Performance URL took about 406 seconds to populate, then about 497 seconds again after reload. Reload generated different exact query timestamps, while repeated revalidation could hold back a query with no measurements. Pending responses also displayed unavailable or empty conclusions.
+
+The repair anchors the period and all-recorded cutoff in the URL before requesting data, gives actively waiting cold queries priority over stale revalidation, and keeps pending overview and selected-review measurements visibly loading. Refresh advances relative windows while preserving explicit custom boundaries. The current CodexMulti usage-v2 contract 1 and format 3 interface was verified against the live producer; its DuckDB/Parquet storage is consumed through that interface.
+
+The existing rendered journey now passes 543 checks, including bare-URL reload, pending review completion and explicit refresh. Formal run `formal-web-ui-mwhuoaey-e21dc91e` passed all 32 cells: loaded and pending overview/review states, light/dark themes, and widths 390, 1001, 1443 and 2153 pixels. Every initial and full-page capture was manually inspected after the formal pass, and the separate manual receipt passed all 32 cells. No P0-P2 visual finding remains. Private evidence is retained in `/tmp/formal-web-ui-verification-yeGX0e/`. The preceding configuration-only blocked run remains in `/tmp/formal-web-ui-verification-AKv2eF/` as diagnostic evidence.
+
+These fixture captures verify loading semantics and rendered behavior, not live query latency. The bare-URL/reload acceptance must be repeated after deployment. The visual-reference question documented in the earlier recovery entry remains unresolved; no source-comparison or qualified visual-delivery pass is claimed.
+
+final result: blocked

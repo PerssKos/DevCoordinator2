@@ -4,12 +4,12 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::results::{
     CompletedService, Component, ComponentBinding, DeploymentListRow, DeploymentSource,
     DeploymentStatus, DomainChanged,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -63,6 +63,13 @@ pub struct ComponentRow {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedPostgresReference {
+    pub deployment_id: String,
+    pub deployment_name: String,
+    pub component_name: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenerationRow {
     pub deployment_id: String,
@@ -73,6 +80,12 @@ pub struct GenerationRow {
     pub fingerprint: String,
     pub created_at: String,
     pub state: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenerationSourceOrigin {
+    pub worktree_id: String,
+    pub path: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,6 +113,7 @@ pub struct DeploymentRuntimePatch {
     pub current_generation: Option<Option<u32>>,
     pub previous_generation: Option<Option<u32>>,
     pub spec_fingerprint: Option<String>,
+    pub spec_json: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -216,10 +230,10 @@ impl DeploymentStore {
     pub fn get(&self, deployment_id: &str) -> Result<Option<DeploymentRow>, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at,ttl_expires_at,public,domain_override FROM deployments WHERE deployment_id=?1",
+                        "SELECT deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at,ttl_expires_at,public,domain_override FROM deployments WHERE deployment_id=$1",
                         [&deployment_id],
                         deployment_row,
                     )
@@ -239,11 +253,11 @@ impl DeploymentStore {
         let name = name.to_owned();
         let source = source.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at,ttl_expires_at,public,domain_override FROM deployments WHERE worktree_id=?1 AND name=?2 AND source=?3",
-                        rusqlite::params![worktree_id, name, source],
+                        "SELECT deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at,ttl_expires_at,public,domain_override FROM deployments WHERE worktree_id=$1 AND name=$2 AND source=$3",
+                        crate::database::params![worktree_id, name, source],
                         deployment_row,
                     )
                     .optional()
@@ -255,10 +269,10 @@ impl DeploymentStore {
     pub fn list(&self, repository_id: Option<&str>) -> Result<Vec<DeploymentRow>, ProtocolError> {
         let repository_id = repository_id.map(str::to_owned);
         self.database
-            .call(move |connection| {
-                let (sql, values): (&str, Vec<rusqlite::types::Value>) = match repository_id {
+            .read(move |connection| {
+                let (sql, values): (&str, Vec<crate::database::types::Value>) = match repository_id {
                     Some(repository_id) => (
-                        "SELECT deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at,ttl_expires_at,public,domain_override FROM deployments WHERE repository_id=?1 ORDER BY name,source",
+                        "SELECT deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at,ttl_expires_at,public,domain_override FROM deployments WHERE repository_id=$1 ORDER BY name,source",
                         vec![repository_id.into()],
                     ),
                     None => (
@@ -268,18 +282,95 @@ impl DeploymentStore {
                 };
                 let mut statement = connection.prepare(sql)?;
                 Ok(statement
-                    .query_map(rusqlite::params_from_iter(values), deployment_row)?
+                    .query_map(crate::database::params_from_iter(values), deployment_row)?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)
     }
 
+    /// Return registered deployments that borrow a PostgreSQL component from
+    /// the selected deployment. The stored specification is the authority for
+    /// this relationship, so removal cannot orphan a live borrower merely
+    /// because its process is stopped or its route is currently unused.
+    pub fn shared_postgres_references(
+        &self,
+        owner_deployment_id: &str,
+    ) -> Result<Vec<SharedPostgresReference>, ProtocolError> {
+        let owner_deployment_id = owner_deployment_id.to_owned();
+        let owner_id_for_query = owner_deployment_id.clone();
+        let rows = self
+            .database
+            .read(move |connection| {
+                let mut statement = connection.prepare(
+                    "SELECT deployment_id,name,spec_json FROM deployments WHERE deployment_id<>$1",
+                )?;
+                Ok(statement
+                    .query_map([owner_id_for_query], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .map_err(database_error)?;
+        let owner_prefix = format!("{owner_deployment_id}/");
+        let mut references = Vec::new();
+        for (deployment_id, deployment_name, spec_json) in rows {
+            let specification: Value = serde_json::from_str(&spec_json).map_err(|error| {
+                ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "stored deployment specification is invalid",
+                )
+                .with_detail(error.to_string())
+            })?;
+            let components = specification
+                .get("components")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "stored deployment components are unavailable",
+                    )
+                })?;
+            for component in components {
+                if component.get("type").and_then(Value::as_str) != Some("postgres") {
+                    continue;
+                }
+                let Some(shared_from) = component.get("shared_from").and_then(Value::as_str) else {
+                    continue;
+                };
+                if !shared_from.starts_with(&owner_prefix) {
+                    continue;
+                }
+                let Some(component_name) = component.get("name").and_then(Value::as_str) else {
+                    return Err(ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "stored shared PostgreSQL component name is unavailable",
+                    ));
+                };
+                references.push(SharedPostgresReference {
+                    deployment_id: deployment_id.clone(),
+                    deployment_name: deployment_name.clone(),
+                    component_name: component_name.to_owned(),
+                });
+            }
+        }
+        references.sort_by(|left, right| {
+            left.deployment_id
+                .cmp(&right.deployment_id)
+                .then(left.component_name.cmp(&right.component_name))
+        });
+        Ok(references)
+    }
+
     pub fn components(&self, deployment_id: &str) -> Result<Vec<ComponentRow>, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,generation,binding_kind,binding_identity,restarts,last_error,updated_at FROM components WHERE deployment_id=?1 ORDER BY order_index",
+                    "SELECT deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,generation,binding_kind,binding_identity,restarts,last_error,updated_at FROM components WHERE deployment_id=$1 ORDER BY order_index",
                 )?;
                 Ok(statement
                     .query_map([deployment_id], component_row)?
@@ -353,19 +444,19 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 let exists = transaction.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM deployments WHERE deployment_id=?1)",
+                    "SELECT EXISTS(SELECT 1 FROM deployments WHERE deployment_id=$1)",
                     [&deployment_id],
                     |row| row.get::<_, i64>(0),
                 )? != 0;
                 if exists {
                     transaction.execute(
-                        "UPDATE deployments SET domain=?1,spec_fingerprint=?2,spec_json=?3,state=?4,updated_at=?5,ttl_expires_at=?6,public=?7 WHERE deployment_id=?8",
-                        rusqlite::params![domain,spec_fingerprint,spec_json,state,now,ttl_expires_at,i64::from(public),deployment_id],
+                        "UPDATE deployments SET domain=$1,spec_fingerprint=$2,spec_json=$3,state=$4,updated_at=$5,ttl_expires_at=$6,public=$7 WHERE deployment_id=$8",
+                        crate::database::params![domain,spec_fingerprint,spec_json,state,now,ttl_expires_at,i64::from(public),deployment_id],
                     )?;
                 } else {
                     transaction.execute(
-                        "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at,ttl_expires_at,public) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,NULL,?10,?11,?12,?10,?13,?14)",
-                        rusqlite::params![deployment_id,target.repository_id,target.worktree_id,name,source,domain,spec_fingerprint,spec_json,state,now,caller_uid,client,ttl_expires_at,i64::from(public)],
+                        "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,previous_generation,created_at,created_by_uid,client,updated_at,ttl_expires_at,public) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,NULL,$10,$11,$12,$10,$13,$14)",
+                        crate::database::params![deployment_id,target.repository_id,target.worktree_id,name,source,domain,spec_fingerprint,spec_json,state,now,caller_uid,client,ttl_expires_at,i64::from(public)],
                     )?;
                 }
                 let names = components
@@ -374,8 +465,8 @@ impl DeploymentStore {
                     .collect::<HashSet<_>>();
                 for component in &components {
                     transaction.execute(
-                        "INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,generation,binding_kind,binding_identity,restarts,last_error,updated_at) VALUES(?1,?2,?3,?4,?5,'running','unknown','unknown',NULL,NULL,NULL,0,NULL,?6) ON CONFLICT(deployment_id,name) DO UPDATE SET type=excluded.type,order_index=excluded.order_index,spec_fingerprint=excluded.spec_fingerprint,updated_at=excluded.updated_at",
-                        rusqlite::params![deployment_id,component.name,component.kind.as_str(),u32::try_from(component.order).unwrap_or(u32::MAX),Self::component_fingerprint(component),now],
+                        "INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,generation,binding_kind,binding_identity,restarts,last_error,updated_at) VALUES($1,$2,$3,$4,$5,'running','unknown','unknown',NULL,NULL,NULL,0,NULL,$6) ON CONFLICT(deployment_id,name) DO UPDATE SET type=excluded.type,order_index=excluded.order_index,spec_fingerprint=excluded.spec_fingerprint,updated_at=excluded.updated_at",
+                        crate::database::params![deployment_id,component.name,component.kind.as_str(),u32::try_from(component.order).unwrap_or(u32::MAX),Self::component_fingerprint(component),now],
                     )?;
                     if component.kind == ComponentKind::Compose {
                         let independent = component
@@ -385,29 +476,29 @@ impl DeploymentStore {
                             .collect::<HashSet<_>>();
                         for service in &component.independent_services {
                             transaction.execute(
-                                "INSERT INTO compose_service_desires(deployment_id,component,service,desired_state,updated_at) VALUES(?1,?2,?3,'running',?4) ON CONFLICT(deployment_id,component,service) DO UPDATE SET desired_state='running',updated_at=excluded.updated_at",
-                                rusqlite::params![deployment_id,component.name,service,now],
+                                "INSERT INTO compose_service_desires(deployment_id,component,service,desired_state,updated_at) VALUES($1,$2,$3,'running',$4) ON CONFLICT(deployment_id,component,service) DO UPDATE SET desired_state='running',updated_at=excluded.updated_at",
+                                crate::database::params![deployment_id,component.name,service,now],
                             )?;
                         }
                         let mut statement = transaction.prepare(
-                            "SELECT service FROM compose_service_desires WHERE deployment_id=?1 AND component=?2",
+                            "SELECT service FROM compose_service_desires WHERE deployment_id=$1 AND component=$2",
                         )?;
                         let existing = statement
-                            .query_map(rusqlite::params![deployment_id,component.name], |row| row.get::<_, String>(0))?
+                            .query_map(crate::database::params![deployment_id,component.name], |row| row.get::<_, String>(0))?
                             .collect::<Result<Vec<_>, _>>()?;
                         drop(statement);
                         for service in existing {
                             if !independent.contains(&service) {
                                 transaction.execute(
-                                    "DELETE FROM compose_service_desires WHERE deployment_id=?1 AND component=?2 AND service=?3",
-                                    rusqlite::params![deployment_id,component.name,service],
+                                    "DELETE FROM compose_service_desires WHERE deployment_id=$1 AND component=$2 AND service=$3",
+                                    crate::database::params![deployment_id,component.name,service],
                                 )?;
                             }
                         }
                     }
                 }
                 let mut statement = transaction.prepare(
-                    "SELECT name FROM components WHERE deployment_id=?1",
+                    "SELECT name FROM components WHERE deployment_id=$1",
                 )?;
                 let existing = statement
                     .query_map([&deployment_id], |row| row.get::<_, String>(0))?
@@ -416,12 +507,12 @@ impl DeploymentStore {
                 for component in existing {
                     if !names.contains(&component) {
                         transaction.execute(
-                            "DELETE FROM compose_service_desires WHERE deployment_id=?1 AND component=?2",
-                            rusqlite::params![deployment_id,component],
+                            "DELETE FROM compose_service_desires WHERE deployment_id=$1 AND component=$2",
+                            crate::database::params![deployment_id,component],
                         )?;
                         transaction.execute(
-                            "DELETE FROM components WHERE deployment_id=?1 AND name=?2",
-                            rusqlite::params![deployment_id,component],
+                            "DELETE FROM components WHERE deployment_id=$1 AND name=$2",
+                            crate::database::params![deployment_id,component],
                         )?;
                     }
                 }
@@ -443,8 +534,8 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "UPDATE deployments SET state=?1,current_generation=?2,previous_generation=?3,updated_at=?4 WHERE deployment_id=?5",
-                    rusqlite::params![state,current_generation,previous_generation,now,deployment_id],
+                    "UPDATE deployments SET state=$1,current_generation=$2,previous_generation=$3,updated_at=$4 WHERE deployment_id=$5",
+                    crate::database::params![state,current_generation,previous_generation,now,deployment_id],
                 )?;
                 Ok(())
             })
@@ -461,8 +552,8 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 let changed = transaction.execute(
-                    "UPDATE deployments SET state=COALESCE(?1,state),current_generation=CASE WHEN ?2 THEN ?3 ELSE current_generation END,previous_generation=CASE WHEN ?4 THEN ?5 ELSE previous_generation END,spec_fingerprint=COALESCE(?6,spec_fingerprint),updated_at=?7 WHERE deployment_id=?8",
-                    rusqlite::params![
+                    "UPDATE deployments SET state=COALESCE($1,state),current_generation=CASE WHEN $2 THEN $3 ELSE current_generation END,previous_generation=CASE WHEN $4 THEN $5 ELSE previous_generation END,spec_fingerprint=COALESCE($6,spec_fingerprint),updated_at=$7,spec_json=COALESCE($9,spec_json) WHERE deployment_id=$8",
+                    crate::database::params![
                         patch.state,
                         patch.current_generation.is_some(),
                         patch.current_generation.flatten(),
@@ -471,6 +562,7 @@ impl DeploymentStore {
                         patch.spec_fingerprint,
                         now,
                         deployment_id,
+                        patch.spec_json,
                     ],
                 )?;
                 if changed == 0 {
@@ -496,8 +588,8 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 let changed = transaction.execute(
-                    "UPDATE deployments SET domain=?1,spec_fingerprint=?2,spec_json=?3,state=?4,current_generation=?5,previous_generation=?6,updated_at=?7,ttl_expires_at=?8,public=?9,domain_override=?10 WHERE deployment_id=?11",
-                    rusqlite::params![
+                    "UPDATE deployments SET domain=$1,spec_fingerprint=$2,spec_json=$3,state=$4,current_generation=$5,previous_generation=$6,updated_at=$7,ttl_expires_at=$8,public=$9,domain_override=$10 WHERE deployment_id=$11",
+                    crate::database::params![
                         deployment.domain,
                         deployment.spec_fingerprint,
                         deployment.spec_json,
@@ -518,17 +610,17 @@ impl DeploymentStore {
                     ));
                 }
                 transaction.execute(
-                    "DELETE FROM compose_service_desires WHERE deployment_id=?1",
+                    "DELETE FROM compose_service_desires WHERE deployment_id=$1",
                     [&deployment.deployment_id],
                 )?;
                 transaction.execute(
-                    "DELETE FROM components WHERE deployment_id=?1",
+                    "DELETE FROM components WHERE deployment_id=$1",
                     [&deployment.deployment_id],
                 )?;
                 for component in components {
                     transaction.execute(
-                        "INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,generation,binding_kind,binding_identity,restarts,last_error,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-                        rusqlite::params![
+                        "INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,generation,binding_kind,binding_identity,restarts,last_error,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+                        crate::database::params![
                             component.deployment_id,
                             component.name,
                             component.kind,
@@ -549,8 +641,8 @@ impl DeploymentStore {
                 for (component, desires) in compose_desires {
                     for (service, state) in desires {
                         transaction.execute(
-                            "INSERT INTO compose_service_desires(deployment_id,component,service,desired_state,updated_at) VALUES(?1,?2,?3,?4,?5)",
-                            rusqlite::params![
+                            "INSERT INTO compose_service_desires(deployment_id,component,service,desired_state,updated_at) VALUES($1,$2,$3,$4,$5)",
+                            crate::database::params![
                                 deployment.deployment_id,
                                 component,
                                 service,
@@ -571,8 +663,8 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 let changed = transaction.execute(
-                    "UPDATE deployments SET public=?1,updated_at=?2 WHERE deployment_id=?3",
-                    rusqlite::params![i64::from(public), now, deployment_id],
+                    "UPDATE deployments SET public=$1,updated_at=$2 WHERE deployment_id=$3",
+                    crate::database::params![i64::from(public), now, deployment_id],
                 )?;
                 if changed == 0 {
                     return Err(domain_error(
@@ -597,8 +689,8 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 let changed = transaction.execute(
-                    "UPDATE components SET spec_fingerprint=COALESCE(?1,spec_fingerprint),desired_state=COALESCE(?2,desired_state),state=COALESCE(?3,state),health=COALESCE(?4,health),generation=CASE WHEN ?5 THEN ?6 ELSE generation END,binding_kind=CASE WHEN ?7 THEN ?8 ELSE binding_kind END,binding_identity=CASE WHEN ?9 THEN ?10 ELSE binding_identity END,restarts=COALESCE(?11,restarts),last_error=CASE WHEN ?12 THEN ?13 ELSE last_error END,updated_at=?14 WHERE deployment_id=?15 AND name=?16",
-                    rusqlite::params![
+                    "UPDATE components SET spec_fingerprint=COALESCE($1,spec_fingerprint),desired_state=COALESCE($2,desired_state),state=COALESCE($3,state),health=COALESCE($4,health),generation=CASE WHEN $5 THEN $6 ELSE generation END,binding_kind=CASE WHEN $7 THEN $8 ELSE binding_kind END,binding_identity=CASE WHEN $9 THEN $10 ELSE binding_identity END,restarts=COALESCE($11,restarts),last_error=CASE WHEN $12 THEN $13 ELSE last_error END,updated_at=$14 WHERE deployment_id=$15 AND name=$16",
+                    crate::database::params![
                         patch.spec_fingerprint,
                         patch.desired_state,
                         patch.state,
@@ -637,20 +729,69 @@ impl DeploymentStore {
         path: &Path,
         fingerprint: &str,
     ) -> Result<(), ProtocolError> {
+        self.add_generation_with_origin(
+            deployment_id,
+            number,
+            commit_hash,
+            dirty,
+            path,
+            fingerprint,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_generation_with_origin(
+        &self,
+        deployment_id: &str,
+        number: u32,
+        commit_hash: Option<&str>,
+        dirty: bool,
+        path: &Path,
+        fingerprint: &str,
+        origin: Option<&GenerationSourceOrigin>,
+    ) -> Result<(), ProtocolError> {
         let now = self.timestamp()?;
         let deployment_id = deployment_id.to_owned();
         let commit_hash = commit_hash.map(str::to_owned);
         let path = path.to_string_lossy().into_owned();
         let fingerprint = fingerprint.to_owned();
+        let origin = origin.cloned();
         self.database
             .transaction(move |transaction| {
+                let recorded: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM generation_source_origins WHERE deployment_id=$1 AND number=$2)",
+                    crate::database::params![deployment_id, number], |row| row.get(0))?;
+                if recorded {
+                    return Err(domain_error(ErrorCode::ConfigurationConflict, "a generation with a recorded source origin cannot be replaced"));
+                }
                 transaction.execute(
-                    "INSERT OR REPLACE INTO generations(deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state) VALUES(?1,?2,?3,?4,?5,?6,?7,'candidate')",
-                    rusqlite::params![deployment_id,number,commit_hash,i64::from(dirty),path,fingerprint,now],
+                    "INSERT INTO generations(deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state) VALUES($1,$2,$3,$4,$5,$6,$7,'candidate') ON CONFLICT(deployment_id,number) DO UPDATE SET commit_hash=excluded.commit_hash,dirty=excluded.dirty,path=excluded.path,fingerprint=excluded.fingerprint,created_at=excluded.created_at,state=excluded.state",
+                    crate::database::params![deployment_id,number,commit_hash,i64::from(dirty),path,fingerprint,now],
                 )?;
+                if let Some(origin) = origin {
+                    transaction.execute(
+                        "INSERT INTO generation_source_origins(deployment_id,number,worktree_id,path) VALUES($1,$2,$3,$4)",
+                        crate::database::params![deployment_id, number, origin.worktree_id, origin.path.to_string_lossy().into_owned()],
+                    )?;
+                }
                 Ok(())
             })
             .map_err(database_error)
+    }
+
+    pub fn generation_origin(
+        &self,
+        deployment_id: &str,
+        number: u32,
+    ) -> Result<Option<GenerationSourceOrigin>, ProtocolError> {
+        let deployment_id = deployment_id.to_owned();
+        self.database.read(move |connection| {
+            connection.query_row("SELECT worktree_id,path FROM generation_source_origins WHERE deployment_id=$1 AND number=$2",
+                crate::database::params![deployment_id,number], |row| Ok(GenerationSourceOrigin {
+                    worktree_id: row.get(0)?, path: PathBuf::from(row.get::<_,String>(1)?),
+                })).optional().map_err(DatabaseError::from)
+        }).map_err(database_error)
     }
 
     pub fn generation(
@@ -660,11 +801,11 @@ impl DeploymentStore {
     ) -> Result<Option<GenerationRow>, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state FROM generations WHERE deployment_id=?1 AND number=?2",
-                        rusqlite::params![deployment_id,number],
+                        "SELECT deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state FROM generations WHERE deployment_id=$1 AND number=$2",
+                        crate::database::params![deployment_id,number],
                         generation_row,
                     )
                     .optional()
@@ -676,9 +817,9 @@ impl DeploymentStore {
     pub fn generations(&self, deployment_id: &str) -> Result<Vec<GenerationRow>, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state FROM generations WHERE deployment_id=?1 ORDER BY number",
+                    "SELECT deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state FROM generations WHERE deployment_id=$1 ORDER BY number",
                 )?;
                 Ok(statement
                     .query_map([deployment_id], generation_row)?
@@ -698,8 +839,8 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "UPDATE generations SET state=?1 WHERE deployment_id=?2 AND number=?3",
-                    rusqlite::params![state, deployment_id, number],
+                    "UPDATE generations SET state=$1 WHERE deployment_id=$2 AND number=$3",
+                    crate::database::params![state, deployment_id, number],
                 )?;
                 Ok(())
             })
@@ -712,9 +853,9 @@ impl DeploymentStore {
         keep: &BTreeSet<u32>,
     ) -> Result<Vec<GenerationRow>, ProtocolError> {
         let deployment_id_owned = deployment_id.to_owned();
-        let rows = self.database.call(move |connection| {
+        let rows = self.database.read(move |connection| {
             let mut statement = connection.prepare(
-                "SELECT deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state FROM generations WHERE deployment_id=?1 ORDER BY number",
+                "SELECT deployment_id,number,commit_hash,dirty,path,fingerprint,created_at,state FROM generations WHERE deployment_id=$1 ORDER BY number",
             )?;
             Ok(statement
                 .query_map([deployment_id_owned], generation_row)?
@@ -730,12 +871,12 @@ impl DeploymentStore {
             .transaction(move |transaction| {
                 for number in numbers {
                     transaction.execute(
-                        "DELETE FROM compose_completions WHERE deployment_id=?1 AND generation=?2",
-                        rusqlite::params![deployment_id, number],
+                        "DELETE FROM compose_completions WHERE deployment_id=$1 AND generation=$2",
+                        crate::database::params![deployment_id, number],
                     )?;
                     transaction.execute(
-                        "DELETE FROM generations WHERE deployment_id=?1 AND number=?2",
-                        rusqlite::params![deployment_id, number],
+                        "DELETE FROM generations WHERE deployment_id=$1 AND number=$2",
+                        crate::database::params![deployment_id, number],
                     )?;
                 }
                 Ok(())
@@ -760,8 +901,8 @@ impl DeploymentStore {
             if let Some(domain) = domain {
                 let component = component.ok_or_else(|| domain_error(ErrorCode::ParamsInvalid, "route component is required"))?;
                 let other: bool = transaction.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM domain_routes WHERE domain=?1 AND deployment_id!=?2 UNION ALL SELECT 1 FROM observed_routes WHERE domain=?1)",
-                    rusqlite::params![domain,deployment_id], |row| row.get(0),
+                    "SELECT EXISTS(SELECT 1 FROM domain_routes WHERE domain=$1 AND deployment_id!=$2 UNION ALL SELECT 1 FROM observed_routes WHERE domain=$1)",
+                    crate::database::params![domain,deployment_id], |row| row.get(0),
                 )?;
                 let lease_id = match port {
                     Some(port) => crate::ports::route_lease(transaction, &deployment_id, &component, port, generation, None)?,
@@ -771,16 +912,16 @@ impl DeploymentStore {
                     crate::ports::withdraw_conflict(transaction, &deployment_id, &component)?;
                     return Ok(true);
                 }
-                transaction.execute("DELETE FROM domain_routes WHERE deployment_id=?1", [&deployment_id])?;
+                transaction.execute("DELETE FROM domain_routes WHERE deployment_id=$1", [&deployment_id])?;
                 transaction.execute(
-                    "INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    rusqlite::params![domain,deployment_id,component,port,generation,now,lease_id],
+                    "INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                    crate::database::params![domain,deployment_id,component,port,generation,now,lease_id],
                 )?;
                 if port.is_some() {
-                    transaction.execute("UPDATE deployments SET current_generation=?1 WHERE deployment_id=?2 AND state='applying'", rusqlite::params![generation,deployment_id])?;
+                    transaction.execute("UPDATE deployments SET current_generation=$1 WHERE deployment_id=$2 AND state='applying'", crate::database::params![generation,deployment_id])?;
                 }
             } else {
-                transaction.execute("DELETE FROM domain_routes WHERE deployment_id=?1", [&deployment_id])?;
+                transaction.execute("DELETE FROM domain_routes WHERE deployment_id=$1", [&deployment_id])?;
             }
             Ok(false)
         }).map_err(database_error)?;
@@ -805,10 +946,10 @@ impl DeploymentStore {
     pub fn domain_owner(&self, domain: &str) -> Result<Option<String>, ProtocolError> {
         let domain = domain.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let managed = connection
                     .query_row(
-                        "SELECT deployment_id FROM domain_routes WHERE domain=?1",
+                        "SELECT deployment_id FROM domain_routes WHERE domain=$1",
                         [&domain],
                         |row| row.get::<_, String>(0),
                     )
@@ -818,7 +959,7 @@ impl DeploymentStore {
                 }
                 connection
                     .query_row(
-                        "SELECT observed_deployment_id FROM observed_routes WHERE domain=?1",
+                        "SELECT observed_deployment_id FROM observed_routes WHERE domain=$1",
                         [&domain],
                         |row| row.get::<_, String>(0),
                     )
@@ -864,10 +1005,10 @@ impl DeploymentStore {
         let deployment_id_for_route = deployment_id.to_owned();
         let route = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT component,port,generation FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT component,port,generation FROM domain_routes WHERE deployment_id=$1",
                         [&deployment_id_for_route],
                         |row| {
                             Ok((
@@ -898,18 +1039,18 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "UPDATE deployments SET domain_override=?1,domain=?2,updated_at=?3 WHERE deployment_id=?4",
-                    rusqlite::params![stored_override,stored_effective,now,deployment_id],
+                    "UPDATE deployments SET domain_override=$1,domain=$2,updated_at=$3 WHERE deployment_id=$4",
+                    crate::database::params![stored_override,stored_effective,now,deployment_id],
                 )?;
                 if had_route {
                     if let Some(domain) = stored_effective {
                         transaction.execute(
-                            "UPDATE domain_routes SET domain=?1,published_at=?2 WHERE deployment_id=?3",
-                            rusqlite::params![domain,now,deployment_id],
+                            "UPDATE domain_routes SET domain=$1,published_at=$2 WHERE deployment_id=$3",
+                            crate::database::params![domain,now,deployment_id],
                         )?;
                     } else {
                         transaction.execute(
-                            "DELETE FROM domain_routes WHERE deployment_id=?1",
+                            "DELETE FROM domain_routes WHERE deployment_id=$1",
                             [&deployment_id],
                         )?;
                     }
@@ -924,8 +1065,8 @@ impl DeploymentStore {
                         return Err(domain_error(ErrorCode::RouteLeaseConflict, "the route target has no matching healthy lease"));
                     }
                     transaction.execute(
-                        "INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                        rusqlite::params![domain,deployment_id,component,port,generation,now,lease],
+                        "INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                        crate::database::params![domain,deployment_id,component,port,generation,now,lease],
                     )?;
                 }
                 Ok(())
@@ -996,11 +1137,11 @@ impl DeploymentStore {
         let query_component = component.clone();
         let port = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT port FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation IN (?3,0) ORDER BY generation DESC LIMIT 1",
-                        rusqlite::params![deployment_id,query_component,generation],
+                        "SELECT port FROM port_assignments WHERE deployment_id=$1 AND component=$2 AND generation IN ($3,0) ORDER BY generation DESC LIMIT 1",
+                        crate::database::params![deployment_id,query_component,generation],
                         |row| row.get::<_,u16>(0),
                     )
                     .optional()
@@ -1023,12 +1164,12 @@ impl DeploymentStore {
                     "generations",
                 ] {
                     transaction.execute(
-                        &format!("DELETE FROM {table} WHERE deployment_id=?1"),
+                        &format!("DELETE FROM {table} WHERE deployment_id=$1"),
                         [&deployment_id],
                     )?;
                 }
                 transaction.execute(
-                    "DELETE FROM deployments WHERE deployment_id=?1",
+                    "DELETE FROM deployments WHERE deployment_id=$1",
                     [&deployment_id],
                 )?;
                 Ok(())
@@ -1053,8 +1194,8 @@ impl DeploymentStore {
         self.database.transaction(move |transaction| {
             for candidate in candidates {
                 transaction.execute(
-                    "INSERT OR REPLACE INTO compose_completions(deployment_id,component,service,generation,container_id,image_id,exit_code,started_at,finished_at,recorded_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                    rusqlite::params![deployment_id,component,candidate.service,generation,candidate.container_id,candidate.image_id,candidate.exit_code,candidate.started_at,candidate.finished_at,now],
+                    "INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,image_id,exit_code,started_at,finished_at,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(deployment_id,component,service,generation) DO UPDATE SET container_id=excluded.container_id,image_id=excluded.image_id,exit_code=excluded.exit_code,started_at=excluded.started_at,finished_at=excluded.finished_at,recorded_at=excluded.recorded_at",
+                    crate::database::params![deployment_id,component,candidate.service,generation,candidate.container_id,candidate.image_id,candidate.exit_code,candidate.started_at,candidate.finished_at,now],
                 )?;
             }
             Ok(())
@@ -1071,9 +1212,9 @@ impl DeploymentStore {
         let component = component.to_owned();
         self.database.call(move |connection| {
             let mut statement = connection.prepare(
-                "SELECT service,generation,container_id,image_id,exit_code,started_at,finished_at,recorded_at FROM compose_completions WHERE deployment_id=?1 AND component=?2 AND generation=?3 ORDER BY service",
+                "SELECT service,generation,container_id,image_id,exit_code,started_at,finished_at,recorded_at FROM compose_completions WHERE deployment_id=$1 AND component=$2 AND generation=$3 ORDER BY service",
             )?;
-            let rows = statement.query_map(rusqlite::params![deployment_id,component,generation], |row| {
+            let rows = statement.query_map(crate::database::params![deployment_id,component,generation], |row| {
                 Ok(CompletedService {
                     service: row.get(0)?,
                     generation: row.get(1)?,
@@ -1114,8 +1255,8 @@ impl DeploymentStore {
         let desired_state = desired_state.to_owned();
         self.database.transaction(move |transaction| {
             transaction.execute(
-                "INSERT INTO compose_service_desires(deployment_id,component,service,desired_state,updated_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(deployment_id,component,service) DO UPDATE SET desired_state=excluded.desired_state,updated_at=excluded.updated_at",
-                rusqlite::params![deployment_id,component,service,desired_state,now],
+                "INSERT INTO compose_service_desires(deployment_id,component,service,desired_state,updated_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(deployment_id,component,service) DO UPDATE SET desired_state=excluded.desired_state,updated_at=excluded.updated_at",
+                crate::database::params![deployment_id,component,service,desired_state,now],
             )?;
             Ok(())
         }).map_err(database_error)
@@ -1128,12 +1269,12 @@ impl DeploymentStore {
     ) -> Result<BTreeMap<String, String>, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         let component = component.to_owned();
-        self.database.call(move |connection| {
+        self.database.read(move |connection| {
             let mut statement = connection.prepare(
-                "SELECT service,desired_state FROM compose_service_desires WHERE deployment_id=?1 AND component=?2 ORDER BY service",
+                "SELECT service,desired_state FROM compose_service_desires WHERE deployment_id=$1 AND component=$2 ORDER BY service",
             )?;
             Ok(statement
-                .query_map(rusqlite::params![deployment_id,component], |row| {
+                .query_map(crate::database::params![deployment_id,component], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?
                 .collect::<Result<BTreeMap<_,_>,_>>()?)
@@ -1146,7 +1287,7 @@ impl DeploymentStore {
     ) -> Result<Vec<DeploymentListRow>, ProtocolError> {
         let active_repositories = active_repositories.clone();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
                     "SELECT d.deployment_id,d.repository_id,r.display_name,d.name,d.source,d.state,d.domain,d.public,d.current_generation,dr.port,d.updated_at,d.ttl_expires_at FROM deployments d JOIN repositories r ON r.repository_id=d.repository_id LEFT JOIN domain_routes dr ON dr.deployment_id=d.deployment_id WHERE r.archived_at IS NULL ORDER BY d.repository_id,d.name,d.source",
                 )?;
@@ -1210,9 +1351,9 @@ impl DeploymentStore {
     pub fn observed_exists(&self, deployment_id: &str) -> Result<bool, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM observed_deployments WHERE observed_deployment_id=?1)",
+                    "SELECT EXISTS(SELECT 1 FROM observed_deployments WHERE observed_deployment_id=$1)",
                     [&deployment_id],
                     |row| row.get::<_, i64>(0),
                 )? != 0)
@@ -1226,17 +1367,17 @@ impl DeploymentStore {
     ) -> Result<Vec<DeploymentListRow>, ProtocolError> {
         let repository_id = repository_id.map(str::to_owned);
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut sql = "SELECT d.observed_deployment_id,d.repository_id,rep.display_name,d.name,d.state,d.health,r.domain,r.port,r.public,d.observed_at FROM observed_deployments d LEFT JOIN observed_routes r ON r.observed_deployment_id=d.observed_deployment_id LEFT JOIN repositories rep ON rep.repository_id=d.repository_id".to_owned();
-                let mut values = Vec::<rusqlite::types::Value>::new();
+                let mut values = Vec::<crate::database::types::Value>::new();
                 if let Some(repository_id) = repository_id {
-                    sql.push_str(" WHERE d.repository_id=?1");
+                    sql.push_str(" WHERE d.repository_id=$1");
                     values.push(repository_id.into());
                 }
                 sql.push_str(" ORDER BY d.repository_id,d.name,d.observed_deployment_id");
                 let mut statement = connection.prepare(&sql)?;
                 Ok(statement
-                    .query_map(rusqlite::params_from_iter(values), |row| {
+                    .query_map(crate::database::params_from_iter(values), |row| {
                         Ok(DeploymentListRow {
                             deployment_id: row.get(0)?,
                             repository_id: row.get(1)?,
@@ -1265,10 +1406,10 @@ impl DeploymentStore {
     ) -> Result<Option<DeploymentStatus>, ProtocolError> {
         let deployment_id_owned = deployment_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let row = connection
                     .query_row(
-                        "SELECT d.repository_id,rep.display_name,d.name,d.native_project,d.state,d.health,d.source,d.observed_at,r.domain,r.port,r.component,r.public FROM observed_deployments d LEFT JOIN observed_routes r ON r.observed_deployment_id=d.observed_deployment_id LEFT JOIN repositories rep ON rep.repository_id=d.repository_id WHERE d.observed_deployment_id=?1",
+                        "SELECT d.repository_id,rep.display_name,d.name,d.native_project,d.state,d.health,d.source,d.observed_at,r.domain,r.port,r.component,r.public FROM observed_deployments d LEFT JOIN observed_routes r ON r.observed_deployment_id=d.observed_deployment_id LEFT JOIN repositories rep ON rep.repository_id=d.repository_id WHERE d.observed_deployment_id=$1",
                         [&deployment_id_owned],
                         |row| {
                             Ok((
@@ -1292,7 +1433,7 @@ impl DeploymentStore {
                     return Ok(None);
                 };
                 let mut statement = connection.prepare(
-                    "SELECT container_id,name,compose_service,state,status,health FROM observed_containers WHERE observed_deployment_id=?1 ORDER BY compose_service,name,container_id",
+                    "SELECT container_id,name,compose_service,state,status,health FROM observed_containers WHERE observed_deployment_id=$1 ORDER BY compose_service,name,container_id",
                 )?;
                 let components = statement
                     .query_map([&deployment_id_owned], |row| {
@@ -1376,19 +1517,19 @@ impl DeploymentStore {
                 transaction.execute("DELETE FROM observed_deployments", [])?;
                 for deployment in &deployments {
                     transaction.execute(
-                        "INSERT INTO observed_deployments(observed_deployment_id,repository_id,name,native_project,state,health,source,evidence_json,observed_at,imported_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                        rusqlite::params![deployment.deployment_id,deployment.repository_id,deployment.name,deployment.native_project,deployment.state,deployment.health,OBSERVATION_SOURCE,canonical_json(&deployment.evidence)?,observed_at,imported_at],
+                        "INSERT INTO observed_deployments(observed_deployment_id,repository_id,name,native_project,state,health,source,evidence_json,observed_at,imported_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                        crate::database::params![deployment.deployment_id,deployment.repository_id,deployment.name,deployment.native_project,deployment.state,deployment.health,OBSERVATION_SOURCE,canonical_json(&deployment.evidence)?,observed_at,imported_at],
                     )?;
                 }
                 for container in &containers {
                     transaction.execute(
-                        "INSERT INTO observed_containers(container_id,observed_deployment_id,repository_id,name,image,compose_service,state,status,health,observed_at) VALUES(?1,?2,?3,?4,?5,?6,'running',?7,?8,?9)",
-                        rusqlite::params![container.container_id,container.deployment_id,container.repository_id,container.name,container.image,container.compose_service,container.status,container.health,observed_at],
+                        "INSERT INTO observed_containers(container_id,observed_deployment_id,repository_id,name,image,compose_service,state,status,health,observed_at) VALUES($1,$2,$3,$4,$5,$6,'running',$7,$8,$9)",
+                        crate::database::params![container.container_id,container.deployment_id,container.repository_id,container.name,container.image,container.compose_service,container.status,container.health,observed_at],
                     )?;
                 }
                 for route in &routes {
                     let conflict = transaction.query_row(
-                        "SELECT deployment_id FROM domain_routes WHERE domain=?1",
+                        "SELECT deployment_id FROM domain_routes WHERE domain=$1",
                         [&route.domain],
                         |row| row.get::<_, String>(0),
                     ).optional()?;
@@ -1399,8 +1540,8 @@ impl DeploymentStore {
                         ));
                     }
                     transaction.execute(
-                        "INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                        rusqlite::params![route.domain,route.deployment_id,route.component,route.port,i64::from(route.public),canonical_json(&route.evidence)?,observed_at],
+                        "INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                        crate::database::params![route.domain,route.deployment_id,route.component,route.port,i64::from(route.public),canonical_json(&route.evidence)?,observed_at],
                     )?;
                 }
                 Ok(ObservedImportResult {
@@ -1435,7 +1576,7 @@ impl DeploymentStore {
         self.database
             .transaction(move |transaction| {
                 let exists = transaction.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM observed_deployments WHERE observed_deployment_id=?1)",
+                    "SELECT EXISTS(SELECT 1 FROM observed_deployments WHERE observed_deployment_id=$1)",
                     [&deployment_id_owned],
                     |row| row.get::<_, i64>(0),
                 )? != 0;
@@ -1446,13 +1587,13 @@ impl DeploymentStore {
                     ));
                 }
                 let route = transaction.query_row(
-                    "SELECT port,component,public FROM observed_routes WHERE observed_deployment_id=?1",
+                    "SELECT port,component,public FROM observed_routes WHERE observed_deployment_id=$1",
                     [&deployment_id_owned],
                     |row| Ok((row.get::<_,u16>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)? != 0)),
                 ).optional()?;
                 if domain.is_none() {
                     transaction.execute(
-                        "DELETE FROM observed_routes WHERE observed_deployment_id=?1",
+                        "DELETE FROM observed_routes WHERE observed_deployment_id=$1",
                         [&deployment_id_owned],
                     )?;
                     return Ok(DomainChanged {
@@ -1479,7 +1620,7 @@ impl DeploymentStore {
                             "this observed deployment publishes no route yet; pass 'port' together with 'domain'",
                         ))?;
                         let mut statement = transaction.prepare(
-                            "SELECT compose_service FROM observed_containers WHERE observed_deployment_id=?1 ORDER BY compose_service,name,container_id",
+                            "SELECT compose_service FROM observed_containers WHERE observed_deployment_id=$1 ORDER BY compose_service,name,container_id",
                         )?;
                         let containers = statement
                             .query_map([&deployment_id_owned], |row| row.get::<_,String>(0))?
@@ -1504,13 +1645,13 @@ impl DeploymentStore {
                 };
                 if had_route {
                     transaction.execute(
-                        "UPDATE observed_routes SET domain=?1,component=?2,port=?3,public=?4,evidence_json=?5,observed_at=?6 WHERE observed_deployment_id=?7",
-                        rusqlite::params![domain,final_component,final_port,i64::from(final_public),"{\"set_by\":\"deployment.set_domain\"}",now,deployment_id_owned],
+                        "UPDATE observed_routes SET domain=$1,component=$2,port=$3,public=$4,evidence_json=$5,observed_at=$6 WHERE observed_deployment_id=$7",
+                        crate::database::params![domain,final_component,final_port,i64::from(final_public),"{\"set_by\":\"deployment.set_domain\"}",now,deployment_id_owned],
                     )?;
                 } else {
                     transaction.execute(
-                        "INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                        rusqlite::params![domain,deployment_id_owned,final_component,final_port,i64::from(final_public),"{\"set_by\":\"deployment.set_domain\"}",now],
+                        "INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                        crate::database::params![domain,deployment_id_owned,final_component,final_port,i64::from(final_public),"{\"set_by\":\"deployment.set_domain\"}",now],
                     )?;
                 }
                 Ok(DomainChanged {
@@ -1540,7 +1681,7 @@ impl DeploymentStore {
     }
 }
 
-fn deployment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeploymentRow> {
+fn deployment_row(row: &crate::database::Row<'_>) -> crate::database::Result<DeploymentRow> {
     Ok(DeploymentRow {
         deployment_id: row.get(0)?,
         repository_id: row.get(1)?,
@@ -1563,7 +1704,7 @@ fn deployment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeploymentRow> {
     })
 }
 
-fn component_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentRow> {
+fn component_row(row: &crate::database::Row<'_>) -> crate::database::Result<ComponentRow> {
     Ok(ComponentRow {
         deployment_id: row.get(0)?,
         name: row.get(1)?,
@@ -1582,7 +1723,7 @@ fn component_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ComponentRow> {
     })
 }
 
-fn generation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<GenerationRow> {
+fn generation_row(row: &crate::database::Row<'_>) -> crate::database::Result<GenerationRow> {
     Ok(GenerationRow {
         deployment_id: row.get(0)?,
         number: row.get(1)?,
@@ -1704,6 +1845,132 @@ independent_services=["worker"]
     }
 
     #[test]
+    fn shared_postgres_references_are_detected_from_saved_specs() {
+        let (_temporary, database, store, _specification) = world();
+        let owner = "d1111111111111111";
+        let borrower = "d2222222222222222";
+        let owner_spec = json!({
+            "components": [{"name": "db", "type": "postgres"}]
+        });
+        let borrower_spec = json!({
+            "components": [{
+                "name": "db",
+                "type": "postgres",
+                "shared_from": format!("{owner}/db")
+            }]
+        });
+        database
+            .transaction(move |transaction| {
+                transaction.execute(
+                    "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES($1,'r1111111111111111','w1111111111111111',$2,'worktree','f',$3,'running','t',1,'fixture','t')",
+                    crate::database::params![owner, "owner", owner_spec.to_string()],
+                )?;
+                transaction.execute(
+                    "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES($1,'r1111111111111111','w1111111111111111',$2,'checkout','f',$3,'stopped','t',1,'fixture','t')",
+                    crate::database::params![borrower, "review", borrower_spec.to_string()],
+                )?;
+                Ok(())
+            })
+            .expect("saved deployment fixtures");
+
+        assert_eq!(
+            store.shared_postgres_references(owner).unwrap(),
+            vec![SharedPostgresReference {
+                deployment_id: borrower.into(),
+                deployment_name: "review".into(),
+                component_name: "db".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn generation_source_origins_are_atomic_optional_and_pruned_with_receipts() {
+        let (temporary, _database, store, specification) = world();
+        let id = DeploymentStore::deployment_id("w1111111111111111", "web", "checkout");
+        store
+            .upsert(
+                &id,
+                &target(),
+                &specification,
+                "checkout",
+                None,
+                "stopped",
+                1000,
+                "fixture",
+                None,
+            )
+            .unwrap();
+        store
+            .add_generation(&id, 1, Some("a"), false, temporary.path(), "first")
+            .unwrap();
+        assert!(store.generation_origin(&id, 1).unwrap().is_none());
+        let origin = GenerationSourceOrigin {
+            worktree_id: "w2222222222222222".into(),
+            path: temporary.path().join("candidate"),
+        };
+        store
+            .add_generation_with_origin(
+                &id,
+                2,
+                Some("b"),
+                false,
+                temporary.path(),
+                "second",
+                Some(&origin),
+            )
+            .unwrap();
+        assert_eq!(
+            store.generation_origin(&id, 2).unwrap(),
+            Some(origin.clone())
+        );
+        assert!(
+            store
+                .add_generation_with_origin(
+                    &id,
+                    2,
+                    Some("changed"),
+                    false,
+                    temporary.path(),
+                    "changed",
+                    Some(&origin)
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store.generation(&id, 2).unwrap().unwrap().fingerprint,
+            "second"
+        );
+        assert_eq!(store.generation_origin(&id, 2).unwrap(), Some(origin));
+        assert!(
+            store
+                .add_generation(&id, 2, None, false, temporary.path(), "replacement")
+                .is_err()
+        );
+        let invalid = GenerationSourceOrigin {
+            worktree_id: "w2222222222222222".into(),
+            path: PathBuf::from("relative"),
+        };
+        assert!(
+            store
+                .add_generation_with_origin(
+                    &id,
+                    3,
+                    None,
+                    false,
+                    temporary.path(),
+                    "invalid",
+                    Some(&invalid)
+                )
+                .is_err()
+        );
+        assert!(store.generation(&id, 3).unwrap().is_none());
+        let pruned = store.prune_generations(&id, &BTreeSet::from([1])).unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert!(store.generation_origin(&id, 2).unwrap().is_none());
+        assert!(store.generation(&id, 1).unwrap().is_some());
+    }
+
+    #[test]
     fn managed_rows_generations_routes_completions_and_desires_are_lossless() {
         let (temporary, database, store, specification) = world();
         let deployment_id = DeploymentStore::deployment_id("w1111111111111111", "web", "worktree");
@@ -1788,8 +2055,8 @@ independent_services=["worker"]
         database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,?1,?2,?3,?4,?5)",
-                    rusqlite::params![route_deployment_id, "api", 0, "t", "lfixture"],
+                    "INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,$1,$2,$3,$4,$5)",
+                    crate::database::params![route_deployment_id, "api", 0, "t", "lfixture"],
                 )?;
                 Ok(())
             })
@@ -1927,8 +2194,8 @@ independent_services=["worker"]
         database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20000,?1,?2,?3,?4,?5)",
-                    rusqlite::params![route_deployment_id, "api", 0, "t", "lmanaged"],
+                    "INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20000,$1,$2,$3,$4,$5)",
+                    crate::database::params![route_deployment_id, "api", 0, "t", "lmanaged"],
                 )?;
                 Ok(())
             })
@@ -2018,7 +2285,7 @@ independent_services=["worker"]
             .expect_err("managed conflict");
         assert_eq!(conflict.code, ErrorCode::ParamsInvalid);
         let count: u32 = database
-            .call(|connection| {
+            .read(|connection| {
                 Ok(connection.query_row(
                     "SELECT COUNT(*) FROM observed_deployments",
                     [],

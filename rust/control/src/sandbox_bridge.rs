@@ -425,6 +425,7 @@ mod tests {
             operation: &str,
             _: Value,
             _: &crate::access::Caller,
+            _: crate::daemon::WaitContext,
         ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
             assert!(
                 [
@@ -457,7 +458,7 @@ mod tests {
         fs::write(
             &path,
             serde_json::to_vec(&json!({
-                "protocol":2,"id":id,"operation":operation,"params":params,"client":{}
+                "protocol":3,"id":id,"operation":operation,"params":params,"client":{}
             }))
             .unwrap(),
         )
@@ -622,7 +623,7 @@ mod tests {
 
     struct FiniteMutation {
         started: tokio::sync::Notify,
-        release: Arc<tokio::sync::Notify>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
     }
     impl OperationExecutor for FiniteMutation {
         fn execute(
@@ -631,29 +632,23 @@ mod tests {
             _: Value,
             _: &crate::access::Caller,
         ) -> Result<Value, ProtocolError> {
-            unreachable!()
-        }
-        fn defer(
-            &self,
-            _: &str,
-            _: Value,
-            _: &crate::access::Caller,
-        ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
             self.started.notify_one();
-            let release = self.release.clone();
-            Some(Ok(Box::pin(async move {
-                release.notified().await;
-                Ok(json!({"committed":true}))
-            })))
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(json!({"committed":true}))
         }
     }
 
     #[tokio::test]
     async fn fence_does_not_cancel_an_accepted_bridge_mutation() {
         let temporary = tempdir().unwrap();
+        let (release, released) = std::sync::mpsc::channel();
         let executor = Arc::new(FiniteMutation {
             started: tokio::sync::Notify::new(),
-            release: Arc::new(tokio::sync::Notify::new()),
+            release: Mutex::new(released),
         });
         let app = Arc::new(
             App::with_executor(None, executor.clone())
@@ -676,7 +671,7 @@ mod tests {
         sleep(Duration::from_millis(50)).await;
         assert!(!worker.is_finished());
         assert!(temporary.path().join("aabbcc.processing").exists());
-        executor.release.notify_one();
+        release.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(2), worker)
             .await
             .unwrap()
@@ -720,7 +715,7 @@ mod tests {
             serve_with_owner(app, &bridge_dir, shutdown, unsafe { libc::geteuid() }).await
         });
         let id = "a1b2c3";
-        let request = serde_json::json!({"protocol":2,"id":id,"operation":"ping","params":{},"client":{"kind":"codex"}});
+        let request = serde_json::json!({"protocol":3,"id":id,"operation":"ping","params":{},"client":{"kind":"codex"}});
         fs::write(
             dir.join(format!("{id}.request")),
             serde_json::to_vec(&request).unwrap(),
@@ -751,7 +746,7 @@ mod tests {
         let temporary = tempdir().unwrap();
         fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o1777)).unwrap();
         let id = "deadbeef";
-        let request = serde_json::json!({"protocol":2,"id":id,"operation":"ping","params":{}});
+        let request = serde_json::json!({"protocol":3,"id":id,"operation":"ping","params":{}});
         fs::write(
             temporary.path().join(format!("{id}.processing")),
             serde_json::to_vec(&request).unwrap(),

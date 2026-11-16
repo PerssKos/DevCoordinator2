@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::completion::{self, Capability, Claim, Scope, State};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 
 use crate::database::{Database, DatabaseError};
 
@@ -86,12 +86,12 @@ impl CompletionService {
             .map(|id| (*id).to_owned())
             .collect::<Vec<_>>();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut states = BTreeMap::new();
                 for task_id in ids {
                     let row = connection
                         .query_row(
-                            "SELECT repository_id,status FROM tasks WHERE task_id=?1",
+                            "SELECT repository_id,status FROM tasks WHERE task_id=$1",
                             [&task_id],
                             |row| {
                                 Ok(TaskState {

@@ -1,3 +1,4 @@
+#[cfg(test)]
 use super::review_facts::Facts;
 use super::review_math::Effort;
 use super::*;
@@ -10,10 +11,14 @@ pub(super) struct Groups {
     unattributed: Effort,
     rows: BTreeMap<(String, Option<String>), Effort>,
     reasons: BTreeMap<String, u64>,
+    producer_aggregates: bool,
+    incomplete: bool,
 }
 
 impl Groups {
     pub(super) fn merge(&mut self, other: Self, source: usize) -> Result<(), String> {
+        self.producer_aggregates |= other.producer_aggregates;
+        self.incomplete |= other.incomplete;
         self.total.merge(other.total, source)?;
         self.attributed.merge(other.attributed, source)?;
         self.unattributed.merge(other.unattributed, source)?;
@@ -24,48 +29,13 @@ impl Groups {
         Ok(())
     }
 
-    pub(super) fn legacy(report: &SourceReport) -> Self {
-        let mut cost = CostBuckets::default();
-        for bucket in report.activity_costs.values() {
-            merge_cost_bucket(&mut cost, bucket);
-        }
-        let effort = Effort {
-            cost,
-            activities: report
-                .activities
-                .iter()
-                .map(|((_, activity), tokens)| (activity.clone(), (*tokens, 0)))
-                .fold(BTreeMap::new(), |mut map, (activity, (tokens, unknown))| {
-                    let value = map.entry(activity).or_insert((0, 0));
-                    value.0 += tokens;
-                    value.1 += unknown;
-                    map
-                }),
-            operations: report.operation_count,
-            tokens: report.tokens.get("total_tokens").copied().unwrap_or(0),
-            unknown_tokens: report
-                .token_observations
-                .iter()
-                .filter(|(key, _)| key.as_str() != "complete")
-                .map(|(_, count)| *count)
-                .sum(),
-            elapsed: report.execution_intervals.clone(),
-            active: report.agent_intervals.clone(),
-            unknown_elapsed: report.execution_unknown,
-            unknown_active: report.agent_unknown,
-            // Older readers have no independent wait union. Do not claim zero.
-            unknown_waits: 1,
-            ..Default::default()
-        };
-        Self {
-            total: effort.clone(),
-            unattributed: effort,
-            reasons: BTreeMap::from([("legacy_collector".into(), report.operation_count)]),
-            ..Default::default()
-        }
+    pub(super) fn gap(&mut self, reason: &str, count: u64) {
+        self.incomplete = true;
+        *self.reasons.entry(reason.into()).or_default() += count;
     }
 
     pub(super) fn finish(self, source_gaps: bool) -> Result<OutcomeReport, String> {
+        let source_gaps = source_gaps || self.incomplete;
         let mut totals = self.total.finish()?;
         let mut attributed = self.attributed.finish()?;
         let mut unattributed = self.unattributed.finish()?;
@@ -73,6 +43,10 @@ impl Groups {
             "unavailable"
         } else if source_gaps
             || unattributed.operations > 0
+            || totals.provider_total_tokens.exact.is_none()
+            || totals.active_agent_ms.exact.is_none()
+            || totals.elapsed_execution_ms.exact.is_none()
+            || totals.recorded_wait_ms.exact.is_none()
             || totals.provider_total_tokens.unknown > 0
             || totals.active_agent_ms.unknown > 0
             || totals.elapsed_execution_ms.unknown > 0
@@ -110,8 +84,76 @@ impl Groups {
             kinds: BTreeMap::new(),
             schema_version: 1, coverage: coverage.into(), totals, attributed, unattributed,
             unattributed_reasons: self.reasons, total_rows: rows.len(), rows, next_cursor: None,
-            basis: "Prospective operation-start declarations only. Provider totals deduplicate by owner and source event; component categories are not added. Time is clipped to the UTC window. Active time sums per-agent unions after recorded waits; elapsed and waiting time are unions, not sums of outcome rows. Unknown capture and unrecorded waits cannot be reconstructed. Repository aggregates retain their repository scope; outcome rows honor the requested workstream, with undeclared work explicit.".into(),
+            basis: if self.producer_aggregates {
+                "Explicit operation work-context bindings only. Provider totals are additive across collectors. Producer operation-interval sums are retained separately in source metadata; aggregate intervals cannot be unioned, so elapsed wall time remains unknown. Repository totals retain repository scope; outcome rows honor the requested workstream. Unknown measurements remain unknown."
+            } else {
+                "Prospective operation-start declarations only. Provider totals deduplicate by owner and source event; component categories are not added. Time is clipped to the UTC window. Active time sums per-agent unions after recorded waits; elapsed and waiting time are unions, not sums of outcome rows. Unknown capture and unrecorded waits cannot be reconstructed. Repository aggregates retain their repository scope; outcome rows honor the requested workstream, with undeclared work explicit."
+            }.into(),
         })
+    }
+}
+
+/// Convert a producer-supplied finite outcome projection into the same merge
+/// representation used by the bounded SQLite reader. The producer owns the
+/// operation-to-work-context binding; this function only copies explicit rows
+/// and preserves its unattributed reasons.
+pub(super) fn from_api(report: &OutcomeReport) -> Groups {
+    let mut groups = Groups {
+        total: effort_from_api(&report.totals),
+        attributed: effort_from_api(&report.attributed),
+        unattributed: effort_from_api(&report.unattributed),
+        reasons: report.unattributed_reasons.clone(),
+        producer_aggregates: true,
+        ..Default::default()
+    };
+    if report.next_cursor.is_some() || report.total_rows > report.rows.len() {
+        groups.gap("outcome_projection_truncated", 1);
+    }
+    for row in &report.rows {
+        groups.rows.insert(
+            (row.outcome_id.clone(), row.workstream_id.clone()),
+            effort_from_api(&row.effort),
+        );
+    }
+    groups
+}
+
+fn effort_from_api(effort: &devcoordinator2_api::outcomes::OutcomeEffort) -> Effort {
+    Effort {
+        supplied_cost: Some(effort.cost.clone()),
+        aggregate_sources: 1,
+        inexact_tokens: effort.provider_total_tokens.exact.is_none(),
+        inexact_active: effort.active_agent_ms.exact.is_none(),
+        inexact_elapsed: true,
+        inexact_waits: effort.recorded_wait_ms.exact.is_none(),
+        inexact_activities: effort
+            .activities
+            .iter()
+            .filter(|(_, m)| m.exact.is_none())
+            .map(|(k, _)| k.clone())
+            .collect(),
+        activities: effort
+            .activities
+            .iter()
+            .map(|(activity, measurement)| {
+                (
+                    activity.clone(),
+                    (measurement.measured, measurement.unknown),
+                )
+            })
+            .collect(),
+        operations: effort.operations,
+        retries: effort.retry_operations,
+        rework: effort.rework_operations,
+        tokens: effort.provider_total_tokens.measured,
+        unknown_tokens: effort.provider_total_tokens.unknown,
+        unknown_active: effort.active_agent_ms.unknown,
+        unknown_elapsed: effort.elapsed_execution_ms.unknown.max(effort.operations),
+        unknown_waits: effort.recorded_wait_ms.unknown,
+        aggregate_active_ms: effort.active_agent_ms.measured,
+        aggregate_elapsed_ms: 0,
+        aggregate_wait_ms: effort.recorded_wait_ms.measured,
+        ..Default::default()
     }
 }
 
@@ -139,6 +181,7 @@ fn mark_incomplete(effort: &mut devcoordinator2_api::outcomes::OutcomeEffort) {
     }
 }
 
+#[cfg(test)]
 pub(super) fn aggregate(
     connection: &Connection,
     facts: Facts,
@@ -149,6 +192,7 @@ pub(super) fn aggregate(
     aggregate_facts(connection, facts, workstream, start_ms, end_ms, true)
 }
 
+#[cfg(test)]
 pub(super) fn display(
     connection: &Connection,
     facts: Facts,
@@ -159,6 +203,7 @@ pub(super) fn display(
     aggregate_facts(connection, facts, workstream, start_ms, end_ms, false)
 }
 
+#[cfg(test)]
 fn aggregate_facts(
     connection: &Connection,
     mut facts: Facts,

@@ -137,6 +137,10 @@ impl World {
                 Registry::new(fixture.database.clone()),
             ),
             fixture.config.base_domain.clone(),
+            crate::deployment_files::DeploymentFiles::new(
+                fixture.config.deployments_dir(),
+                fixture.config.secrets_dir(),
+            ),
         );
         if native {
             service = service.with_native_console(fixture.repository.clone(), "c".repeat(40));
@@ -186,9 +190,9 @@ impl World {
         );
         let created = timestamp(FINISHED - 2000).unwrap();
         self.fixture.database.transaction(move |transaction| {
-            transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at,public) VALUES('d1111111111111111','project-alpha','w1111111111111111','web','worktree',?1,?2,'running',1,?3,999,'fixture',?3,0)",rusqlite::params![fingerprint,spec.to_string(),created])?;
-            transaction.execute("INSERT INTO generations VALUES('d1111111111111111',1,?1,0,'/fixture/web',?2,?3,'current')",rusqlite::params!["c".repeat(40),fingerprint,created])?;
-            transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,?1,'lfixture')",[created])?;
+            transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at,public) VALUES('d1111111111111111','project-alpha','w1111111111111111','web','worktree',$1,$2,'running',1,$3,999,'fixture',$3,0)",crate::database::params![fingerprint,spec.to_string(),created])?;
+            transaction.execute("INSERT INTO generations VALUES('d1111111111111111',1,$1,0,'/fixture/web',$2,$3,'current')",crate::database::params!["c".repeat(40),fingerprint,created])?;
+            transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,$1,'lfixture')",[created])?;
             Ok(())
         }).unwrap();
     }
@@ -511,11 +515,13 @@ fn delivery_parent_cli_and_protocol_getter_returns_qualified_receipt() {
         .service
         .deliver(world.params, &world.caller, "fixture", FINISHED + 500)
         .unwrap();
+    let evidence_params = serde_json::json!({"reference": receipt.receipt_id}).to_string();
     let invocation = Cli::try_parse_from([
         "devcoordinator2",
-        "release",
-        "evidence",
-        &receipt.receipt_id,
+        "call",
+        "release.evidence",
+        "--params",
+        &evidence_params,
         "--format",
         "json",
     ])
@@ -539,9 +545,9 @@ fn delivery_parent_cli_and_protocol_getter_returns_qualified_receipt() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let response = runtime.block_on(app.dispatch(
         RequestEnvelope {
-            protocol: 2,
+            protocol: 3,
             id: "evidence".into(),
-            operation: operation.into(),
+            operation,
             params,
             client: ClientContext::default(),
         },

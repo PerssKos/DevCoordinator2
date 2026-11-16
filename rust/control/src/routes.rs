@@ -25,6 +25,123 @@ pub const ROUTE_SCHEMA: u8 = 2;
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
+/// Initialize only a genuinely first, empty projection during the single-owned
+/// daemon startup, before requests or maintenance can change route authority.
+/// Existing projections and nonempty authority require normal reconciliation.
+pub fn initialize_empty_projection(
+    database: &Database,
+    path: &Path,
+    base_domain: &str,
+) -> Result<Option<RouteDocument>, ProtocolError> {
+    let missing = |path: &Path| match path.symlink_metadata() {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(_) => Err(ProtocolError::new(
+            ErrorCode::InternalError,
+            "initial route projection path is unavailable",
+        )),
+    };
+    let floor = path
+        .parent()
+        .ok_or_else(|| ProtocolError::new(ErrorCode::InternalError, "invalid route path"))?
+        .join("route-generation.floor");
+    if !missing(path)? || !missing(&floor)? {
+        return Ok(None);
+    }
+    let existing = database
+        .read(|connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM domain_routes) OR EXISTS(SELECT 1 FROM observed_routes) OR EXISTS(SELECT 1 FROM meta WHERE key='route_generation')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?)
+        })
+        .map_err(|_| {
+            ProtocolError::new(ErrorCode::InternalError, "initial route authority is unavailable")
+        })?;
+    if existing {
+        return Ok(None);
+    }
+    // No route records exist, so the publisher cannot withdraw any leases.
+    // Its only authority mutation is the first derived route_generation value.
+    RouteFilePublisher::new(database.clone(), path.to_owned(), base_domain.to_owned())
+        .publish_current()
+        .map(Some)
+}
+
+/// Verify native authority ownership against the snapshot actually accepted by
+/// the edge while activation remains fenced. This never repairs or publishes.
+pub fn verify_activation_routes(
+    database: &Database,
+    state: &Path,
+    edge_state: &Path,
+) -> Result<(), ProtocolError> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let invalid = || {
+        ProtocolError::new(
+            ErrorCode::InternalError,
+            "candidate route ownership or edge acknowledgement is unverified",
+        )
+    };
+    let read = |path: &Path| -> Result<serde_json::Value, ProtocolError> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|_| invalid())?;
+        let metadata = file.metadata().map_err(|_| invalid())?;
+        if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        let mut bytes = Vec::new();
+        file.take(2 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| invalid())?;
+        serde_json::from_slice(&bytes).map_err(|_| invalid())
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let (document, acknowledgement) = loop {
+        let document = read(&state.join("public/routes.json"));
+        let acknowledgement = read(&edge_state.join("routes.accepted.json"));
+        if let (Ok(document), Ok(acknowledgement)) = (document, acknowledgement)
+            && document["schema"] == 2
+            && acknowledgement["schema"] == 2
+            && document["generation"].as_u64().is_some()
+            && document["payload_sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+            && document["generation"] == acknowledgement["generation"]
+            && document["payload_sha256"] == acknowledgement["payload_sha256"]
+        {
+            break (document, acknowledgement);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(invalid());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let _ = acknowledgement;
+    let routes = document["routes"].as_array().ok_or_else(invalid)?;
+    database.read_transaction(|connection| {
+        for route in routes {
+            if std::time::Instant::now()>=deadline {return Err(DatabaseError::Domain(invalid()));}
+            let port=route["port"].as_u64().and_then(|port|u16::try_from(port).ok()).ok_or_else(||DatabaseError::Domain(invalid()))?;
+            let valid=if route["observed"]==true {
+                connection.query_row("SELECT EXISTS(SELECT 1 FROM observed_routes WHERE domain=$1 AND observed_deployment_id=$2 AND component=$3 AND port=$4)",crate::database::params![route["label"].as_str(),route["deployment_id"].as_str(),route["component"].as_str(),port],|row|row.get::<_,bool>(0))?
+            } else {
+                connection.query_row("SELECT EXISTS(SELECT 1 FROM domain_routes r JOIN port_assignments p ON p.lease_id=r.lease_id AND p.port=r.port AND p.deployment_id=r.deployment_id AND p.component=r.component JOIN deployments d ON d.deployment_id=r.deployment_id WHERE p.generation=0 AND r.deployment_id=$1 AND r.component=$2 AND r.port=$3 AND r.lease_id=$4 AND r.domain=$5 AND r.generation=d.current_generation)",crate::database::params![route["deployment_id"].as_str(),route["component"].as_str(),port,route["lease_id"].as_str(),route["label"].as_str()],|row|row.get::<_,bool>(0))?
+            };
+            if !valid {return Err(DatabaseError::Domain(invalid()));}
+            if route["observed"]!=true {
+                let remaining=deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() || std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127,0,0,1],port)),remaining.min(std::time::Duration::from_secs(1))).is_err() {return Err(DatabaseError::Domain(invalid()));}
+            }
+        }
+        Ok(())
+    }).map_err(|_|invalid())
+}
+
 fn timestamp_generation(now: &str) -> Result<u64, RouteError> {
     let timestamp = PrimitiveDateTime::parse(now, TIMESTAMP_FORMAT)?.assume_utc();
     u64::try_from(timestamp.unix_timestamp_nanos() / 1_000_000)
@@ -245,7 +362,7 @@ pub fn publish(
             .ok_or_else(|| DatabaseError::Domain(ProtocolError::new(ErrorCode::InternalError, "route generation exhausted")))?
             .max(timestamp_floor);
         connection.execute(
-            "INSERT OR REPLACE INTO meta(key,value) VALUES('route_generation',?1)",
+            "INSERT INTO meta(key,value) VALUES('route_generation',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             [generation.to_string()],
         )?;
         let candidates = {
@@ -355,10 +472,10 @@ fn route_role(value: &str) -> Result<AccessRole, DatabaseError> {
 }
 
 fn route_from_row(
-    row: &rusqlite::Row<'_>,
+    row: &crate::database::Row<'_>,
     base_domain: &str,
     _observed: bool,
-) -> rusqlite::Result<Route> {
+) -> crate::database::Result<Route> {
     let label: String = row.get(0)?;
     Ok(Route {
         deployment_id: row.get(1)?,
@@ -494,6 +611,30 @@ mod tests {
     fn publication_is_complete_checksummed_and_monotonic() {
         let temporary = tempdir().unwrap();
         let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        let path = temporary.path().join("public/routes.json");
+        let initial = initialize_empty_projection(&database, &path, "example.test")
+            .unwrap()
+            .expect("fresh empty startup must publish its first projection");
+        assert_eq!(initial.schema, ROUTE_SCHEMA);
+        assert!(initial.routes.is_empty());
+        assert!(initial.generation > 0);
+        let initial_bytes = std::fs::read(&path).unwrap();
+        assert!(
+            initialize_empty_projection(&database, &path, "example.test")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), initial_bytes);
+        assert_eq!(
+            database
+                .read(|connection| Ok(connection.query_row(
+                    "SELECT value FROM meta WHERE key='route_generation'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?))
+                .unwrap(),
+            initial.generation.to_string()
+        );
         database
             .transaction(|transaction| {
                 transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/x','x','t',1,'t')", [])?;
@@ -507,7 +648,6 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let path = temporary.path().join("public/routes.json");
         let first = publish(
             &database,
             &path,
@@ -516,7 +656,7 @@ mod tests {
             "2026-09-03T12:00:00Z",
         )
         .unwrap();
-        assert!(first.generation > 0);
+        assert!(first.generation > initial.generation);
         assert_eq!(first.routes.len(), 1);
         assert_eq!(first.routes[0].domain, "app.example.test");
         let value = serde_json::to_value(&first).unwrap();
@@ -615,9 +755,75 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        let path = temporary.path().join("public/routes.json");
+        assert!(
+            initialize_empty_projection(&database, &path, "example.test")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!path.exists());
+        database
+            .read(|connection| {
+                assert!(!connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM meta WHERE key='route_generation')",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )?);
+                assert_eq!(
+                    connection.query_row(
+                        "SELECT lease_id FROM domain_routes WHERE domain='app'",
+                        [],
+                        |row| row.get::<_, String>(0)
+                    )?,
+                    "wrong"
+                );
+                assert_eq!(
+                    connection.query_row(
+                        "SELECT state FROM deployments WHERE deployment_id='d1'",
+                        [],
+                        |row| row.get::<_, String>(0)
+                    )?,
+                    "running"
+                );
+                Ok(())
+            })
+            .unwrap();
+        database.transaction(|connection| {
+            connection.execute("DELETE FROM domain_routes", [])?;
+            connection.execute("INSERT INTO observed_deployments(observed_deployment_id,repository_id,name,native_project,state,health,source,evidence_json,observed_at,imported_at) VALUES('o1','r1','observed','fixture','running','healthy','fixture','{}','t','t')", [])?;
+            connection.execute("INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES('observed','o1','api',20002,0,'{}','t')", [])?;
+            Ok(())
+        }).unwrap();
+        assert!(
+            initialize_empty_projection(&database, &path, "example.test")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!path.exists());
+        database
+            .read(|connection| {
+                assert!(!connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM meta WHERE key='route_generation')",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )?);
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM observed_routes", [], |row| row
+                            .get::<_, u64>(0))?,
+                    1
+                );
+                Ok(())
+            })
+            .unwrap();
+        database.transaction(|connection| {
+            connection.execute("DELETE FROM observed_deployments WHERE observed_deployment_id='o1'", [])?;
+            connection.execute("INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES('app','d1','api',20001,1,'t','wrong')", [])?;
+            Ok(())
+        }).unwrap();
         let document = publish(
             &database,
-            &temporary.path().join("public/routes.json"),
+            &path,
             "example.test",
             None,
             "2026-09-03T12:00:00Z",
@@ -626,7 +832,7 @@ mod tests {
         assert!(document.routes.is_empty());
         assert_eq!(
             database
-                .call(|c| Ok(c.query_row(
+                .read(|c| Ok(c.query_row(
                     "SELECT state FROM deployments WHERE deployment_id='d1'",
                     [],
                     |r| r.get::<_, String>(0)

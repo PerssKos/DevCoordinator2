@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::database::{Connection, OptionalExtension};
 use devcoordinator2_api::glossary::*;
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
@@ -54,7 +54,7 @@ impl GlossaryService {
         }
         let scope = scope(repository);
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let resolved = resolve(connection, &scope, params.revision)?;
                 if let Some(expected) = params.expected_revision {
                     expect_revision(resolved.profile.revision, expected)?;
@@ -109,7 +109,7 @@ impl GlossaryService {
     pub fn get(&self, repository: Option<&str>, params: Get) -> Result<Detail, ProtocolError> {
         let scope = scope(repository);
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut resolved = resolve(connection, &scope, params.revision)?;
                 let entry = resolved
                     .entries
@@ -368,10 +368,10 @@ impl GlossaryService {
     ) -> Result<HistoryPage, ProtocolError> {
         let scope = scope(repository);
         let limit = page_limit(params.limit)?;
-        self.database.call(move |connection| {
+        self.database.read(move |connection| {
             require_scope(connection, &scope, false)?;
-            let mut statement = connection.prepare("SELECT revision,kind,subject_id,summary,actor,created_at FROM glossary_revisions WHERE scope=?1 AND (?2 IS NULL OR subject_id=?2) AND (?3 IS NULL OR revision<?3) ORDER BY revision DESC LIMIT ?4")?;
-            let mut revisions = statement.query_map(rusqlite::params![scope, params.concept_id, params.before_revision, (limit + 1) as i64], |row| {
+            let mut statement = connection.prepare("SELECT revision,kind,subject_id,summary,actor,created_at FROM glossary_revisions WHERE scope=$1 AND ($2::text IS NULL OR subject_id=$2) AND ($3::bigint IS NULL OR revision<$3) ORDER BY revision DESC LIMIT $4")?;
+            let mut revisions = statement.query_map(crate::database::params![scope, params.concept_id, params.before_revision, (limit + 1) as i64], |row| {
                 let subject: String = row.get(2)?;
                 Ok(Revision { revision: row.get(0)?, kind: row.get(1)?, concept_id: (!subject.is_empty()).then_some(subject), summary: row.get(3)?, actor: row.get(4)?, created_at: row.get(5)? })
             })?.collect::<Result<Vec<_>, _>>()?;
@@ -392,7 +392,7 @@ impl GlossaryService {
         }
         let scope = scope(repository);
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let resolved = resolve(connection, &scope, None)?;
                 if let Some(expected) = params.expected_revision {
                     expect_revision(resolved.profile.revision, expected)?;
@@ -451,11 +451,11 @@ impl GlossaryService {
     pub fn impact(&self, params: ImpactRequest) -> Result<Impact, ProtocolError> {
         let limit = page_limit(params.limit)?;
         let offset = params.offset.unwrap_or(0);
-        self.database.call(move |connection| {
+        self.database.read(move |connection| {
             let shared_revision = latest(connection, SHARED)?;
             let total = connection.query_row("SELECT COUNT(*) FROM repositories WHERE archived_at IS NULL", [], |row| row.get::<_, u32>(0))? as usize;
-            let mut statement = connection.prepare("SELECT repository_id,display_name FROM repositories WHERE archived_at IS NULL ORDER BY display_name,repository_id LIMIT ?1 OFFSET ?2")?;
-            let rows = statement.query_map(rusqlite::params![limit as i64, i64::try_from(offset).map_err(|_| invalid("Offset is too large"))?], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+            let mut statement = connection.prepare("SELECT repository_id,display_name FROM repositories WHERE archived_at IS NULL ORDER BY display_name,repository_id LIMIT $1 OFFSET $2")?;
+            let rows = statement.query_map(crate::database::params![limit as i64, i64::try_from(offset).map_err(|_| invalid("Offset is too large"))?], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
             let mut projects = Vec::new();
             for (repository_id, display_name) in rows {
                 let document = load(connection, &repository_id, None)?;
@@ -476,12 +476,19 @@ fn require_scope(
     scope: &str,
     writing: bool,
 ) -> Result<String, DatabaseError> {
+    if writing {
+        connection.query_row(
+            "SELECT pg_advisory_xact_lock(hashtextextended('glossary:'||$1,0))",
+            [scope],
+            |_| Ok(()),
+        )?;
+    }
     if scope == SHARED {
         return Ok("Shared glossary".to_owned());
     }
     let row: Option<(String, Option<String>)> = connection
         .query_row(
-            "SELECT display_name,archived_at FROM repositories WHERE repository_id=?1",
+            "SELECT display_name,archived_at FROM repositories WHERE repository_id=$1",
             [scope],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -500,7 +507,7 @@ fn require_scope(
 fn latest(connection: &Connection, scope: &str) -> Result<u32, DatabaseError> {
     Ok(connection
         .query_row(
-            "SELECT revision FROM glossary_profiles WHERE scope=?1",
+            "SELECT revision FROM glossary_profiles WHERE scope=$1",
             [scope],
             |row| row.get(0),
         )
@@ -518,14 +525,14 @@ fn load(
     if revision > current {
         return Err(not_found().into());
     }
-    let settings: Option<String> = connection.query_row("SELECT body FROM glossary_revisions WHERE scope=?1 AND kind='settings' AND revision<=?2 ORDER BY revision DESC LIMIT 1", rusqlite::params![scope, revision], |row| row.get(0)).optional()?;
+    let settings: Option<String> = connection.query_row("SELECT body FROM glossary_revisions WHERE scope=$1 AND kind='settings' AND revision<=$2 ORDER BY revision DESC LIMIT 1", crate::database::params![scope, revision], |row| row.get(0)).optional()?;
     let settings = settings
         .map(|body| deserialize(&body))
         .transpose()?
         .unwrap_or_default();
-    let mut statement = connection.prepare("SELECT events.subject_id,events.body FROM glossary_revisions events JOIN (SELECT subject_id,MAX(revision) revision FROM glossary_revisions WHERE scope=?1 AND kind='concept' AND revision<=?2 GROUP BY subject_id) newest ON events.scope=?1 AND events.revision=newest.revision WHERE events.body IS NOT NULL")?;
+    let mut statement = connection.prepare("SELECT events.subject_id,events.body FROM glossary_revisions events JOIN (SELECT subject_id,MAX(revision) revision FROM glossary_revisions WHERE scope=$1 AND kind='concept' AND revision<=$2 GROUP BY subject_id) newest ON events.scope=$1 AND events.revision=newest.revision WHERE events.body IS NOT NULL")?;
     let rows = statement
-        .query_map(rusqlite::params![scope, revision], |row| {
+        .query_map(crate::database::params![scope, revision], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -827,8 +834,8 @@ fn append(
     let revision = previous
         .checked_add(1)
         .ok_or_else(|| invalid("Glossary revision limit reached"))?;
-    connection.execute("INSERT INTO glossary_profiles(scope,revision) VALUES(?1,?2) ON CONFLICT(scope) DO UPDATE SET revision=excluded.revision", rusqlite::params![scope, revision])?;
-    connection.execute("INSERT INTO glossary_revisions(scope,revision,kind,subject_id,body,summary,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", rusqlite::params![scope, revision, kind, identity, body, summary, actor, now])?;
+    connection.execute("INSERT INTO glossary_profiles(scope,revision) VALUES($1,$2) ON CONFLICT(scope) DO UPDATE SET revision=excluded.revision", crate::database::params![scope, revision])?;
+    connection.execute("INSERT INTO glossary_revisions(scope,revision,kind,subject_id,body,summary,actor,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", crate::database::params![scope, revision, kind, identity, body, summary, actor, now])?;
     Ok(revision)
 }
 

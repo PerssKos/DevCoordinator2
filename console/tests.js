@@ -15,8 +15,12 @@ window.DevCoordinatorTests = (() => {
     return [...groups.values()].sort((left, right) => timestamp(right.runs[0]) - timestamp(left.runs[0]) || left.name.localeCompare(right.name));
   }
 
-  async function render({ main, runs: initialRuns, capacity, retention, api, esc, badge, durationMs, bytes, signal, openLogs, openFiles, openCapacity, openRetention, bindSettings, repository = null }) {
-    let runs = initialRuns;
+  async function render({ main, initialPage, listParams, capacity, retention, api, apiPage, esc, badge, durationMs, bytes, signal, openLogs, openFiles, openCapacity, openRetention, bindSettings, repository = null }) {
+    let runs = initialPage.runs;
+    const inspected = new Map();
+    const pending = [...(initialPage.next_worktree_id ? [{ ...listParams[0], after_worktree_id: initialPage.next_worktree_id }] : []), ...listParams.slice(1)];
+    const scopes = new Set(listParams.map((params) => params.repository_id));
+    let loadPromise, pageError, pageObserver, refreshPosition = 0, activePosition = 0;
     let groups = groupRuns(runs);
     let selected;
     try { selected = sessionStorage.getItem('dc2-tests-repository'); } catch {}
@@ -27,6 +31,48 @@ window.DevCoordinatorTests = (() => {
     let refreshTimer;
     let refreshPromise;
     let previewDialog;
+    const hasMore = () => !!loadPromise || pending.length > 0 || repository && !repository.complete;
+    const belongsToPage = (run, page) => (!page.params.repository_id || run.repository_id === page.params.repository_id)
+      && run.worktree_id > (page.params.after_worktree_id || '') && (!page.end || run.worktree_id <= page.end);
+    const recordInspection = (params, page) => {
+      const key = params.repository_id || '';
+      const scope = inspected.get(key) || { params: { ...params, after_worktree_id: undefined }, frontier: '', complete: false, after: undefined };
+      scope.complete ||= !page.next_worktree_id;
+      if (page.next_worktree_id > scope.frontier) scope.frontier = page.next_worktree_id;
+      inspected.set(key, scope);
+    };
+    recordInspection(listParams[0], initialPage);
+    const mergePage = (page, params, end = page.next_worktree_id) => {
+      const range = { params, end };
+      const returned = new Map(page.runs.filter((run) => belongsToPage(run, range)).map((run) => [run.worktree_id, run]));
+      const byWorktree = new Map(runs.filter((run) => !belongsToPage(run, range) || returned.has(run.worktree_id)).map((run) => [run.worktree_id, run]));
+      for (const [id, run] of returned) byWorktree.set(id, run);
+      runs = [...byWorktree.values()]; groups = groupRuns(runs);
+      if (!current()) selected = groups[0]?.key;
+    };
+    const armRefresh = () => { if (!signal.aborted && !refreshTimer && (runs.some((run) => activeStates.has(run.status)) || query('#test-run-form'))) refreshTimer = setTimeout(() => { refreshTimer = null; void refresh(); }, 2000); };
+    async function loadMore() {
+      if (loadPromise || pageError || !pending.length || signal.aborted) return;
+      const params = pending.shift();
+      loadPromise = (async () => {
+        try {
+          const page = await apiPage('test.list', params);
+          if (signal.aborted) return;
+          if (page.next_worktree_id && page.next_worktree_id <= (params.after_worktree_id || '')) throw new Error('Test pagination did not advance');
+          if (page.next_worktree_id) pending.unshift({ ...params, after_worktree_id: page.next_worktree_id });
+          recordInspection(params, page);
+          mergePage(page, params);
+          paintNavigation();
+        } catch (error) {
+          if (!signal.aborted) { pending.unshift(params); pageError = error; }
+        } finally {
+          loadPromise = null;
+          if (!signal.aborted) { paintRows(); armRefresh(); }
+        }
+      })();
+      paintRows();
+      return loadPromise;
+    }
     const replacementNotices = new Map();
     const runTargets = (run) => run.targets?.length ? { targets: run.targets } : { test: run.test };
     const runSelection = (run) => ({ ...runTargets(run), ...(run.selection?.length ? { checks: run.selection } : {}), ...(Object.keys(run.case_selection || {}).length ? { cases: run.case_selection } : {}) });
@@ -98,7 +144,7 @@ window.DevCoordinatorTests = (() => {
       try {
         const result = await api(activeStates.has(run.status) ? 'test.stop' : 'test.start', { path: run.worktree_path, ...(activeStates.has(run.status) ? {} : { ...runSelection(run), tier: run.requested_tier || 'release' }) }, false);
         recordReplacement(run, result);
-        if (!signal.aborted) await refresh();
+        if (!signal.aborted) await refresh(run);
       } catch (failure) {
         if (!signal.aborted) window.DevCoordinatorI18n.bind(error, () => failure.message);
       } finally {
@@ -271,6 +317,7 @@ window.DevCoordinatorTests = (() => {
 
     function paintRows() {
       observer?.disconnect();
+      pageObserver?.disconnect();
       const collection = query('#test-runs-collection');
       const form = query('#test-run-form');
       const focusedField = form?.contains(document.activeElement) ? document.activeElement : null;
@@ -280,7 +327,10 @@ window.DevCoordinatorTests = (() => {
       const scroll = { top: scrollY, left: scrollX };
       const group = current();
       window.DevCoordinatorI18n.bind(collection, () => (group ? window.DevCoordinatorI18n.t("tests.value1_test_results_293210", {value1: group.name}) : window.DevCoordinatorI18n.t("tests.test_results_3ea600")), "aria-label");
-      collection.innerHTML = group?.runs.length ? `<div class="test-results">${group.runs.map(row).join('')}</div>` : "<p class=\"muted\"><span data-i18n=\"tests.no_test_runs_yet_3c5be5\">No test runs yet.</span></p>";
+      collection.dataset.state = group?.runs.length || !hasMore() ? 'ready' : 'loading';
+      collection.setAttribute('aria-busy', String(!!loadPromise));
+      collection.innerHTML = group?.runs.length ? `<div class="test-results">${group.runs.map(row).join('')}</div>` : hasMore() ? `<p class="muted" role="status">${window.DevCoordinatorI18n.markup('common.loading_more_results_d16d8b')}</p>` : "<p class=\"muted\"><span data-i18n=\"tests.no_test_runs_yet_3c5be5\">No test runs yet.</span></p>";
+      if (pageError) window.DevCoordinatorI18n.bind(query('#test-live-status'), () => window.DevCoordinatorI18n.t('tests.updates_paused_value1_11b351', { value1: pageError.message }));
       if (form) { collection.prepend(form); focusedField?.focus({ preventScroll: true }); }
       query('#test-run-open').disabled = !group?.runs.some((run) => !activeStates.has(run.status));
       for (const article of collection.querySelectorAll('.test-result')) {
@@ -311,6 +361,10 @@ window.DevCoordinatorTests = (() => {
         }
       }, { rootMargin: '160px' });
       for (const host of collection.querySelectorAll('[data-preview-run]')) observer.observe(host);
+      if (pending.length && !loadPromise && !pageError) {
+        pageObserver = new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) { pageObserver.disconnect(); void loadMore(); } }, { rootMargin: '160px' });
+        pageObserver.observe(collection.querySelector('.test-result:last-child') || collection.firstElementChild);
+      }
       if (focusedRow && focusedAction) query(`[data-test-run-id="${CSS.escape(focusedRow)}"] [${focusedAction}]`)?.focus({ preventScroll: true });
       window.scrollTo(scroll);
     }
@@ -348,33 +402,55 @@ window.DevCoordinatorTests = (() => {
           const result = await api('test.start', { path: run.worktree_path, ...runTargets(run), tier: fields.get('tier') }, false);
           recordReplacement(run, result);
           form.remove(); opener.focus();
-          if (!signal.aborted) await refresh();
+          if (!signal.aborted) await refresh(run);
         } catch (error) { window.DevCoordinatorI18n.bind(form.querySelector('[role=status]'), () => error.message); event.submitter.disabled = false; }
       });
       query('#test-runs-collection').prepend(form);
+      armRefresh();
       form.querySelector('select').focus({ preventScroll: true });
       form.scrollIntoView({ block: 'nearest' });
     }
 
-    async function refresh() {
+    async function refresh(target) {
       if (signal.aborted) return;
       if (refreshPromise) return refreshPromise;
       clearTimeout(refreshTimer);
       refreshPromise = (async () => {
         try {
-          const next = (await api('test.list', {})).runs || [];
-          if (signal.aborted) return;
-          if (JSON.stringify(next) !== JSON.stringify(runs)) {
-            runs = next; groups = groupRuns(runs);
-            if (!current()) selected = groups[0]?.key;
-            paintNavigation(); paintRows();
+          const before = JSON.stringify(runs);
+          let failure;
+          const active = (current()?.runs || []).filter((run) => activeStates.has(run.status));
+          const selectedRun = target || active[activePosition++ % active.length];
+          if (selectedRun) {
+            try {
+              const summary = await api('test.status', { path: selectedRun.worktree_path });
+              if (signal.aborted) return;
+              runs = runs.map((run) => run.worktree_id === selectedRun.worktree_id ? { ...run, ...summary,
+                ...(run.run_id !== summary.run_id ? { visual_evidence: null, earlier_visual_evidence: null } : {}) } : run);
+              groups = groupRuns(runs);
+            } catch (error) { failure = error; }
           }
-          query('#test-live-status').textContent = '';
+          if (signal.aborted) return;
+          try {
+            const scopes = [...inspected.values()];
+            const scope = scopes[refreshPosition++ % scopes.length];
+            const params = { ...scope.params, after_worktree_id: scope.after };
+            const next = await apiPage('test.list', params);
+            if (signal.aborted) return;
+            if (next.next_worktree_id && next.next_worktree_id <= (params.after_worktree_id || '')) throw new Error('Test pagination did not advance');
+            const end = !scope.complete && (!next.next_worktree_id || next.next_worktree_id > scope.frontier) ? scope.frontier : next.next_worktree_id;
+            mergePage(next, params, end);
+            scope.after = next.next_worktree_id && (scope.complete || next.next_worktree_id < scope.frontier) ? next.next_worktree_id : undefined;
+          } catch (error) { failure ||= error; }
+          if (signal.aborted) return;
+          if (JSON.stringify(runs) !== before) { paintNavigation(); paintRows(); }
+          if (failure) throw failure;
+          if (!pageError) query('#test-live-status').textContent = '';
         } catch (error) {
           if (!signal.aborted) window.DevCoordinatorI18n.bind(query('#test-live-status'), () => window.DevCoordinatorI18n.t("tests.updates_paused_value1_11b351", {value1: error.message}));
         } finally {
           refreshPromise = null;
-          if (!signal.aborted && runs.some((run) => activeStates.has(run.status))) refreshTimer = setTimeout(refresh, 2000);
+          refreshTimer = null; armRefresh();
         }
       })();
       return refreshPromise;
@@ -382,6 +458,10 @@ window.DevCoordinatorTests = (() => {
 
     main.innerHTML = repository ? `<section class="tests-workspace"><header class="workspace-tests-heading"><h1><span data-i18n="tests.tests_e5c9d7">Tests</span></h1><button class="btn" type="button" id="test-run-open"><span data-i18n="tests.run_tests_3f6d6b">Run tests</span></button></header><span id="test-live-status" role="status"></span><section id="test-runs-collection" tabindex="-1"></section></section>` : `<section class="tests-workspace"><aside class="tests-sidebar"><header><h1><a href="#/tests" class="destination-link"><span data-i18n="tests.tests_e5c9d7">Tests</span></a></h1><details class="test-settings"><summary class="test-settings-toggle" aria-label="Test settings" data-i18n-attrs='{"aria-label":"tests.test_settings_1db6e5"}'><span class="ti ti-settings" aria-hidden="true"></span></summary><div class="test-settings-menu"><button class="btn" type="button" id="test-log-retention-open"><span data-i18n="tests.log_retention_46c385">Log retention</span></button><button class="btn" type="button" id="test-capacity-open"><span data-i18n="tests.capacity_ae65d0">Capacity</span></button></div></details></header><nav class="test-repository-list" aria-label="Repositories" data-i18n-attrs='{"aria-label":"tests.repositories_1e32af"}'></nav><button class="btn" type="button" id="test-run-open"><span data-i18n="tests.run_tests_3f6d6b">Run tests</span></button><span id="test-live-status" role="status"></span></aside><section id="test-runs-collection" tabindex="-1"></section></section>`;
     paintNavigation(); paintRows(); bindSettings();
+    const unsubscribe = repository?.subscribe?.(() => {
+      for (const id of repository.ids) if (!scopes.has(id)) { scopes.add(id); pending.push({ repository_id: id, limit: 20 }); }
+      paintRows();
+    });
     const linkedRun = new URLSearchParams(location.hash.split('?')[1] || '').get('run');
     if (linkedRun) {
       const row = query('[data-test-run-id="' + CSS.escape(linkedRun) + '"]');
@@ -393,11 +473,12 @@ window.DevCoordinatorTests = (() => {
     query('#test-log-retention-open')?.addEventListener('click', (event) => openRetention(retention, event.currentTarget));
     signal.addEventListener('abort', () => {
       clearTimeout(refreshTimer); observer?.disconnect();
+      pageObserver?.disconnect(); unsubscribe?.();
       previewDialog?.dispatchEvent(new Event('cancel', { cancelable: true }));
       for (const url of urls) URL.revokeObjectURL(url);
       urls.clear(); cache.clear();
     }, { once: true });
-    if (runs.some((run) => activeStates.has(run.status))) refreshTimer = setTimeout(refresh, 2000);
+    armRefresh();
   }
 
   return { groupRuns, render };

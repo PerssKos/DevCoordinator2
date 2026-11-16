@@ -2,12 +2,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::incidents::{
     Incident, IncidentCategory, IncidentList, IncidentListParams, IncidentStatus, IncidentUpdate,
     IncidentView,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
 
 use crate::database::{Database, DatabaseError};
@@ -160,22 +160,23 @@ impl IncidentService {
         );
         let saved = incident.clone();
         self.database.transaction(move |tx| {
-            let revision = tx.query_row("SELECT revision FROM health_incident_reviews WHERE incident_id=?1", [&saved.incident_id], |r| r.get::<_,u32>(0)).optional()?.unwrap_or(0);
+            tx.query_row("SELECT pg_advisory_xact_lock(hashtextextended('incident:'||$1,0))", [&saved.incident_id], |_| Ok(()))?;
+            let revision = tx.query_row("SELECT revision FROM health_incident_reviews WHERE incident_id=$1", [&saved.incident_id], |r| r.get::<_,u32>(0)).optional()?.unwrap_or(0);
             if revision != params.expected_revision { return Err(DatabaseError::Domain(conflict())); }
             if saved.status != IncidentStatus::Dismissed {
-                let still_current: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM alerts WHERE alert_key=?1 AND opened_at=?2)", rusqlite::params![saved.alert_key,saved.opened_at], |r| r.get(0))?;
+                let still_current: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM alerts WHERE alert_key=$1 AND opened_at=$2)", crate::database::params![saved.alert_key,saved.opened_at], |r| r.get(0))?;
                 if !still_current { return Err(DatabaseError::Domain(conflict())); }
             }
             let json = serde_json::to_string(&saved).map_err(|_| DatabaseError::Domain(invalid("Cannot encode incident")))?;
-            tx.execute("INSERT INTO health_incident_reviews(incident_id,alert_key,opened_at,revision,record_json) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(incident_id) DO UPDATE SET revision=excluded.revision,record_json=excluded.record_json", rusqlite::params![saved.incident_id,saved.alert_key,saved.opened_at,saved.revision,json])?;
-            tx.execute("INSERT INTO health_incident_history(incident_id,revision,record_json) VALUES(?1,?2,?3)", rusqlite::params![saved.incident_id,saved.revision,json])?;
+            tx.execute("INSERT INTO health_incident_reviews(incident_id,alert_key,opened_at,revision,record_json) VALUES($1,$2,$3,$4,$5) ON CONFLICT(incident_id) DO UPDATE SET revision=excluded.revision,record_json=excluded.record_json", crate::database::params![saved.incident_id,saved.alert_key,saved.opened_at,saved.revision,json])?;
+            tx.execute("INSERT INTO health_incident_history(incident_id,revision,record_json) VALUES($1,$2,$3)", crate::database::params![saved.incident_id,saved.revision,json])?;
             Ok(())
         }).map_err(db_error)?;
         Ok(incident)
     }
 
     fn records(&self) -> Result<Vec<Incident>, ProtocolError> {
-        self.database.call(|c| {
+        self.database.read(|c| {
             let mut all = BTreeMap::<String,Incident>::new();
             let mut saved = c.prepare("SELECT record_json FROM health_incident_reviews")?;
             for json in saved.query_map([], |r| r.get::<_,String>(0))? {
@@ -197,10 +198,10 @@ impl IncidentService {
                     subject.split_once('/').map(|(d,n)|(Some(d.to_owned()),Some(n.to_owned()))).unwrap_or_default()
                 } else if subject_kind == "deployment" { (Some(subject.clone()),None) } else { (None,None) };
                 let context = if let Some(dep) = &dep {
-                    c.query_row("SELECT d.repository_id,COALESCE(p.display_name,r.display_name),d.name FROM deployments d JOIN repositories r USING(repository_id) LEFT JOIN repository_presentation p USING(repository_id) WHERE d.deployment_id=?1 UNION ALL SELECT d.repository_id,COALESCE(p.display_name,r.display_name),d.name FROM observed_deployments d JOIN repositories r USING(repository_id) LEFT JOIN repository_presentation p USING(repository_id) WHERE d.observed_deployment_id=?1 LIMIT 1", [dep], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?
+                    c.query_row("SELECT d.repository_id,COALESCE(p.display_name,r.display_name),d.name FROM deployments d JOIN repositories r USING(repository_id) LEFT JOIN repository_presentation p USING(repository_id) WHERE d.deployment_id=$1 UNION ALL SELECT d.repository_id,COALESCE(p.display_name,r.display_name),d.name FROM observed_deployments d JOIN repositories r USING(repository_id) LEFT JOIN repository_presentation p USING(repository_id) WHERE d.observed_deployment_id=$1 LIMIT 1", [dep], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?
                 } else { None };
                 let state = if let (Some(dep),Some(component)) = (&dep,&component) {
-                    c.query_row("SELECT state FROM components WHERE deployment_id=?1 AND name=?2",rusqlite::params![dep,component],|r|r.get::<_,String>(0)).optional()?
+                    c.query_row("SELECT state FROM components WHERE deployment_id=$1 AND name=$2",crate::database::params![dep,component],|r|r.get::<_,String>(0)).optional()?
                 } else { None };
                 let summary = match kind.as_str() {
                     "host_disk" => "Host storage is nearly full".to_owned(),

@@ -25,7 +25,7 @@ import { verifyProgressCharts } from './verify-progress-charts.mjs';
 import { performanceFixture, verifyPerformance } from './verify-performance.mjs';
 import { verifyTranslatedConsole } from './verify-translated-console.mjs';
 import { verifyLocalization } from './verify-localization.mjs';
-import { verifyWorkspace } from './verify-workspace.mjs';
+import { currentDocumentRequest, documentEvidence, isolateScenario, relevantCalls, verifyWorkspace } from './verify-workspace.mjs';
 import { verifyAnnotations } from './verify-annotations.mjs';
 import { verifyEvidenceLayout } from './verify-evidence-layout.mjs';
 import { verifyAssetRefresh } from './verify-asset-refresh.mjs';
@@ -365,7 +365,17 @@ const fixtures = (scenario) => {
         { task_id: P_LT, parent_task_id: null, release_id: V_R2, seq: 6, position: 1, title: 'A very long task title that keeps going and going for quite a while so wrapping is exercised', impact: null, status: 'planned', kind: 'improvement', estimated_loc: 800 },
         { task_id: P_UNSIZED_PARENT, parent_task_id: null, release_id: V_R1, seq: 7, position: 0, title: 'Check the release before people use it', impact: 'The final checks must be easy to inspect as one group.', status: 'planned', kind: 'goal', estimated_loc: null },
         { task_id: P_UNSIZED, parent_task_id: P_UNSIZED_PARENT, release_id: V_R1, seq: 8, position: 1, title: 'Check the complete release in a real browser', impact: 'A release can look finished in code while visible journeys still fail.', status: 'planned', kind: 'improvement', estimated_loc: null },
-        { task_id: P_FB, parent_task_id: null, release_id: null, seq: 9, position: 1, title: 'Make the export faster', impact: 'Big exports take minutes.', status: 'planned', kind: 'user_feedback', estimated_loc: 150 },
+        { task_id: P_FB, parent_task_id: null, release_id: null, seq: 9, position: 1, title: scenario.workspaceDeepPlan ? 'Keep export status readable' : 'Make the export faster', impact: 'Big exports take minutes.', status: scenario.workspaceDeepPlan ? 'in_progress' : 'planned', kind: 'user_feedback', estimated_loc: 150 },
+        ...(scenario.workspaceDeepPlan ? [
+          { task_id: 'p1111111111111230', parent_task_id: P_FB, release_id: null, seq: 13, position: 1, title: 'Prepare the export', impact: null, status: 'in_progress', kind: 'improvement', estimated_loc: 775 },
+          { task_id: 'p1111111111111240', parent_task_id: P_FB, release_id: null, seq: 14, position: 2, title: 'Check the final export', impact: null, status: 'planned', kind: 'improvement', estimated_loc: null },
+        ] : []),
+        ...(scenario.workspaceDeepPlan ? Array.from({ length: 3 }, (_, index) => ({
+          task_id: `p11111111111112${index}0`, parent_task_id: index ? `p11111111111112${index - 1}0` : P_G1,
+          release_id: V_R1, seq: 10 + index, position: 1,
+          title: 'Check the nested form field before completing the sign-in journey',
+          impact: null, status: index % 2 ? 'planned' : 'in_progress', kind: 'improvement', estimated_loc: 100,
+        })) : []),
         ...denseUnsizedTasks],
       tasks_truncated: false, preview_requested: [],
       elaboration_requests: scenario.empty ? [] : [{ task_id: P_D1, title: 'Show the welcome page', outcome: 'Show the welcome page', status: 'done', kind: 'goal', requested_at: '2026-08-30T12:00:00Z' }],
@@ -396,6 +406,7 @@ const fixtures = (scenario) => {
 const SCENARIOS = {
   populated: { identity: 'owner@example.test', admin: true },
   planPaged: { identity: 'owner@example.test', admin: true, planPaged: true, targetedOnly: true },
+  workspaceLarge: { identity: 'owner@example.test', admin: true, workspaceLargePlan: true, workspaceDeepPlan: true, targetedOnly: true },
   artifactFiles: { identity: 'owner@example.test', admin: true, artifactFiles: true, targetedOnly: true },
   empty: { identity: 'owner@example.test', admin: true, empty: true },
   error: { identity: 'owner@example.test', admin: true, error: true },
@@ -446,7 +457,11 @@ async function startFakeDaemon(dir) {
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
   const delayedReplies = new Set();
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
+  const headerReplies = new Set();
+  const connections = new Set(), idleWaiters = new Set();
+  let pendingHandlers = 0, draining = false;
+  const notifyIdle = () => { if (!connections.size && !pendingHandlers) for (const resolve of [...idleWaiters]) resolve(); };
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, performancePendingServed: new Set(), capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
   const evidenceImage = (imageId, kind = 'viewport') => ({
     status: 'available', image_id: imageId, kind, mime: 'image/png',
     size: mutable.evidenceImage.length,
@@ -483,6 +498,17 @@ async function startFakeDaemon(dir) {
   });
   const planOverview = () => {
     const result = fixtures(scenario)['plan.overview'];
+    if (scenario.workspaceLargePlan) {
+      result.tasks.push(...Array.from({ length: 354 - result.tasks.length }, (_, index) => ({
+        task_id: `p222222222222${String(index).padStart(4, '0')}`, parent_task_id: null,
+        release_id: index % 2 ? V_R1 : V_R2, seq: 20 + index, position: index + 20,
+        title: `Review retained outcome ${index + 1} before delivering the complete release`,
+        status: index % 3 ? 'planned' : 'in_progress', kind: 'improvement', estimated_loc: 100,
+      })));
+      result.tasks.forEach((task, index) => { task.seq = index + 1; });
+      result.releases.push(...Array.from({ length: 21 }, (_, index) => ({ release_id: `v222222222222${String(index).padStart(4, '0')}`, seq: index + 5, name: `Retained release ${index + 1}`, kind: 'preview', status: 'delivered', tasks_total: 0, tasks_done: 0, loc_total: 0, loc_done: 0 })));
+      result.preview_requested = [{ release_id: V_R1, name: 'Release 1', requested_at: '2026-08-30T12:00:00Z', note: null }];
+    }
     result.tasks = result.tasks
       .map((task) => ({ ...task, ...(mutable.taskUpdates.get(task.task_id) || {}) }))
       .filter((task) => task.status !== 'dropped')
@@ -495,17 +521,21 @@ async function startFakeDaemon(dir) {
     return result;
   };
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+    connections.add(socket);
+    socket.on('close', () => { connections.delete(socket); notifyIdle(); });
     socket.on('error', (error) => { if (!['EPIPE', 'ECONNRESET'].includes(error.code)) throw error; });
     let buf = '';
     socket.on('data', async (c) => {
       buf += c; if (!buf.endsWith('\n')) return;
+      pendingHandlers++;
+      try {
       const req = JSON.parse(buf);
       const requestKeys = Object.keys(req).sort().join(',');
-      if (req.protocol !== 2 || requestKeys !== 'client,id,operation,params,protocol'
+      if (req.protocol !== 3 || requestKeys !== 'client,id,operation,params,protocol'
         || typeof req.operation !== 'string' || !req.params || Array.isArray(req.params)
         || typeof req.params !== 'object') {
-        socket.end(`${JSON.stringify({ protocol: 2, id: req.id || '', ok: false,
-          error: { code: 'protocol_invalid', message: 'fixture requires protocol v2', detail: '' } })}\n`);
+        socket.end(`${JSON.stringify({ protocol: 3, id: req.id || '', ok: false,
+          error: { code: 'protocol_invalid', message: 'fixture requires protocol v3', detail: '' } })}\n`);
         return;
       }
       calls.push(req);
@@ -546,9 +576,11 @@ async function startFakeDaemon(dir) {
             }
           }
         }
-        socket.end(JSON.stringify({ protocol: 2, id: req.id, ...payload }) + '\n', markSettled);
+        socket.end(JSON.stringify({ protocol: 3, id: req.id, ...payload }) + '\n', markSettled);
       };
-      if (scenario.delayMs && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))) await new Promise((resolve) => delayedReplies.add(resolve));
+      if (!draining && scenario.delayMs && (!scenario.delayRepository || scenario.delayRepository === req.params.repository_id)
+        && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))
+        && !scenario.delayExceptOperations?.includes(req.operation)) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
       if (scenario.holdWorkspaceUsage && cmd === 'usage.repositories' && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
       if ((scenario.cacheState || scenario.usageIndexing) && req.params.wait_for_refresh && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
@@ -577,19 +609,59 @@ async function startFakeDaemon(dir) {
       }
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (cmd.startsWith('performance.') && !scenario.admin) return reply({ ok:false, error:{code:'permission_denied',message:'Administrator access required',detail:''} });
-      if (cmd.startsWith('performance.')) return reply({ok:true,data:performanceFixture(cmd,req.params,scenario)});
+      if (cmd.startsWith('performance.')) {
+        const pendingKey = cmd === 'performance.review' ? `review:${req.params.reference}` : scenario.performancePendingByWindow ? JSON.stringify([req.params.repository_id, req.params.window_start_ms, req.params.window_end_ms, !!req.params.totals_only]) : req.params.totals_only ? 'lifetime' : 'period';
+        const pending = ['performance.overview', 'performance.review'].includes(cmd) && scenario.performancePendingRepository === req.params.repository_id || (cmd === 'performance.overview' && (scenario.performancePendingOnce || scenario.performancePendingByWindow) || cmd === 'performance.review' && scenario.performanceReviewPendingOnce) && !mutable.performancePendingServed.has(pendingKey);
+        if (pending) mutable.performancePendingServed.add(pendingKey);
+        return reply({ok:true,data:performanceFixture(cmd,req.params,pending ? {...scenario, usageUnavailable:true, performanceRefreshPending:true} : scenario)});
+      }
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
+      const artifacts = artifactResponse(cmd, req.params, scenario);
+      if (artifacts) return reply(artifacts);
       if (cmd === 'test.stop') { scenario = { ...scenario, testStopped: true }; return reply({ ok: true, data: { status: 'cancelled' } }); }
       if (cmd === 'test.start' && scenario.supersededRun) return reply({ ok: true, data: { run_id: 't20260101T000300Z-fed123', superseded_run_id: scenario.supersededRun } });
-      if (cmd === 'test.list' && scenario.testPaged) {
+      if (cmd === 'test.list') {
         const data = fixtures(scenario)['test.list'];
-        const page = req.params.after_worktree_id ? 1 : 0;
-        return reply({ ok: true, data: { runs: [data.runs[page]], next_worktree_id: page ? null : data.runs[0].worktree_id } });
+        if (scenario.testStopped && data.runs.length) data.runs[0] = { ...data.runs[0], status: 'cancelled', finished_at: new Date().toISOString() };
+        if (scenario.testEmptyContinuation && req.params.repository_id === REPO) {
+          if (req.params.after_worktree_id) {
+            if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+            return reply({ ok: true, data: { runs: [], next_worktree_id: null } });
+          }
+          return reply({ ok: true, data: { runs: [], next_worktree_id: 'w-empty' } });
+        }
+        if (scenario.testSweepJourney && req.params.repository_id === REPO) {
+          const row = (worktree_id, run_id, status = 'passed') => ({ ...data.runs[0], worktree_id, worktree_path: worktree_id === 'w1' ? data.runs[0].worktree_path : `/srv/repos/repo-one/.worktrees/${worktree_id}`, run_id, status, started_at: '2026-01-01T00:00:00Z', earlier_visual_evidence: null });
+          if (req.params.after_worktree_id === 'w3') {
+            if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+            return reply({ ok: true, data: { runs: [], next_worktree_id: null } });
+          }
+          if (req.params.after_worktree_id === 'w2') return reply({ ok: true, data: { runs: [row('w3', `t20260101T000030Z-complete${mutable.testSweepMutated ? '2' : '1'}`)], next_worktree_id: 'w3' } });
+          if (req.params.after_worktree_id === 'w1') return reply({ ok: true, data: { runs: mutable.testSweepMutated ? [row('w2', 't20260101T000020Z-external')] : [], next_worktree_id: 'w2' } });
+          if (mutable.testSweepMutated && !req.params.after_worktree_id) return reply({ ok: true, data: { runs: [row('w05', 't20260101T000005Z-inserted')], next_worktree_id: 'w05' } });
+          return reply({ ok: true, data: { runs: [row('w1', mutable.testSweepMutated ? 't20260101T000010Z-active2' : data.runs[0].run_id, 'running')], next_worktree_id: 'w1' } });
+        }
+        if (scenario.testPagingJourney && req.params.repository_id === REPO) {
+          if (req.params.after_worktree_id === 'w1') {
+            if (scenario.testPageFailure) return reply({ ok: false, error: { code: 'test_log_unavailable', message: 'Fixture next page unavailable.', detail: '' } });
+            if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+            return reply({ ok: true, data: { runs: [], next_worktree_id: 'w1-sparse' } });
+          }
+          if (req.params.after_worktree_id === 'w1-sparse') return reply({ ok: true, data: { runs: [{ ...data.runs[0], worktree_id: 'w1z', worktree_path: '/srv/repos/repo-one/.worktrees/later', run_id: 't20260101T000050Z-later1', status: 'passed' }], next_worktree_id: null } });
+          return reply({ ok: true, data: { runs: [data.runs[0]], next_worktree_id: 'w1' } });
+        }
+        const rows = data.runs.filter((run) => (!req.params.repository_id || run.repository_id === req.params.repository_id) && run.worktree_id > (req.params.after_worktree_id || ''));
+        const limit = scenario.testPaged ? 1 : req.params.limit || 50;
+        return reply({ ok: true, data: { runs: rows.slice(0, limit), next_worktree_id: rows.length > limit ? rows[limit - 1].worktree_id : null } });
       }
-      if (cmd === 'test.list' && scenario.testStopped) {
-        const data = fixtures(scenario)['test.list'];
-        data.runs[0] = { ...data.runs[0], status: 'cancelled', finished_at: new Date().toISOString() };
-        return reply({ ok: true, data });
+      if (cmd === 'test.status') {
+        if (scenario.denied) return reply({ ok: false, error: { code: 'permission_denied', message: 'Test status requires administrator', detail: '' } });
+        const row = fixtures(scenario)['test.list'].runs.find((run) => run.worktree_path === req.params.path);
+        if (!row) return reply({ ok: false, error: { code: 'test_run_not_found', message: 'Fixture worktree unavailable', detail: '' } });
+        const { worktree_id, worktree_path, repository_id, display_name, repository_source, visual_evidence, earlier_visual_evidence, ...summary } = row;
+        if (scenario.testStopped) { summary.status = 'cancelled'; summary.finished_at = new Date().toISOString(); }
+        if (scenario.testSweepJourney) { summary.started_at = '2026-01-01T00:00:00Z'; if (mutable.testSweepMutated) summary.run_id = 't20260101T000010Z-active2'; }
+        return reply({ ok: true, data: summary });
       }
       if (cmd === 'deployment.stop' && req.params.component === 'stack/projection-worker') { mutable.serviceStopped = true; return reply({ ok: true, data: { state: 'degraded' } }); }
       if (cmd === 'deployment.start' && req.params.component === 'stack/projection-worker') { mutable.serviceStopped = false; return reply({ ok: true, data: { state: 'running' } }); }
@@ -649,8 +721,6 @@ async function startFakeDaemon(dir) {
         matches: [{ line_start: 41000, line_end: 41000, byte_start: 8200000, byte_end: 8200024, text: 'pending state persisted' }],
         next_cursor: null, response_truncated: false,
       } });
-      const artifacts = artifactResponse(cmd, req.params, scenario);
-      if (artifacts) return reply(artifacts);
       if (cmd === 'test.evidence.lookup') {
         if (scenario.identity !== 'owner@example.test') return reply({ ok: false, error: { code: 'permission_denied', message: 'Administrator access is required.', detail: '' } });
         const retained = req.params.run_id === 't20251101T000000Z-abcd12';
@@ -726,31 +796,74 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, data: req.params });
       }
       if (cmd === 'plan.overview' && !req.params.repository_id) {
+        if (scenario.workspaceHeaderPending && req.params.headers_only && !req.params.after_repository_id && !mutable.headersReleased) await new Promise(resolve => headerReplies.add(resolve));
+        if (scenario.workspacePaging && !req.params.headers_only && !mutable.cacheReleased) {
+          await new Promise((resolve) => delayedReplies.add(resolve));
+        }
         const result = fixtures(scenario)['plan.overview-list'];
         result.repositories = result.repositories.map((record) => ({ ...record, presentation: repositoryPresentations.get(record.repository_id) || null }));
-        return reply({ ok: true, data: result });
-      }
-      if (cmd === 'plan.overview') {
-        const result = planOverview();
-        if (scenario.planPaged) {
-          const fields = ['releases', 'tasks', 'elaboration_requests', 'preview_requested'];
-          // The snapshot stays stable across page requests, including a preview request.
-          result.preview_requested.forEach((request) => { request.requested_at = '2026-08-30T12:00:00Z'; });
-          const revision = crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex');
-          if (req.params.offset && req.params.expected_revision !== revision) {
-            return reply({ ok: false, error: { code: 'cursor_stale', message: 'Plan changed during loading' } });
-          }
-          const rows = fields.flatMap((field) => result[field].map((row) => [field, row]));
-          const offset = req.params.offset || 0;
-          for (const field of fields) result[field] = [];
-          for (const [field, row] of rows.slice(offset, offset + 5)) result[field].push(row);
-          result.revision = revision;
-          result.next_offset = offset + 5 < rows.length ? offset + 5 : null;
+        if (scenario.workspacePaging) {
+          if (req.params.after_repository_id) {
+            if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+            result.repositories = result.repositories.filter((row) => row.repository_id !== REPO);
+          } else { result.repositories = result.repositories.filter((row) => row.repository_id === REPO); result.next_repository_id = REPO; }
+        }
+        if (req.params.headers_only) {
+          return reply({ ok: true, data: { headers: result.repositories.map(({ repository_id, display_name, root_path, repository_source, presentation }) => ({ repository_id, display_name, root_path, repository_source, presentation })), next_repository_id: result.next_repository_id } });
         }
         return reply({ ok: true, data: result });
       }
-      if (cmd === 'repository.list') return reply({ ok: true, data: { repositories: [{ repository_id: REPO, root_path: '/repo-one', display_name: 'repo-one', registered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z', archived_at: null, archived_by_uid: null, archive_note: null, merged_into_repository_id: null, worktrees: [{ worktree_id: 'wmain', worktree_path: '/repo-one' }, { worktree_id: 'wfeature', worktree_path: '/repo-one/.worktrees/feature-ux' }, { worktree_id: 'wrelease', worktree_path: '/repo-one/.worktrees/release-candidate' }] }] } });
+      if (cmd === 'plan.overview') {
+        const metadata = fixtures(scenario)['plan.overview-list'].repositories.find((row) => row.repository_id === req.params.repository_id);
+        const relatedName = fixtures(scenario)['deployment.list'].deployments.find(row => row.repository_id === req.params.repository_id)?.repository_name
+          || fixtures(scenario)['usage.repositories'].repositories.find(row => row.repository_id === req.params.repository_id)?.display_name;
+        const result = { ...planOverview(), repository_id: req.params.repository_id, display_name: metadata?.display_name || relatedName || 'Late repository', repository_source: metadata?.repository_source, presentation: repositoryPresentations.get(req.params.repository_id) || null };
+        if (scenario.workspacePaging && ['rffffffffffffffff', 'release-clone'].includes(req.params.repository_id)) {
+          result.tasks = []; result.releases = []; result.elaboration_requests = [];
+          if (req.params.repository_id === 'release-clone') result.repository_source = { key: 'repo-one-origin', name: 'repo-one' };
+        }
+        result.preview_requested.forEach(request => { request.requested_at = '2026-08-30T12:00:00Z'; });
+        result.revision = crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex');
+        if (req.params.expected_revision && req.params.expected_revision !== result.revision) return reply({ ok: false, error: { code: 'cursor_stale', message: 'Plan changed during loading' } });
+        if (scenario.workspaceLargePlan || scenario.planPaged) {
+          const limit = req.params.limit || (scenario.planPaged ? 5 : 100);
+          const remaining = result.tasks.filter((task) => task.seq > (req.params.after_sequence || 0));
+          result.tasks = remaining.slice(0, limit);
+          result.next_sequence = remaining.length > limit ? result.tasks.at(-1).seq : null;
+          result.tasks_truncated = remaining.length > limit;
+          const releases = result.releases.filter((release) => release.seq > (req.params.after_release_sequence || 0));
+          result.releases = releases.slice(0, limit);
+          result.next_release_sequence = releases.length > limit ? result.releases.at(-1).seq : null;
+          result.preview_requested = result.preview_requested.filter(request => result.releases.some(release => release.release_id === request.release_id));
+          result.elaboration_requests = result.elaboration_requests.filter((request) => result.tasks.some((task) => task.task_id === request.task_id));
+          if (scenario.workspaceHeaderPending && !req.params.limit && !result.next_sequence) { mutable.headersReleased = true; for (const release of headerReplies) release(); headerReplies.clear(); }
+        }
+        return reply({ ok: true, data: result });
+      }
+      if (cmd === 'repository.list') {
+        const repository = { repository_id: REPO, root_path: '/repo-one', display_name: 'repo-one', registered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z', archived_at: null, archived_by_uid: null, archive_note: null, merged_into_repository_id: null, worktrees: [{ worktree_id: 'wmain', worktree_path: '/repo-one' }, { worktree_id: 'wfeature', worktree_path: '/repo-one/.worktrees/feature-ux' }, { worktree_id: 'wrelease', worktree_path: '/repo-one/.worktrees/release-candidate' }] };
+        if (scenario.workspaceViewer) return reply({ ok: false, error: { code: 'permission_denied', message: 'Registry requires administrator', detail: '' } });
+        if (scenario.workspacePaging && ['rffffffffffffffff', 'release-clone'].includes(req.params.repository_id)) {
+          const alias = req.params.repository_id === 'release-clone';
+          return reply({ ok: true, data: { repositories: [{ ...repository, repository_id: req.params.repository_id, display_name: alias ? '0.1.3-generated' : 'Late repository', root_path: alias ? '/srv/releases/0.1.3-generated' : '/srv/repos/late-repository', repository_source: alias ? { key: 'repo-one-origin', name: 'repo-one' } : null, worktrees: [] }] } });
+        }
+        if (scenario.workspacePaging && req.params.after_repository_id) {
+          if (!mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
+          return reply({ ok: true, data: { repositories: [], next_repository_id: null } });
+        }
+        if (scenario.workspaceLongList) {
+          if (req.params.after_worktree_id) repository.worktrees = repository.worktrees.slice(2);
+          else { repository.worktrees = repository.worktrees.slice(0, 2); repository.next_worktree_id = 'wfeature'; }
+        }
+        return reply({ ok: true, data: { repositories: [repository], ...(scenario.workspacePaging ? { next_repository_id: REPO } : {}) } });
+      }
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
+      if (scenario.workspaceStableOptional && ['usage.repositories', 'progress.repositories'].includes(cmd)) {
+        if (!mutable.cacheReleased) await new Promise(resolve => delayedReplies.add(resolve));
+        const result = fixtures(scenario)[cmd];
+        result.repositories = result.repositories.filter(row => [REPO, 'r2'].includes(row.repository_id));
+        return reply({ ok: true, data: result });
+      }
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {
         if (scenario.dashboardUsagePending) await new Promise((resolve) => delayedReplies.add(resolve));
@@ -787,16 +900,30 @@ async function startFakeDaemon(dir) {
       const data = fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })[cmd];
       if (data === undefined) return reply({ ok: false, error: { code: 'operation_unknown', message: cmd, detail: '' } });
       return reply({ ok: true, data: data });
+      } finally { pendingHandlers--; notifyIdle(); }
     });
   });
   await new Promise((r) => server.listen(socketPath, r));
   return {
     socketPath,
     calls,
-    setScenario: (s) => { for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { draining = false; for (const release of headerReplies) release(); headerReplies.clear(); mutable.headersReleased = false; for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.performancePendingServed.clear(); mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
-    releaseDelayed: () => { mutable.cacheReleased = true; for (const release of delayedReplies) release(); delayedReplies.clear(); },
+    mutateTestSweep: () => { mutable.testSweepMutated = true; },
+    releaseDelayed: () => { mutable.cacheReleased = true; mutable.headersReleased = true; for (const release of headerReplies) release(); headerReplies.clear(); for (const release of delayedReplies) release(); delayedReplies.clear(); },
+    async drain() {
+      draining = true;
+      this.releaseDelayed();
+      if (!connections.size && !pendingHandlers) return;
+      await new Promise((resolve, reject) => {
+        const deadline = AbortSignal.timeout(30000);
+        const idle = () => { idleWaiters.delete(idle); deadline.removeEventListener('abort', expired); resolve(); };
+        const expired = () => { idleWaiters.delete(idle); reject(new Error(`Fixture isolation deadline reached: ${connections.size} connections, ${pendingHandlers} handlers`)); };
+        idleWaiters.add(idle);
+        deadline.addEventListener('abort', expired, { once: true });
+      });
+    },
     waitForReceivedAfter: (after) => {
       if (calls.length > after) return Promise.resolve(calls[after]);
       return new Promise((resolve,reject) => {
@@ -846,7 +973,7 @@ async function main() {
   const payload = { generation: 1, published_at: 'x', domain: BASE, routes: [], access: { owners: ['owner@example.test'], grants: [] } };
   await fs.writeFile(path.join(tmp, 'routes.json'), JSON.stringify({ schema: 1, payload_sha256: crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'), ...payload }));
   const secret = 'console-verify-secret-0123456789';
-  const edge = await createEdge({ baseDomain: BASE, consoleHost: HOST, httpPort: 0, httpOnly: true, sessionSecret: secret, oidcIssuer: 'http://127.0.0.1:1/', oidcClientId: '', oidcClientSecret: '', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'), daemonSocket: daemon.socketPath, consoleDir: path.resolve(path.dirname(new URL(import.meta.url).pathname)) }, { log: { info() {}, warn() {}, error: (...a) => console.error('edge', ...a), debug() {} } });
+  const edge = await createEdge({ baseDomain: BASE, consoleHost: HOST, httpPort: 0, httpOnly: true, sessionSecret: secret, oidcIssuer: 'http://127.0.0.1:1/', oidcClientId: '', oidcClientSecret: '', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'), daemonSocket: daemon.socketPath, uiSourceRevision: process.env.CONSOLE_VERIFY_SOURCE_REVISION || '', consoleDir: path.resolve(path.dirname(new URL(import.meta.url).pathname)) }, { log: { info() {}, warn() {}, error: (...a) => console.error('edge', ...a), debug() {} } });
   const [port] = await edge.listen();
   const sessions = createSessionManager({ secret, ttlMs: 3600000, cookieName: 'dc2_session', cookieDomain: `.${BASE}`, secure: false });
   const holdFile = process.env.CONSOLE_VERIFY_HOLD_FILE;
@@ -854,7 +981,7 @@ async function main() {
     const scenarioName = process.env.CONSOLE_VERIFY_HOLD_SCENARIO || 'populated';
     const scenario = SCENARIOS[scenarioName];
     if (!scenario) throw new Error(`unknown hold scenario ${scenarioName}`);
-    daemon.setScenario(scenario);
+    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY ? { performancePendingRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_ONCE ? { performancePendingOnce: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS ? { delayMs: Number(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS), delayRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_REPOSITORY || null, delayOperations: (process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_OPERATIONS || 'performance.overview,performance.review').split(',').filter(Boolean) } : {}) });
     const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
     const holdView = process.env.CONSOLE_VERIFY_HOLD_VIEW || `#/deployments/${DEP}`;
     const targetUrl = `http://${HOST}:${port}/${holdView}`;
@@ -955,7 +1082,7 @@ async function main() {
 
   if (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY || process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY || process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY || process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
     try {
-      const translatedViewports = process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [{ width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
+      const translatedViewports = process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [...(process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? [{ width: 1001, height: 900 }] : []), { width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
       for (const viewport of translatedViewports) {
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
@@ -999,6 +1126,7 @@ async function main() {
 
   if (process.env.CONSOLE_VERIFY_USAGE_ONLY) {
     try {
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true });
       const context = await browser.newContext({ viewport: VIEWPORTS.wide, reducedMotion: 'reduce', colorScheme: 'light' });
       const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
       await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
@@ -1007,6 +1135,13 @@ async function main() {
       await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
       await page.waitForSelector('.usage-phase-chart');
       check('usage-only: scope control renders for the canonical repository', await page.locator('[data-usage-worktree-scope-toggle]').innerText() === 'Worktree scope · All worktrees');
+      check('usage-only: registry scope reads only this repository and follows its worktree cursor',
+        daemon.calls.some((call) => call.operation === 'repository.list' && call.params.repository_id === REPO && call.params.after_worktree_id === 'wfeature')
+        && daemon.calls.filter((call) => call.operation === 'repository.list' && !call.params.repository_id).length <= 1);
+      await page.click('[data-usage-coverage-hint-toggle]');
+      const explanation = page.locator('.usage-coverage-popover:not([hidden])');
+      check('usage-only: completeness explanation is a real focused contextual overlay', await explanation.getAttribute('role') === 'dialog' && !!await explanation.getAttribute('data-ui-contextual-overlay') && await explanation.evaluate((element) => document.activeElement === element && getComputedStyle(element).position === 'absolute'));
+      await page.keyboard.press('Escape');
       check('usage-only: phase chart fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
       await page.setViewportSize({ width: 810, height: 867 });
       await page.reload();
@@ -1060,9 +1195,9 @@ async function main() {
             try {
             daemon.setScenario({ ...SCENARIOS.populated, cacheState, holdWorkspaceUsage: route === 'deployments' });
             if (route === 'deployments') {
-              const sidebarRequest = page.waitForRequest(request => request.url().endsWith('/api/v2/usage.repositories')).catch(error => ({ error }));
+              const sidebarRequest = page.waitForRequest(request => request.url().endsWith('/api/v3/usage.repositories')).catch(error => ({ error }));
               let sidebarReplyReceived = false;
-              const sidebarReply = page.waitForResponse(response => response.url().endsWith('/api/v2/usage.repositories'))
+              const sidebarReply = page.waitForResponse(response => response.url().endsWith('/api/v3/usage.repositories'))
                 .then(response => { sidebarReplyReceived = true; return response; }).catch(error => ({ error }));
               await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route + '?repository=' + REPO);
               await page.locator('.deployments-dashboard .deployment-record').first().waitFor();
@@ -1092,7 +1227,7 @@ async function main() {
             }
             const operation = route === 'usage' ? 'usage.repositories' : route.startsWith('progress') ? 'progress.repository' : 'usage.repository';
             const failed = ['failed', 'unavailable'].includes(cacheState);
-            const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v2/' + name)) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
+            const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v3/' + name)) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
             await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
             await page.waitForFunction(() => /Loading usage|Rebuilding usage cache|Indexing usage cache|Saved usage|Refresh failed/i.test(document.querySelector('main').innerText + ' ' + (document.querySelector('.usage-coverage-indicator')?.title || '')));
             const before = await page.evaluate(() => document.querySelector('main').innerText + ' ' + (document.querySelector('.usage-coverage-indicator')?.title || ''));
@@ -1147,34 +1282,30 @@ async function main() {
       page.on('dialog', (d) => d.accept());
       for (const view of VIEWS) {
         const label = `${scenarioName}-${view.replace(/[#/]+/g, '_').replace(/^_/, '')}-${vpName}`;
-        const delayedOperation=view==='#/tests'?'test.list':view.startsWith('#/tests/')?'test.evidence.get':null;
-        // Hold the Tests collection response after shell/repository admission.
+        const delayedOperations=view==='#/tests'?['test.list']:view.startsWith('#/tests/')?['test.evidence.get','test.evidence.lookup']:view.startsWith('#/decisions')?['decision.tail']:null;
+        // Hold collection/detail responses after shell/repository admission.
         // Holding an arbitrary earlier request measured a different loading state.
-        if (scenario.delayMs) daemon.setScenario(delayedOperation ? {...scenario,delayOperations:[delayedOperation]} : scenario);
+        if (scenario.delayMs) await isolateScenario(page, daemon, { ...scenario, delayExceptOperations: ['user.whoami'], ...(delayedOperations ? { delayOperations: delayedOperations } : {}) });
         const callsBeforeNavigation = daemon.calls.length;
         const scopedView = ['#/deployments', '#/tests'].includes(view) ? `${view}?repository=${REPO}` : ['#/plan', '#/progress', '#/usage', '#/decisions'].includes(view) ? `${view}/${REPO}` : view;
-        await page.goto(`http://${HOST}:${port}/${scopedView}`);
+        const targetUrl = `http://${HOST}:${port}/${scopedView}`;
+        const loadingRequest = scenario.delayMs ? page.waitForRequest(request => currentDocumentRequest(request, page, targetUrl, delayedOperations), { timeout: 30000 }) : null;
+        loadingRequest?.catch(() => {}); // Navigation failure must not leave an unobserved wait rejection.
+        let triggerRequest = null;
+        await page.goto(targetUrl);
         if (scenario.delayMs) {
-          if (delayedOperation) {
+          try {
+            const request = await loadingRequest;
+            triggerRequest = { operation: new URL(request.url()).pathname.split('/').at(-1), method: request.method(), currentDocument: request.frame() === page.mainFrame() && request.frame().url() === targetUrl };
             let cursor=callsBeforeNavigation;
-            while ((await daemon.waitForReceivedAfter(cursor++)).operation !== delayedOperation) {}
-          } else {
-            const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
-            if (firstPending.operation === 'user.whoami') {
-              daemon.releaseDelayed();
-              await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
-            }
+            while ((await daemon.waitForReceivedAfter(cursor++)).operation !== triggerRequest.operation) {}
+          } catch (error) {
+            throw new Error(`${label}: loading request was not admitted: ${JSON.stringify({ error: error.name, triggerRequest, document: await documentEvidence(page), calls: relevantCalls(daemon.calls.slice(callsBeforeNavigation)) })}`);
           }
           await waitForRenderFrame(page);
-          const loading = await page.evaluate(() => ({
-            visible: Boolean(document.querySelector('.skeleton')) || /Loading/.test(document.body.innerText),
-            hash: location.hash,
-            text: document.body.innerText.slice(0, 400),
-            html: document.querySelector('main')?.innerHTML.slice(0, 500),
-          }));
+          const loading = await page.evaluate(() => ({ visible: Boolean(document.querySelector('.skeleton')) || /Loading/.test(document.body.innerText) }));
           if (!loading.visible) {
-            loading.calls = daemon.calls.slice(callsBeforeNavigation).map((call) => call.operation);
-            throw new Error(`${label}: loading surface did not render: ${JSON.stringify(loading)}`);
+            throw new Error(`${label}: loading surface did not render: ${JSON.stringify({ ...loading, triggerRequest, document: await documentEvidence(page), calls: relevantCalls(daemon.calls.slice(callsBeforeNavigation)) })}`);
           }
         }
         else {
@@ -1250,7 +1381,9 @@ async function main() {
         check(`${label}: no horizontal document overflow`, metrics.overflow <= 0, `overflow ${metrics.overflow}px`);
         check(`${label}: no clipped headline text`, metrics.clipped.length === 0, metrics.clipped.join(' | '));
         check(`${label}: no off-canvas controls outside scroll containers`, metrics.offscreen === 0, `${metrics.offscreen} off-canvas`);
-        check(`${label}: destination remains reachable in context`, metrics.headingHref === metrics.expectedDestinationHref || view === '#/tests' && await page.locator('#workspace-aspects a[aria-current][href^="#/tests?repository="]').count() === 1, `${metrics.headingHref} != ${metrics.expectedDestinationHref}`);
+        const destinationReachable = metrics.headingHref === metrics.expectedDestinationHref || view === '#/tests' && await page.locator('#workspace-aspects a[aria-current][href^="#/tests?repository="]').count() === 1;
+        check(`${label}: destination remains reachable in context`, destinationReachable, destinationReachable ? `${metrics.headingHref} != ${metrics.expectedDestinationHref}`
+          : JSON.stringify({ headingHref: metrics.headingHref, expectedDestinationHref: metrics.expectedDestinationHref, triggerRequest, document: await documentEvidence(page), calls: relevantCalls(daemon.calls.slice(callsBeforeNavigation)) }));
         check(`${label}: global header stays on one row`, metrics.headerHeight <= 64 && metrics.headerCenterSpread <= 2, `height ${metrics.headerHeight}px, center spread ${metrics.headerCenterSpread}px`);
         check(`${label}: Console tools use one compact menu`, !metrics.navVisible && metrics.navToggleVisible);
         if (PROJECT_DETAIL_VIEWS.has(view) && ['populated', 'empty', 'applying'].includes(scenarioName)) {
@@ -1354,7 +1487,7 @@ async function main() {
         }
         if (scenario.delayMs) {
           await page.goto('about:blank');
-          daemon.releaseDelayed();
+          await daemon.drain();
         }
       }
       await context.close();
@@ -1872,10 +2005,12 @@ async function main() {
   await page.goto(`http://${HOST}:${port}/#/tests/${TEST_RUN}`);
   await page.waitForSelector('#evidence-image:not([hidden])');
   await page.waitForFunction(() => document.querySelector('#evidence-canvas')?.dataset.draftCount === '0');
+  const evidenceMetadataCalls = () => daemon.calls.filter(call => ['test.evidence.get', 'test.evidence.lookup'].includes(call.operation));
   check('visual evidence: metadata loads before bounded image chunks',
-    daemon.calls.findIndex((call) => call.operation === 'test.evidence.get') >= 0
+    evidenceMetadataCalls().length === 1
     && daemon.calls.findIndex((call) => call.operation === 'test.evidence.image')
-      > daemon.calls.findIndex((call) => call.operation === 'test.evidence.get'));
+      > daemon.calls.findIndex((call) => ['test.evidence.get', 'test.evidence.lookup'].includes(call.operation)),
+    JSON.stringify({ metadata: evidenceMetadataCalls().map(call => call.operation), imageChunks: daemon.calls.filter(call => call.operation === 'test.evidence.image').length }));
   check('visual evidence: the real screenshot is primary with journey and capture context',
     await page.locator('.evidence-step').count() === 2
     && await page.locator('#evidence-image').count() === 1
@@ -1886,14 +2021,14 @@ async function main() {
   await page.click('[data-evidence-step="step-2"]');
   await page.waitForFunction(() => /Step 2 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   check('interaction: selecting a journey step updates locally without another metadata read',
-    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1
+    evidenceMetadataCalls().length === 1
     && /Invalid password/.test(await page.innerText('#evidence-current')));
   await page.click('[data-evidence-prev]');
   await page.waitForFunction(() => /Step 1 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   await page.click('[data-evidence-next]');
   await page.waitForFunction(() => /Step 2 of 2/.test(document.querySelector('#evidence-current')?.textContent || ''));
   check('interaction: previous and next controls traverse the same ordered journey locally',
-    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1);
+    evidenceMetadataCalls().length === 1);
   await page.click('[data-evidence-viewport="mobile"]');
   await page.waitForFunction(() => /390 × 844/.test(document.querySelector('#evidence-inspector')?.textContent || ''));
   check('interaction: viewport comparison keeps the same journey moment',
@@ -1904,7 +2039,7 @@ async function main() {
   await page.click('[data-evidence-kind="full_page"]');
   await page.waitForSelector('#evidence-image:not([hidden])');
   check('interaction: full-page evidence switches without re-reading the journey manifest',
-    daemon.calls.filter((call) => call.operation === 'test.evidence.get').length === 1);
+    evidenceMetadataCalls().length === 1);
   await page.click('[data-evidence-kind="viewport"]');
   await page.waitForSelector('#evidence-image:not([hidden])');
   await page.click('[data-evidence-finding="insufficient-text-contrast"]');
@@ -2408,6 +2543,16 @@ async function main() {
   const anchoredTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
   check('plan: vertical scrolling anchors the timeline to the earliest visible task', anchoredTimelineScroll > 0, String(anchoredTimelineScroll));
   await initialPlanViewport.evaluate((element) => element.scrollTo({ top: 0, left: 0, behavior: 'auto' }));
+  await page.waitForFunction(() => {
+    const viewport = document.querySelector('[data-plan-viewport]'), box = viewport.getBoundingClientRect();
+    const row = [...viewport.querySelectorAll('.gtask:not(.ghidden)')].find(element => { const rect = element.getBoundingClientRect(); return rect.bottom > box.top + 82 && rect.top < box.bottom; });
+    const bar = row?.querySelector('.gbar'), style = getComputedStyle(viewport.closest('.plan-workspace'));
+    if (!bar) return false;
+    const barBox = bar.getBoundingClientRect(), timelineLeft = box.left + parseFloat(style.getPropertyValue('--glabel'));
+    const center = barBox.left + barBox.width / 2;
+    return viewport.scrollTop <= 1 && center >= timelineLeft && center <= box.right
+      && barBox.bottom > box.top + 82 && barBox.top < box.bottom;
+  });
   await waitForRenderFrame(page);
   // The first visible row may be unsized or start after completed hidden work.
   // Vertical arrival must retain the automatic alignment, not force chart x=0.
@@ -2514,6 +2659,8 @@ async function main() {
   await page.locator('[data-plan-selection-toggle]').hover();
   check('interaction: leaving the task bar dismisses its detail badge',
     await page.locator('#plan-tooltip').isHidden());
+  await hoverTask.focus();
+  check('interaction: keyboard focus opens the same current estimate and progress tooltip', await page.locator('#plan-tooltip:not([hidden])').isVisible() && /100/.test(await page.innerText('#plan-tooltip')) && /0%/.test(await page.innerText('#plan-tooltip')));
 
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
   await page.waitForSelector(`[data-task-row="${P_C2}"].selected`);
@@ -2587,6 +2734,8 @@ async function main() {
     daemon.calls.some((call) => call.operation === 'task.update' && call.params.task_id === P_UNSIZED && call.params.estimated_loc === 240)
     && /~240 lines/.test(await page.innerText(`[data-task-row="${P_UNSIZED}"]`))
     && await page.locator(`.gbar.unsized[data-select-task="${P_UNSIZED}"]`).count() === 0);
+  await page.locator(`.gbar[data-hover-task="${P_UNSIZED}"]`).focus();
+  check('interaction: tooltip uses the newly edited estimate after a Plan refresh', await page.locator('#plan-tooltip:not([hidden])').isVisible() && /240/.test(await page.innerText('#plan-tooltip')));
 
   // Pointer resize persists through a full reload.
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);

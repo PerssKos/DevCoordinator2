@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "name": "no_domain_release_route_v2",
+  "name": "no_domain_release_route_v3",
   "purpose": "A delivered release without a public domain records the declared route component's port and never an arbitrary component port.",
   "authority": {
     "repository": {
@@ -36,7 +36,7 @@
   },
   "requests": {
     "local_success": {
-      "protocol": 2,
+      "protocol": 3,
       "id": "fixture-local",
       "operation": "release.deliver",
       "params": {
@@ -46,7 +46,7 @@
       "client": {"kind": "codex", "session": "fixture"}
     },
     "viewer_denied": {
-      "protocol": 2,
+      "protocol": 3,
       "id": "fixture-viewer",
       "operation": "release.deliver",
       "params": {
@@ -68,7 +68,7 @@
   },
   "expected": {
     "local_success": {
-      "protocol": 2,
+      "protocol": 3,
       "id": "fixture-local",
       "ok": true,
       "data": {

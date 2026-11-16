@@ -1,0 +1,26 @@
+# Dedicated, private PostgreSQL 17 authority for the owner-approved v3 cutover.
+[Unit]
+Description=DevCoordinator2 PostgreSQL authority
+After=local-fs.target
+
+[Service]
+Type=exec
+User=devcoordinator2-pg
+Group=devcoordinator2-pg
+ExecStart=/usr/lib/postgresql/17/bin/postgres -D /var/lib/devcoordinator2-postgres/data
+RuntimeDirectory=devcoordinator2-postgres
+RuntimeDirectoryMode=0700
+StateDirectory=devcoordinator2-postgres
+StateDirectoryMode=0700
+StandardOutput=null
+StandardError=null
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/devcoordinator2-postgres /run/devcoordinator2-postgres
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

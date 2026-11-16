@@ -1,4 +1,4 @@
-//! Import the established `DecisionHistory.md` format through protocol v2.
+//! Import the established `DecisionHistory.md` format through protocol v3.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -273,7 +273,7 @@ pub fn call(socket: &Path, params: Value) -> Result<ResponseEnvelope, String> {
         return Err("daemon response exceeds 256 KiB".to_owned());
     }
     serde_json::from_slice(&response)
-        .map_err(|error| format!("daemon returned invalid protocol v2: {error}"))
+        .map_err(|error| format!("daemon returned invalid protocol v3: {error}"))
 }
 
 fn plain(text: &str) -> String {
@@ -438,7 +438,7 @@ proxies each deployment by its leased port.
                 .read_line(&mut line)
                 .unwrap();
             let request: RequestEnvelope = serde_json::from_str(&line).unwrap();
-            assert_eq!(request.protocol, 2);
+            assert_eq!(request.protocol, 3);
             assert_eq!(request.operation, "decision.record");
             assert_eq!(request.params["ref"], "XX-1");
             let response = ResponseEnvelope::success(

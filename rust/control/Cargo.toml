@@ -19,13 +19,28 @@ required-features = ["root-acceptance"]
 test = false
 bench = false
 
+[[bin]]
+name = "devcoordinator2-migrate-authority"
+path = "src/bin/migrate_authority.rs"
+test = false
+bench = false
+
 [features]
-root-acceptance = []
-glossary-fixture = []
+test-fixtures = ["devcoordinator2-persistence/test-fixtures"]
+root-acceptance = ["test-fixtures"]
+glossary-fixture = ["test-fixtures"]
 
 [[example]]
 name = "glossary_console_fixture"
 required-features = ["glossary-fixture"]
+
+[[test]]
+name = "ticket_storage"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "test_lifecycle"
+required-features = ["test-fixtures"]
 
 [dependencies]
 base64.workspace = true
@@ -33,6 +48,7 @@ clap.workspace = true
 devcoordinator2-api = { path = "../api" }
 devcoordinator2-executor-core = { path = "../executor-core" }
 devcoordinator2-executor-protocol = { path = "../executor-protocol" }
+devcoordinator2-persistence = { path = "../persistence" }
 getrandom.workspace = true
 libc.workspace = true
 regex.workspace = true
@@ -54,4 +70,5 @@ tracing-subscriber.workspace = true
 tungstenite = { version = "=0.28.0", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
+devcoordinator2-persistence = { path = "../persistence", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }

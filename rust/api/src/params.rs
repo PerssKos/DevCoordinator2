@@ -274,11 +274,44 @@ fn default_test_history_limit() -> u16 {
     20
 }
 
-#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryList {
     #[serde(default)]
     pub include_archived: bool,
+    #[serde(default)]
+    pub after_repository_id: Option<String>,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default)]
+    pub after_worktree_id: Option<String>,
+    #[serde(default = "collection_page_size")]
+    #[schemars(range(min = 1, max = 200))]
+    pub limit: u16,
+}
+impl Default for RepositoryList {
+    fn default() -> Self {
+        Self {
+            include_archived: false,
+            after_repository_id: None,
+            repository_id: None,
+            after_worktree_id: None,
+            limit: collection_page_size(),
+        }
+    }
+}
+
+pub fn collection_page_size() -> u16 {
+    100
+}
+
+impl RepositoryList {
+    pub fn first_page() -> Self {
+        Self {
+            limit: collection_page_size(),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -810,6 +843,10 @@ macro_rules! deployment_params {
 }
 
 deployment_params!(DeploymentReference {});
+deployment_params!(DeploymentPreflight {
+    #[serde(default)]
+    pub candidate: Option<DeploymentCandidateSource>,
+});
 deployment_params!(DeploymentWait {
     pub deadline_at: String,
     pub state: DeploymentWaitState,
@@ -849,6 +886,13 @@ deployment_params!(DeploymentControl {
 });
 deployment_params!(DeploymentLogs {
     pub component: String,
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    pub generation: Option<u32>,
+    /// Stable component-wide process startup attempt; requires generation.
+    #[serde(default)]
+    #[schemars(range(min = 1))]
+    pub attempt: Option<u32>,
     #[serde(default = "default_deployment_tail")]
     #[schemars(range(min = 1, max = 5000))]
     pub tail_lines: u16,
@@ -902,7 +946,7 @@ pub struct RemoveContainer {
     pub container_id: String,
 }
 
-#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanReference {
     #[serde(default)]
@@ -910,9 +954,34 @@ pub struct PlanReference {
     #[serde(default)]
     pub repository_id: Option<String>,
     #[serde(default)]
-    pub offset: u32,
-    #[serde(default)]
     pub expected_revision: Option<String>,
+    /// Return bounded repository identity and presentation headers without Plan aggregates.
+    /// Valid only for a collection request, without path or repository_id.
+    #[serde(default)]
+    pub headers_only: bool,
+    #[serde(default)]
+    pub after_sequence: u32,
+    #[serde(default)]
+    pub after_release_sequence: u32,
+    #[serde(default)]
+    pub after_repository_id: Option<String>,
+    #[serde(default = "collection_page_size")]
+    #[schemars(range(min = 1, max = 200))]
+    pub limit: u16,
+}
+impl Default for PlanReference {
+    fn default() -> Self {
+        Self {
+            path: None,
+            repository_id: None,
+            headers_only: false,
+            expected_revision: None,
+            after_sequence: 0,
+            after_release_sequence: 0,
+            after_repository_id: None,
+            limit: collection_page_size(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1643,6 +1712,10 @@ mod tests {
         let catalog: LogCatalog = serde_json::from_value(serde_json::json!({"path": "/x"}))
             .expect("catalog may enumerate without phase or stream");
         assert!(catalog.phase.is_none() && catalog.stream.is_none());
+        let listing = crate::operation_schema("test.list").unwrap();
+        let limit = &listing["inputSchema"]["properties"]["limit"];
+        assert_eq!(limit["minimum"], 1);
+        assert_eq!(limit["maximum"], 50);
     }
 
     #[test]
@@ -1669,9 +1742,13 @@ mod tests {
 #[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestList {
+    /// Restrict the page to one exact registered repository ID.
+    #[serde(default)]
+    pub repository_id: Option<String>,
     #[serde(default)]
     pub after_worktree_id: Option<String>,
     #[serde(default)]
+    #[schemars(range(min = 1, max = 50))]
     pub limit: Option<u16>,
 }
 

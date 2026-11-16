@@ -1,8 +1,8 @@
 //! Permanent planning ledger and release-delivery evidence.
 
-use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::params::{
     DecisionRecord, DecisionSearch as DecisionSearchParams, DecisionSummarize,
     DecisionTail as DecisionTailParams, ReleaseCreate, ReleaseDeliver, ReleaseKind, ReleaseRequest,
@@ -11,12 +11,12 @@ use devcoordinator2_api::params::{
 use devcoordinator2_api::results::{
     CurrentReleaseSummary, Decision, DecisionRecorded, DecisionSearch, DecisionState,
     DecisionSummarized, DecisionSummary, DecisionTail, ElaborationRequest, PlanCollection,
-    PlanDetail, PlanEvent, PlanOverview, PlanRelease, PlanRepositoryRow, PlanTask, PreviewRequest,
-    ReleaseDelivered, ReleaseMutation, Task, TaskCreated, TaskHistory, TaskMutation,
+    PlanDetail, PlanEvent, PlanHeaderCollection, PlanOverview, PlanRelease, PlanRepositoryHeader,
+    PlanRepositoryRow, PlanTask, PreviewRequest, ReleaseDelivered, ReleaseMutation, Task,
+    TaskCreated, TaskHistory, TaskMutation,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::database::{Database, DatabaseError};
@@ -24,9 +24,6 @@ use crate::ids;
 
 const SUMMARY_DUE_THRESHOLD: u32 = 25;
 const HISTORY_EVENT_CAP: u32 = 200;
-const OVERVIEW_TASK_CAP: usize = 500;
-// Leave room for the protocol envelope and caller-specific response metadata.
-const OVERVIEW_PAGE_BYTES: usize = 192 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeliveryEvidence {
@@ -45,12 +42,12 @@ pub trait DeploymentEvidenceReader: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct SqliteDeploymentEvidence {
+pub struct PostgresDeploymentEvidence {
     database: Database,
     base_domain: Arc<str>,
 }
 
-impl SqliteDeploymentEvidence {
+impl PostgresDeploymentEvidence {
     pub fn new(database: Database, base_domain: impl Into<Arc<str>>) -> Self {
         Self {
             database,
@@ -113,7 +110,7 @@ struct ReleaseOverviewRow {
     delivered_at: Option<String>,
     url: Option<String>,
     port: Option<u16>,
-    historical: bool,
+    aggregate: Aggregate,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -141,15 +138,15 @@ struct StoredComponent {
     route: bool,
 }
 
-impl DeploymentEvidenceReader for SqliteDeploymentEvidence {
+impl DeploymentEvidenceReader for PostgresDeploymentEvidence {
     fn read(&self, deployment_id: &str) -> Result<DeliveryEvidence, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         let base_domain = Arc::clone(&self.base_domain);
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let deployment = connection
                     .query_row(
-                        "SELECT repository_id,current_generation,spec_json FROM deployments WHERE deployment_id=?1",
+                        "SELECT repository_id,current_generation,spec_json FROM deployments WHERE deployment_id=$1",
                         [&deployment_id],
                         |row| {
                             Ok(DeploymentRow {
@@ -174,8 +171,8 @@ impl DeploymentEvidenceReader for SqliteDeploymentEvidence {
                 };
                 let generation = connection
                     .query_row(
-                        "SELECT commit_hash,dirty,fingerprint FROM generations WHERE deployment_id=?1 AND number=?2",
-                        rusqlite::params![deployment_id, generation_number],
+                        "SELECT commit_hash,dirty,fingerprint FROM generations WHERE deployment_id=$1 AND number=$2",
+                        crate::database::params![deployment_id, generation_number],
                         |row| {
                             Ok((
                                 row.get::<_, Option<String>>(0)?,
@@ -189,7 +186,7 @@ impl DeploymentEvidenceReader for SqliteDeploymentEvidence {
 
                 let route = connection
                     .query_row(
-                        "SELECT domain,component,port FROM domain_routes WHERE deployment_id=?1 ORDER BY domain LIMIT 1",
+                        "SELECT domain,component,port FROM domain_routes WHERE deployment_id=$1 ORDER BY domain LIMIT 1",
                         [&deployment_id],
                         |row| {
                             Ok((
@@ -213,8 +210,8 @@ impl DeploymentEvidenceReader for SqliteDeploymentEvidence {
                         };
                         connection
                             .query_row(
-                                "SELECT port FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation IN (?3,0) ORDER BY generation DESC LIMIT 1",
-                                rusqlite::params![deployment_id, component, generation_number],
+                                "SELECT port FROM port_assignments WHERE deployment_id=$1 AND component=$2 AND generation IN ($3,0) ORDER BY generation DESC LIMIT 1",
+                                crate::database::params![deployment_id, component, generation_number],
                                 |row| row.get::<_, u16>(0),
                             )
                             .optional()?
@@ -297,48 +294,110 @@ impl PlanService {
     }
 
     pub fn overview(&self, repository_id: Option<&str>) -> Result<PlanOverview, ProtocolError> {
-        self.overview_page(repository_id, 0, None)
+        self.overview_page(
+            repository_id,
+            devcoordinator2_api::params::PlanReference::default(),
+        )
     }
 
     pub fn overview_page(
         &self,
         repository_id: Option<&str>,
-        offset: u32,
-        expected_revision: Option<&str>,
+        params: devcoordinator2_api::params::PlanReference,
     ) -> Result<PlanOverview, ProtocolError> {
+        if !(1..=200).contains(&params.limit) {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "plan page limit must be between 1 and 200",
+            ));
+        }
+        if params.headers_only {
+            if repository_id.is_some() || params.repository_id.is_some() || params.path.is_some() {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "plan headers require a repository collection request",
+                ));
+            }
+            return self
+                .plan_headers(params.after_repository_id, params.limit)
+                .map(PlanOverview::Headers);
+        }
         match repository_id {
             Some(repository_id) => {
-                page_plan_detail(self.plan_detail(repository_id)?, offset, expected_revision)
-                    .map(PlanOverview::Detail)
+                let revision = self.plan_revision(repository_id)?;
+                if params
+                    .expected_revision
+                    .as_deref()
+                    .is_some_and(|expected| expected != revision)
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::CursorStale,
+                        "the plan changed; load its first page again",
+                    ));
+                }
+                let mut detail = self.plan_detail(
+                    repository_id,
+                    params.after_sequence,
+                    params.after_release_sequence,
+                    params.limit,
+                )?;
+                if self.plan_revision(repository_id)? != revision {
+                    return Err(ProtocolError::new(
+                        ErrorCode::CursorStale,
+                        "the plan changed while reading; load its first page again",
+                    ));
+                }
+                detail.revision = revision;
+                Ok(PlanOverview::Detail(Box::new(detail)))
             }
-            None if offset == 0 && expected_revision.is_none() => {
-                self.plan_collection().map(PlanOverview::Collection)
-            }
-            None => Err(ProtocolError::new(
-                ErrorCode::ParamsInvalid,
-                "plan pagination requires a repository",
-            )),
+            None => self
+                .plan_collection(params.after_repository_id, params.limit)
+                .map(PlanOverview::Collection),
         }
     }
 
-    fn plan_collection(&self) -> Result<PlanCollection, ProtocolError> {
+    fn plan_revision(&self, repository_id: &str) -> Result<String, ProtocolError> {
+        let repository_id = repository_id.to_owned();
+        self.database
+            .read(move |connection| {
+                // Events are append-only and share each task/release mutation's
+                // transaction. Count also detects a later commit with an earlier ID.
+                let (head, count): (u64, u64) = connection.query_row(
+                "SELECT COALESCE(max(event_id),0),count(*) FROM plan_events WHERE repository_id=$1",
+                [&repository_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                Ok(Sha256::digest(format!("{repository_id}:{head}:{count}"))
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect())
+            })
+            .map_err(database_or_domain)
+    }
+
+    fn plan_headers(
+        &self,
+        after: Option<String>,
+        limit: u16,
+    ) -> Result<PlanHeaderCollection, ProtocolError> {
         let repositories = self
             .database
-            .call(|connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
                     "SELECT r.repository_id,r.display_name,p.display_name,p.icon,r.root_path FROM repositories r \
                      LEFT JOIN repository_presentation p ON p.repository_id=r.repository_id \
-                     WHERE r.archived_at IS NULL ORDER BY r.display_name,r.repository_id",
+                     WHERE r.archived_at IS NULL AND ($1::text IS NULL OR r.repository_id>$1) ORDER BY r.repository_id LIMIT $2",
                 )?;
                 Ok(statement
-                    .query_map([], |row| {
+                    .query_map(crate::database::params![after,u32::from(limit)+1], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?))
                     })?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_or_domain)?;
-        let mut rows = Vec::with_capacity(repositories.len());
-        for (repository_id, display_name, custom_name, icon, root_path) in repositories {
+        let has_more = repositories.len() > usize::from(limit);
+        let mut rows = Vec::with_capacity(usize::from(limit));
+        for (repository_id, display_name, custom_name, icon, root_path) in
+            repositories.into_iter().take(usize::from(limit))
+        {
             let presentation = (custom_name.is_some() || icon.is_some()).then(|| {
                 devcoordinator2_api::results::RepositoryPresentation {
                     repository_id: repository_id.clone(),
@@ -346,39 +405,80 @@ impl PlanService {
                     icon,
                 }
             });
+            rows.push(PlanRepositoryHeader {
+                repository_id,
+                display_name,
+                repository_source: crate::repository::repository_source_for_root(
+                    std::path::Path::new(&root_path),
+                ),
+                root_path,
+                presentation,
+            });
+        }
+        let mut has_more = has_more;
+        while serde_json::to_vec(&rows)
+            .map_err(|_| {
+                ProtocolError::new(ErrorCode::InternalError, "cannot encode plan headers")
+            })?
+            .len()
+            > 190 * 1024
+        {
+            if rows.len() <= 1 {
+                return Err(ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "one repository exceeds the plan header response budget",
+                ));
+            }
+            rows.pop();
+            has_more = true;
+        }
+        let next_repository_id = has_more.then(|| {
+            rows.last()
+                .expect("nonempty header page")
+                .repository_id
+                .clone()
+        });
+        Ok(PlanHeaderCollection {
+            headers: rows,
+            next_repository_id,
+        })
+    }
+
+    fn plan_collection(
+        &self,
+        after: Option<String>,
+        limit: u16,
+    ) -> Result<PlanCollection, ProtocolError> {
+        let headers = self.plan_headers(after, limit)?;
+        let has_more = headers.next_repository_id.is_some();
+        let mut rows = Vec::with_capacity(headers.headers.len());
+        for header in headers.headers {
+            let PlanRepositoryHeader {
+                repository_id,
+                display_name,
+                root_path,
+                repository_source,
+                presentation,
+            } = header;
             let repository_id_for_query = repository_id.clone();
             let (aggregate, current_release, elaboration_request_count, preview_requested) = self
                 .database
-                .call(move |connection| {
-                    let tasks = read_tasks(connection, &repository_id_for_query, true)?;
-                    let (aggregates, _) = leaf_aggregates(&tasks);
-                    let aggregate = aggregates.values().fold(Aggregate::default(), |mut total, row| {
-                        total.tasks_total += row.tasks_total;
-                        total.tasks_done += row.tasks_done;
-                        total.loc_total += row.loc_total;
-                        total.loc_done += row.loc_done;
-                        total
-                    });
-                    let releases = read_release_overviews(connection, &repository_id_for_query)?;
-                    let current_release = releases
-                        .iter()
-                        .find(|release| !release.historical && matches!(release.status.as_str(), "planned" | "requested"))
-                        .or_else(|| releases.iter().rev().find(|release| !release.historical))
-                        .map(|release| -> Result<CurrentReleaseSummary, DatabaseError> {
-                            Ok(CurrentReleaseSummary {
-                                name: release.name.clone(),
-                                kind: parse_release_kind(&release.kind)?,
-                                status: parse_release_status(&release.status)?,
-                            })
-                        })
-                        .transpose()?;
+                .read(move |connection| {
+                    let aggregate = connection.query_row(
+                        "SELECT COUNT(*),COUNT(*) FILTER(WHERE t.status='done'),COALESCE(SUM(t.estimated_loc),0)::bigint,COALESCE(SUM(t.estimated_loc) FILTER(WHERE t.status='done'),0)::bigint FROM tasks t WHERE t.repository_id=$1 AND t.status!='dropped' AND NOT EXISTS(SELECT 1 FROM tasks child WHERE child.repository_id=t.repository_id AND child.parent_task_id=t.task_id AND child.status!='dropped')",
+                        [&repository_id_for_query],aggregate_from_row,
+                    )?;
+                    let current_release = connection.query_row(
+                        "SELECT name,kind,status FROM releases r WHERE repository_id=$1 AND status!='dropped' AND NOT EXISTS(SELECT 1 FROM planning_recovery_records h WHERE h.record_kind='releases' AND h.record_id=r.release_id) ORDER BY CASE WHEN status IN ('planned','requested') THEN 0 ELSE 1 END,CASE WHEN status IN ('planned','requested') THEN seq ELSE NULL END,seq DESC LIMIT 1",
+                        [&repository_id_for_query],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)),
+                    ).optional()?.map(|(name,kind,status)|->Result<CurrentReleaseSummary,DatabaseError>{Ok(CurrentReleaseSummary{name,kind:parse_release_kind(&kind)?,status:parse_release_status(&status)?})}).transpose()?;
                     let elaboration_request_count = connection.query_row(
-                        "SELECT COUNT(*) FROM tasks WHERE repository_id=?1 AND elaboration_needed=1",
+                        "SELECT COUNT(*) FROM tasks WHERE repository_id=$1 AND elaboration_needed=1",
                         [&repository_id_for_query],
                         |row| row.get::<_, u32>(0),
                     )?;
                     let preview_requested = connection.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases'))",
+                        "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=$1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases'))",
                         [&repository_id_for_query],
                         |row| row.get::<_, i64>(0),
                     )? != 0;
@@ -388,9 +488,7 @@ impl PlanService {
             rows.push(PlanRepositoryRow {
                 repository_id,
                 display_name,
-                repository_source: crate::repository::repository_source_for_root(
-                    std::path::Path::new(&root_path),
-                ),
+                repository_source,
                 root_path,
                 presentation,
                 open_tasks: aggregate.tasks_total.saturating_sub(aggregate.tasks_done),
@@ -401,50 +499,82 @@ impl PlanService {
                 elaboration_request_count,
             });
         }
-        Ok(PlanCollection { repositories: rows })
+        let mut has_more = has_more;
+        while serde_json::to_vec(&rows)
+            .map_err(|_| domain_error(ErrorCode::InternalError, "cannot encode plan page"))
+            .map_err(database_or_domain)?
+            .len()
+            > 190 * 1024
+        {
+            if rows.len() <= 1 {
+                return Err(ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "one repository exceeds the plan response budget",
+                ));
+            }
+            rows.pop();
+            has_more = true;
+        }
+        let next_repository_id =
+            has_more.then(|| rows.last().expect("nonempty page").repository_id.clone());
+        Ok(PlanCollection {
+            repositories: rows,
+            next_repository_id,
+        })
     }
 
-    fn plan_detail(&self, repository_id: &str) -> Result<PlanDetail, ProtocolError> {
+    fn plan_detail(
+        &self,
+        repository_id: &str,
+        after_sequence: u32,
+        after_release_sequence: u32,
+        limit: u16,
+    ) -> Result<PlanDetail, ProtocolError> {
         let repository_id_owned = repository_id.to_owned();
-        let (display_name, archived, replacement, releases, mut tasks) = self
+        let (repository, releases, mut tasks) = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let repository = connection
                     .query_row(
-                        "SELECT display_name,archived_at IS NOT NULL,merged_into_repository_id FROM repositories WHERE repository_id=?1",
+                        "SELECT r.display_name,r.archived_at IS NOT NULL,r.merged_into_repository_id,r.root_path,p.display_name,p.icon FROM repositories r LEFT JOIN repository_presentation p USING(repository_id) WHERE r.repository_id=$1",
                         [&repository_id_owned],
                         |row| {
                             Ok((
                                 row.get::<_, String>(0)?,
                                 row.get::<_, i64>(1)? != 0,
                                 row.get::<_, Option<String>>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, Option<String>>(5)?,
                             ))
                         },
                     )
                     .optional()?;
-                let Some((display_name, archived, replacement)) = repository else {
+                let Some(repository) = repository else {
                     return Err(domain_error(
                         ErrorCode::RepositoryNotFound,
                         "repository is not registered",
                     ));
                 };
                 Ok((
-                    display_name,
-                    archived,
-                    replacement,
-                    read_release_overviews(connection, &repository_id_owned)?,
-                    read_tasks(connection, &repository_id_owned, false)?,
+                    repository,
+                    read_release_overviews(connection, &repository_id_owned,after_release_sequence,limit)?,
+                    read_tasks(connection, &repository_id_owned,after_sequence,limit)?,
                 ))
             })
             .map_err(database_or_domain)?;
-        let (aggregates, _) = leaf_aggregates(&tasks);
-        let releases = releases
+        let (display_name, archived, replacement, root_path, custom_name, icon) = repository;
+        let presentation = (custom_name.is_some() || icon.is_some()).then(|| {
+            devcoordinator2_api::results::RepositoryPresentation {
+                repository_id: repository_id.to_owned(),
+                display_name: custom_name,
+                icon,
+            }
+        });
+        let mut releases = releases
             .into_iter()
             .map(|release| {
-                let aggregate = aggregates
-                    .get(&Some(release.release_id.clone()))
-                    .copied()
-                    .unwrap_or_default();
+                let aggregate = release.aggregate;
                 Ok(PlanRelease {
                     release_id: release.release_id,
                     name: release.name,
@@ -463,22 +593,15 @@ impl PlanService {
                 })
             })
             .collect::<Result<Vec<_>, ProtocolError>>()?;
-        let tasks_truncated = tasks.len() > OVERVIEW_TASK_CAP;
-        if tasks_truncated {
-            let mut open = tasks
-                .iter()
-                .filter(|task| task.status != "done")
-                .cloned()
-                .collect::<Vec<_>>();
-            let done = tasks
-                .into_iter()
-                .filter(|task| task.status == "done")
-                .collect::<Vec<_>>();
-            let remaining = OVERVIEW_TASK_CAP.saturating_sub(open.len());
-            open.extend(done.into_iter().rev().take(remaining));
-            open.sort_by_key(|task| task.seq);
-            tasks = open;
-        }
+        let releases_truncated = releases.len() > usize::from(limit);
+        releases.truncate(usize::from(limit));
+        let next_release_sequence =
+            releases_truncated.then(|| releases.last().expect("nonempty release page").seq);
+        tasks.retain(|task| task.seq > after_sequence);
+        tasks.sort_by_key(|task| task.seq);
+        let tasks_truncated = tasks.len() > usize::from(limit);
+        tasks.truncate(usize::from(limit));
+        let next_sequence = tasks_truncated.then(|| tasks.last().expect("nonempty task page").seq);
         let tasks = tasks
             .into_iter()
             .map(|task| {
@@ -498,25 +621,65 @@ impl PlanService {
             })
             .collect::<Result<Vec<_>, ProtocolError>>()?;
         let repository_id = repository_id.to_owned();
-        let preview_requested = self.preview_requests(&repository_id)?;
+        let release_ids = releases
+            .iter()
+            .map(|release| release.release_id.clone())
+            .collect::<Vec<_>>();
+        let preview_requested = self.preview_requests_for(&repository_id, Some(release_ids))?;
+        let task_ids = tasks
+            .iter()
+            .map(|task| task.task_id.clone())
+            .collect::<Vec<_>>();
+        let elaboration_requests = self.elaboration_requests_for(&repository_id, Some(task_ids))?;
         let unsummarized_count = self.unsummarized_count(&repository_id)?;
-        Ok(PlanDetail {
+        let mut detail = PlanDetail {
             repository_id: repository_id.clone(),
             display_name,
+            repository_source: crate::repository::repository_source_for_root(std::path::Path::new(
+                &root_path,
+            )),
+            presentation,
             archived,
             merged_into_repository_id: replacement,
             releases,
             tasks,
             tasks_truncated,
-            elaboration_requests: self.elaboration_requests(&repository_id)?,
+            next_sequence,
+            next_release_sequence,
+            elaboration_requests,
             preview_requested,
             decisions: DecisionState {
                 unsummarized_count,
                 summary_due: unsummarized_count >= SUMMARY_DUE_THRESHOLD,
             },
             revision: String::new(),
-            next_offset: None,
-        })
+        };
+        while serde_json::to_vec(&detail)
+            .map_err(|_| ProtocolError::new(ErrorCode::InternalError, "cannot encode plan page"))?
+            .len()
+            > 192 * 1024
+        {
+            if detail.tasks.len() > 1 {
+                let removed = detail.tasks.pop().expect("nonempty task page");
+                detail
+                    .elaboration_requests
+                    .retain(|request| request.task_id != removed.task_id);
+                detail.next_sequence = detail.tasks.last().map(|task| task.seq);
+                detail.tasks_truncated = true;
+            } else if detail.releases.len() > 1 {
+                let removed = detail.releases.pop().expect("nonempty release page");
+                detail
+                    .preview_requested
+                    .retain(|request| request.release_id != removed.release_id);
+                detail.next_release_sequence = detail.releases.last().map(|release| release.seq);
+            } else {
+                return Err(ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "one plan record exceeds the response budget",
+                ));
+            }
+        }
+        Ok(detail)
     }
 
     pub fn create_task(
@@ -582,14 +745,15 @@ impl PlanService {
         let (seq, position) = self
             .database
             .transaction(move |transaction| {
+                lock_repository(transaction, &repository_id_owned)?;
                 let seq: u32 = transaction.query_row(
-                    "SELECT COALESCE(MAX(seq),0)+1 FROM tasks WHERE repository_id=?1",
+                    "SELECT COALESCE(MAX(seq),0)+1 FROM tasks WHERE repository_id=$1",
                     [&repository_id_owned],
                     |row| row.get(0),
                 )?;
                 transaction.execute(
-                    "INSERT INTO tasks(task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,created_at,created_by,updated_at) VALUES(?1,?2,?3,?4,?5,0,?6,?7,?8,?9,?10,?11,?12,'planned',?13,?14,?15,?14)",
-                    rusqlite::params![
+                    "INSERT INTO tasks(task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,created_at,created_by,updated_at) VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,$9,$10,$11,$12,'planned',$13,$14,$15,$14)",
+                    crate::database::params![
                         task_id_for_insert,
                         repository_id_owned,
                         parent_task_id,
@@ -666,9 +830,9 @@ impl PlanService {
             TaskStatus::Dropped => "dropped",
         });
         let limit = usize::from(params.limit);
-        let mut tasks = self.database.call(move |connection| {
-            let mut statement = connection.prepare("SELECT task_id,seq,title,status FROM tasks WHERE repository_id=?1 AND (?2 IS NULL OR status=?2) AND seq>?3 AND instr(lower(title || ' ' || coalesce(outcome,'') || ' ' || coalesce(technical_note,'')),lower(?4))>0 ORDER BY seq LIMIT ?5")?;
-            let rows = statement.query_map(rusqlite::params![repository_id, status, params.after_sequence as i64, params.query, i64::from(params.limit)+1], |row| {
+        let mut tasks = self.database.read(move |connection| {
+            let mut statement = connection.prepare("SELECT task_id,seq,title,status FROM tasks WHERE repository_id=$1 AND ($2::text IS NULL OR status=$2) AND seq>$3 AND strpos(lower(title || ' ' || coalesce(outcome,'') || ' ' || coalesce(technical_note,'')),lower($4))>0 ORDER BY seq LIMIT $5")?;
+            let rows = statement.query_map(crate::database::params![repository_id, status, params.after_sequence as i64, params.query, i64::from(params.limit)+1], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
             })?.collect::<Result<Vec<_>, _>>()?;
             rows.into_iter().map(|(task_id, sequence, title, status)| Ok(TaskSearchHit { task_id, sequence: sequence as u64, title, status: parse_task_status(&status)? })).collect::<Result<Vec<_>, DatabaseError>>()
@@ -690,12 +854,12 @@ impl PlanService {
         let task_id = task_id.to_owned();
         let (events, events_truncated) = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT event,from_value,to_value,actor,at,note FROM plan_events WHERE subject_kind='task' AND subject_id=?1 ORDER BY event_id DESC LIMIT ?2",
+                    "SELECT event,from_value,to_value,actor,at,note FROM plan_events WHERE subject_kind='task' AND subject_id=$1 ORDER BY event_id DESC LIMIT $2",
                 )?;
                 let rows = statement
-                    .query_map(rusqlite::params![task_id, HISTORY_EVENT_CAP + 1], |row| {
+                    .query_map(crate::database::params![task_id, HISTORY_EVENT_CAP + 1], |row| {
                         Ok(PlanEvent {
                             event: row.get(0)?,
                             from: row.get(1)?,
@@ -889,9 +1053,17 @@ impl PlanService {
         let position = self
             .database
             .transaction(move |transaction| {
+                lock_repository(transaction, &transaction_repository_id)?;
+                let current = transaction.query_row(
+                    "SELECT task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at FROM tasks WHERE task_id=$1",
+                    [&task_id], task_from_row,
+                )?;
+                if current != old {
+                    return Err(domain_error(ErrorCode::ConfigurationConflict,"task changed; read its current history before updating it"));
+                }
                 transaction.execute(
-                    "UPDATE tasks SET parent_task_id=?1,release_id=?2,title=?3,outcome=?4,impact=?5,unblock_condition=?6,verification=?7,technical_note=?8,status=?9,estimated_loc=?10,elaboration_needed=?11,updated_at=?12 WHERE task_id=?13",
-                    rusqlite::params![
+                    "UPDATE tasks SET parent_task_id=$1,release_id=$2,title=$3,outcome=$4,impact=$5,unblock_condition=$6,verification=$7,technical_note=$8,status=$9,estimated_loc=$10,elaboration_needed=$11,updated_at=$12 WHERE task_id=$13",
+                    crate::database::params![
                         transaction_updated.parent_task_id,
                         transaction_updated.release_id,
                         transaction_updated.title,
@@ -1036,18 +1208,19 @@ impl PlanService {
         let seq = self
             .database
             .transaction(move |transaction| {
+                lock_repository(transaction, &repository_id_owned)?;
                 let seq = match requested_seq {
                     Some(seq) => seq,
                     None => transaction.query_row(
-                        "SELECT COALESCE(MAX(seq),0)+1 FROM releases WHERE repository_id=?1",
+                        "SELECT COALESCE(MAX(seq),0)+1 FROM releases WHERE repository_id=$1",
                         [&repository_id_owned],
                         |row| row.get(0),
                     )?,
                 };
                 transaction
                     .execute(
-                        "INSERT INTO releases(release_id,repository_id,seq,name,kind,status,note,requested_at,created_at,created_by,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?9)",
-                        rusqlite::params![
+                        "INSERT INTO releases(release_id,repository_id,seq,name,kind,status,note,requested_at,created_at,created_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$9)",
+                        crate::database::params![
                             release_id_for_insert,
                             repository_id_owned,
                             seq,
@@ -1061,11 +1234,11 @@ impl PlanService {
                         ],
                     )
                     .map_err(|error| match error {
-                        rusqlite::Error::SqliteFailure(_, _) => domain_error(
+                        error if error.is_unique_violation() => domain_error(
                             ErrorCode::ParamsInvalid,
                             format!("release sequence {seq} is already in use"),
                         ),
-                        other => DatabaseError::Sqlite(other),
+                        other => DatabaseError::from(other),
                     })?;
                 append_plan_event(
                     transaction,
@@ -1179,10 +1352,19 @@ impl PlanService {
         let now = now.to_owned();
         self.database
             .transaction(move |transaction| {
+                lock_repository(transaction, &transaction_release.repository_id)?;
+                let current: (u32,String,String,Option<String>) = transaction.query_row(
+                    "SELECT seq,name,status,note FROM releases WHERE release_id=$1",
+                    [&transaction_release.release_id],
+                    |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+                )?;
+                if current != (old.seq,old.name.clone(),old.status.clone(),old.note.clone()) {
+                    return Err(domain_error(ErrorCode::ConfigurationConflict,"release changed; refresh before updating it"));
+                }
                 transaction
                     .execute(
-                        "UPDATE releases SET seq=?1,name=?2,note=?3,status=?4,updated_at=?5 WHERE release_id=?6",
-                        rusqlite::params![
+                        "UPDATE releases SET seq=$1,name=$2,note=$3,status=$4,updated_at=$5 WHERE release_id=$6",
+                        crate::database::params![
                             transaction_release.seq,
                             transaction_release.name,
                             transaction_release.note,
@@ -1192,14 +1374,14 @@ impl PlanService {
                         ],
                     )
                     .map_err(|error| match error {
-                        rusqlite::Error::SqliteFailure(_, _) => domain_error(
+                        error if error.is_unique_violation() => domain_error(
                             ErrorCode::ParamsInvalid,
                             format!(
                                 "release sequence {} is already in use",
                                 transaction_release.seq
                             ),
                         ),
-                        other => DatabaseError::Sqlite(other),
+                        other => DatabaseError::from(other),
                     })?;
                 if let Some((from, to)) = status_event {
                     append_plan_event(
@@ -1245,10 +1427,10 @@ impl PlanService {
         let release_id = params.release_id.clone();
         let release = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT repository_id,name,status FROM releases WHERE release_id=?1",
+                        "SELECT repository_id,name,status FROM releases WHERE release_id=$1",
                         [&release_id],
                         |row| {
                             Ok((
@@ -1306,9 +1488,12 @@ impl PlanService {
         let evidence_for_update = evidence.clone();
         self.database
             .transaction(move |transaction| {
+                lock_repository(transaction, &update_repository_id)?;
+                let current: String = transaction.query_row("SELECT status FROM releases WHERE release_id=$1", [&update_release_id], |row| row.get(0))?;
+                if current != prior_status { return Err(domain_error(ErrorCode::ConfigurationConflict,"release changed before delivery; refresh before delivering")); }
                 transaction.execute(
-                    "UPDATE releases SET status='delivered',delivered_at=?1,deployment_id=?2,generation_number=?3,commit_hash=?4,dirty=?5,fingerprint=?6,url=?7,port=?8,updated_at=?1 WHERE release_id=?9",
-                    rusqlite::params![
+                    "UPDATE releases SET status='delivered',delivered_at=$1,deployment_id=$2,generation_number=$3,commit_hash=$4,dirty=$5,fingerprint=$6,url=$7,port=$8,updated_at=$1 WHERE release_id=$9",
+                    crate::database::params![
                         transaction_now,
                         evidence_for_update.deployment_id,
                         evidence_for_update.generation_number,
@@ -1321,8 +1506,8 @@ impl PlanService {
                     ],
                 )?;
                 transaction.execute(
-                    "INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at,note) VALUES(?1,'release',?2,'delivered',?3,?4,?5,?6,?7)",
-                    rusqlite::params![
+                    "INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at,note) VALUES($1,'release',$2,'delivered',$3,$4,$5,$6,$7)",
+                    crate::database::params![
                         update_repository_id,
                         update_release_id,
                         prior_status,
@@ -1393,15 +1578,16 @@ impl PlanService {
         let seq = self
             .database
             .transaction(move |transaction| {
+                lock_repository(transaction, &repository_id_owned)?;
                 let seq: u32 = transaction.query_row(
-                    "SELECT COALESCE(MAX(seq),0)+1 FROM decisions WHERE repository_id=?1",
+                    "SELECT COALESCE(MAX(seq),0)+1 FROM decisions WHERE repository_id=$1",
                     [&repository_id_owned],
                     |row| row.get(0),
                 )?;
                 transaction
                     .execute(
-                        "INSERT INTO decisions(decision_id,repository_id,seq,ref,aspect,title,body,technical_note,created_at,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                        rusqlite::params![
+                        "INSERT INTO decisions(decision_id,repository_id,seq,ref,aspect,title,body,technical_note,created_at,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                        crate::database::params![
                             decision_id_for_insert,
                             repository_id_owned,
                             seq,
@@ -1415,17 +1601,20 @@ impl PlanService {
                         ],
                     )
                     .map_err(|error| match error {
-                        rusqlite::Error::SqliteFailure(_, _) => domain_error(
+                        error if error.is_unique_violation() => domain_error(
                             ErrorCode::ParamsInvalid,
                             "that decision ref is already used in this repository",
                         ),
-                        other => DatabaseError::Sqlite(other),
+                        other => DatabaseError::from(other),
                     })?;
                 if let Some((superseded_id, _)) = superseded {
-                    transaction.execute(
-                        "UPDATE decisions SET superseded_by=?1 WHERE decision_id=?2 AND superseded_by IS NULL",
-                        rusqlite::params![decision_id_for_insert, superseded_id],
+                    let changed = transaction.execute(
+                        "UPDATE decisions SET superseded_by=$1 WHERE decision_id=$2 AND superseded_by IS NULL",
+                        crate::database::params![decision_id_for_insert, superseded_id],
                     )?;
+                    if changed != 1 {
+                        return Err(domain_error(ErrorCode::ConfigurationConflict,"that decision was superseded concurrently; read the current direction before replacing it"));
+                    }
                 }
                 Ok(seq)
             })
@@ -1453,29 +1642,29 @@ impl PlanService {
         let before = params.before_seq;
         let (decisions, has_more, summary) = self
             .database
-            .call(move |connection| {
-                let mut sql = "SELECT decision_id,seq,ref,aspect,title,body,technical_note,superseded_by,created_at,created_by FROM decisions WHERE repository_id=?1".to_owned();
-                let mut values: Vec<rusqlite::types::Value> =
+            .read(move |connection| {
+                let mut sql = "SELECT decision_id,seq,ref,aspect,title,body,technical_note,superseded_by,created_at,created_by FROM decisions WHERE repository_id=$1".to_owned();
+                let mut values: Vec<crate::database::types::Value> =
                     vec![repository_id_owned.clone().into()];
                 if let Some(aspect) = aspect {
-                    sql.push_str(" AND aspect=?2");
+                    sql.push_str(" AND aspect=$2");
                     values.push(aspect.into());
                 }
                 if let Some(before) = before {
-                    sql.push_str(&format!(" AND seq<?{}", values.len() + 1));
+                    sql.push_str(&format!(" AND seq<${}", values.len() + 1));
                     values.push(i64::from(before).into());
                 }
-                sql.push_str(&format!(" ORDER BY seq DESC LIMIT ?{}", values.len() + 1));
+                sql.push_str(&format!(" ORDER BY seq DESC LIMIT ${}", values.len() + 1));
                 values.push(i64::from(limit + 1).into());
                 let mut statement = connection.prepare(&sql)?;
                 let rows = statement
-                    .query_map(rusqlite::params_from_iter(values), decision_from_row)?
+                    .query_map(crate::database::params_from_iter(values), decision_from_row)?
                     .collect::<Result<Vec<_>, _>>()?;
                 let has_more = rows.len() > limit as usize;
                 let decisions = rows.into_iter().take(limit as usize).rev().collect();
                 let summary = connection
                     .query_row(
-                        "SELECT body,covers_through_seq,created_at FROM decision_summaries WHERE repository_id=?1 ORDER BY covers_through_seq DESC LIMIT 1",
+                        "SELECT body,covers_through_seq,created_at FROM decision_summaries WHERE repository_id=$1 ORDER BY covers_through_seq DESC LIMIT 1",
                         [&repository_id_owned],
                         |row| {
                             Ok(DecisionSummary {
@@ -1522,23 +1711,23 @@ impl PlanService {
         let limit = u32::from(params.n.clamp(1, 50));
         let decisions = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut sql = if identifier {
-                    "SELECT d.decision_id,d.seq,d.ref,d.aspect,d.title,d.body,d.technical_note,d.superseded_by,d.created_at,d.created_by FROM decisions d WHERE d.decision_id=?1 AND d.repository_id=?2"
+                    "SELECT d.decision_id,d.seq,d.ref,d.aspect,d.title,d.body,d.technical_note,d.superseded_by,d.created_at,d.created_by FROM decisions d WHERE d.decision_id=$1 AND d.repository_id=$2"
                 } else {
-                    "SELECT d.decision_id,d.seq,d.ref,d.aspect,d.title,d.body,d.technical_note,d.superseded_by,d.created_at,d.created_by FROM decisions_fts f JOIN decisions d ON d.rowid=f.rowid WHERE decisions_fts MATCH ?1 AND d.repository_id=?2"
+                    "SELECT d.decision_id,d.seq,d.ref,d.aspect,d.title,d.body,d.technical_note,d.superseded_by,d.created_at,d.created_by FROM decisions d WHERE d.search_vector @@ plainto_tsquery('simple',$1) AND d.repository_id=$2"
                 }.to_owned();
-                let mut values: Vec<rusqlite::types::Value> =
+                let mut values: Vec<crate::database::types::Value> =
                     vec![query.into(), repository_id_owned.into()];
                 if let Some(aspect) = aspect {
-                    sql.push_str(" AND d.aspect=?3");
+                    sql.push_str(" AND d.aspect=$3");
                     values.push(aspect.into());
                 }
-                sql.push_str(&format!(" ORDER BY {} LIMIT ?{}", if identifier { "d.seq DESC" } else { "bm25(decisions_fts)" }, values.len() + 1));
+                sql.push_str(&format!(" ORDER BY {} LIMIT ${}", if identifier { "d.seq DESC" } else { "ts_rank_cd(d.search_vector,plainto_tsquery('simple',$1)) DESC,d.seq DESC" }, values.len() + 1));
                 values.push(i64::from(limit + 1).into());
                 let mut statement = connection.prepare(&sql)?;
                 Ok(statement
-                    .query_map(rusqlite::params_from_iter(values), decision_from_row)?
+                    .query_map(crate::database::params_from_iter(values), decision_from_row)?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_or_domain)?;
@@ -1564,15 +1753,15 @@ impl PlanService {
         let repository_id_owned = repository_id.to_owned();
         let (max_seq, covered): (u32, u32) = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 Ok((
                     connection.query_row(
-                        "SELECT COALESCE(MAX(seq),0) FROM decisions WHERE repository_id=?1",
+                        "SELECT COALESCE(MAX(seq),0) FROM decisions WHERE repository_id=$1",
                         [&repository_id_owned],
                         |row| row.get(0),
                     )?,
                     connection.query_row(
-                        "SELECT COALESCE(MAX(covers_through_seq),0) FROM decision_summaries WHERE repository_id=?1",
+                        "SELECT COALESCE(MAX(covers_through_seq),0) FROM decision_summaries WHERE repository_id=$1",
                         [&repository_id_owned],
                         |row| row.get(0),
                     )?,
@@ -1601,9 +1790,12 @@ impl PlanService {
         let now = now.to_owned();
         self.database
             .transaction(move |transaction| {
+                lock_repository(transaction, &repository_id_owned)?;
+                let covered: u32 = transaction.query_row("SELECT COALESCE(MAX(covers_through_seq),0) FROM decision_summaries WHERE repository_id=$1", [&repository_id_owned], |row| row.get(0))?;
+                if covers <= covered { return Err(domain_error(ErrorCode::ConfigurationConflict,"decisions were already summarized; refresh before appending a summary")); }
                 transaction.execute(
-                    "INSERT INTO decision_summaries(repository_id,covers_through_seq,body,created_at,created_by) VALUES(?1,?2,?3,?4,?5)",
-                    rusqlite::params![repository_id_owned, covers, body, now, actor],
+                    "INSERT INTO decision_summaries(repository_id,covers_through_seq,body,created_at,created_by) VALUES($1,$2,$3,$4,$5)",
+                    crate::database::params![repository_id_owned, covers, body, now, actor],
                 )?;
                 Ok(())
             })
@@ -1627,11 +1819,11 @@ impl PlanService {
         let reference = reference.to_owned();
         let decision = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT decision_id,superseded_by FROM decisions WHERE repository_id=?1 AND (decision_id=?2 OR ref=?2) LIMIT 1",
-                        rusqlite::params![repository_id, reference],
+                        "SELECT decision_id,superseded_by FROM decisions WHERE repository_id=$1 AND (decision_id=$2 OR ref=$2) LIMIT 1",
+                        crate::database::params![repository_id, reference],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
                     )
                     .optional()
@@ -1653,10 +1845,10 @@ impl PlanService {
     fn task_row(&self, task_id: &str) -> Result<Option<TaskRow>, ProtocolError> {
         let task_id = task_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at FROM tasks WHERE task_id=?1",
+                        "SELECT task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at FROM tasks WHERE task_id=$1",
                         [&task_id],
                         task_from_row,
                     )
@@ -1669,10 +1861,10 @@ impl PlanService {
     fn release_row(&self, release_id: &str) -> Result<Option<ReleaseRow>, ProtocolError> {
         let release_id = release_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT release_id,repository_id,seq,name,kind,status,note,requested_at FROM releases WHERE release_id=?1",
+                        "SELECT release_id,repository_id,seq,name,kind,status,note,requested_at FROM releases WHERE release_id=$1",
                         [&release_id],
                         |row| {
                             Ok(ReleaseRow {
@@ -1702,10 +1894,10 @@ impl PlanService {
         let release_id = release_id.to_owned();
         let row = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT repository_id,status FROM releases WHERE release_id=?1",
+                        "SELECT repository_id,status FROM releases WHERE release_id=$1",
                         [&release_id],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                     )
@@ -1739,10 +1931,10 @@ impl PlanService {
         let task_id = task_id.to_owned();
         let candidate_parent = candidate_parent.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 Ok(connection.query_row(
-                    "WITH RECURSIVE descendants(task_id) AS (SELECT ?1 UNION ALL SELECT tasks.task_id FROM tasks JOIN descendants ON tasks.parent_task_id=descendants.task_id) SELECT EXISTS(SELECT 1 FROM descendants WHERE task_id=?2)",
-                    rusqlite::params![task_id, candidate_parent],
+                    "WITH RECURSIVE descendants(task_id) AS (SELECT $1 UNION ALL SELECT tasks.task_id FROM tasks JOIN descendants ON tasks.parent_task_id=descendants.task_id) SELECT EXISTS(SELECT 1 FROM descendants WHERE task_id=$2)",
+                    crate::database::params![task_id, candidate_parent],
                     |row| row.get::<_, i64>(0),
                 )? != 0)
             })
@@ -1752,9 +1944,9 @@ impl PlanService {
     fn has_requested(&self, repository_id: &str) -> Result<bool, ProtocolError> {
         let repository_id = repository_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases'))",
+                    "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=$1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases'))",
                     [&repository_id],
                     |row| row.get::<_, i64>(0),
                 )? != 0)
@@ -1762,15 +1954,28 @@ impl PlanService {
             .map_err(database_or_domain)
     }
 
-    fn preview_requests(&self, repository_id: &str) -> Result<Vec<PreviewRequest>, ProtocolError> {
+    fn preview_requests_for(
+        &self,
+        repository_id: &str,
+        release_ids: Option<Vec<String>>,
+    ) -> Result<Vec<PreviewRequest>, ProtocolError> {
         let repository_id = repository_id.to_owned();
+        let selected = release_ids
+            .map(|ids| serde_json::to_string(&ids))
+            .transpose()
+            .map_err(|_| {
+                ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "cannot encode release page identities",
+                )
+            })?;
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT release_id,name,requested_at,note FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases') ORDER BY seq",
+                    "SELECT release_id,name,requested_at,note FROM releases WHERE repository_id=$1 AND status='requested' AND ($2::jsonb IS NULL OR release_id IN(SELECT value FROM jsonb_array_elements_text($2))) AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases') ORDER BY seq",
                 )?;
                 Ok(statement
-                    .query_map([repository_id], |row| {
+                    .query_map(crate::database::params![repository_id,selected], |row| {
                         Ok(PreviewRequest {
                             release_id: row.get(0)?,
                             name: row.get(1)?,
@@ -1786,10 +1991,10 @@ impl PlanService {
     fn repository_identity(&self, repository_id: &str) -> Result<(String, bool), ProtocolError> {
         let repository_id = repository_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT display_name,archived_at IS NOT NULL FROM repositories WHERE repository_id=?1",
+                        "SELECT display_name,archived_at IS NOT NULL FROM repositories WHERE repository_id=$1",
                         [&repository_id],
                         |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
                     )
@@ -1805,9 +2010,9 @@ impl PlanService {
     fn unsummarized_count(&self, repository_id: &str) -> Result<u32, ProtocolError> {
         let repository_id = repository_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 Ok(connection.query_row(
-                    "SELECT COUNT(*) FROM decisions WHERE repository_id=?1 AND seq>(SELECT COALESCE(MAX(covers_through_seq),0) FROM decision_summaries WHERE repository_id=?1)",
+                    "SELECT COUNT(*) FROM decisions WHERE repository_id=$1 AND seq>(SELECT COALESCE(MAX(covers_through_seq),0) FROM decision_summaries WHERE repository_id=$1)",
                     [&repository_id],
                     |row| row.get(0),
                 )?)
@@ -1819,10 +2024,10 @@ impl PlanService {
         let repository_id = repository_id.to_owned();
         let archived = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT archived_at FROM repositories WHERE repository_id=?1",
+                        "SELECT archived_at FROM repositories WHERE repository_id=$1",
                         [&repository_id],
                         |row| row.get::<_, Option<String>>(0),
                     )
@@ -1847,13 +2052,30 @@ impl PlanService {
         &self,
         repository_id: &str,
     ) -> Result<Vec<ElaborationRequest>, ProtocolError> {
+        self.elaboration_requests_for(repository_id, None)
+    }
+
+    fn elaboration_requests_for(
+        &self,
+        repository_id: &str,
+        task_ids: Option<Vec<String>>,
+    ) -> Result<Vec<ElaborationRequest>, ProtocolError> {
         let repository_id = repository_id.to_owned();
+        let selected = task_ids
+            .map(|ids| serde_json::to_string(&ids))
+            .transpose()
+            .map_err(|_| {
+                ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "cannot encode task page identities",
+                )
+            })?;
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT task_id,title,outcome,status,kind,(SELECT at FROM plan_events WHERE subject_kind='task' AND subject_id=tasks.task_id AND event='elaboration_requested' ORDER BY event_id DESC LIMIT 1) FROM tasks WHERE repository_id=?1 AND elaboration_needed=1 ORDER BY seq",
+                    "SELECT task_id,title,outcome,status,kind,(SELECT at FROM plan_events WHERE subject_kind='task' AND subject_id=tasks.task_id AND event='elaboration_requested' ORDER BY event_id DESC LIMIT 1) FROM tasks WHERE repository_id=$1 AND elaboration_needed=1 AND ($2::jsonb IS NULL OR task_id IN(SELECT value FROM jsonb_array_elements_text($2))) ORDER BY seq",
                 )?;
-                let rows = statement.query_map([repository_id], |row| {
+                let rows = statement.query_map(crate::database::params![repository_id,selected], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -1881,118 +2103,14 @@ impl PlanService {
     }
 }
 
-fn page_plan_detail(
-    mut detail: PlanDetail,
-    offset: u32,
-    expected_revision: Option<&str>,
-) -> Result<PlanDetail, ProtocolError> {
-    if offset != 0 && expected_revision.is_none() {
-        return Err(ProtocolError::new(
-            ErrorCode::ParamsInvalid,
-            "a plan continuation requires its expected revision",
-        ));
-    }
-    // Hash the complete projected plan with constant pagination fields. Every
-    // page has the same revision, and any changed projected content rejects an
-    // old continuation rather than mixing plans in the caller's task tree.
-    let encoded = serde_json::to_vec(&detail).expect("plan detail is serializable");
-    detail.revision = Sha256::digest(&encoded)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    if expected_revision.is_some_and(|revision| revision != detail.revision) {
-        return Err(ProtocolError::new(
-            ErrorCode::CursorStale,
-            "the plan changed; load its first page again",
-        ));
-    }
-    let releases = std::mem::take(&mut detail.releases);
-    let tasks = std::mem::take(&mut detail.tasks);
-    let elaboration_requests = std::mem::take(&mut detail.elaboration_requests);
-    let preview_requested = std::mem::take(&mut detail.preview_requested);
-    let total = releases.len() + tasks.len() + elaboration_requests.len() + preview_requested.len();
-    let total = u32::try_from(total).map_err(|_| {
-        ProtocolError::new(
-            ErrorCode::InternalError,
-            "the plan has too many records to page",
-        )
-    })?;
-    if offset > total || (offset != 0 && offset == total) {
-        return Err(ProtocolError::new(
-            ErrorCode::ParamsInvalid,
-            "the plan offset is outside its records",
-        ));
-    }
-    // Reserve the longest cursor representation before adding any records.
-    detail.next_offset = Some(u32::MAX);
-    let mut bytes = serde_json::to_vec(&detail)
-        .expect("plan detail is serializable")
-        .len();
-    let mut skip = offset as usize;
-    let mut loaded = 0;
-    let _complete =
-        append_plan_page(
-            releases,
-            &mut detail.releases,
-            &mut skip,
-            &mut bytes,
-            &mut loaded,
-        ) && append_plan_page(tasks, &mut detail.tasks, &mut skip, &mut bytes, &mut loaded)
-            && append_plan_page(
-                elaboration_requests,
-                &mut detail.elaboration_requests,
-                &mut skip,
-                &mut bytes,
-                &mut loaded,
-            )
-            && append_plan_page(
-                preview_requested,
-                &mut detail.preview_requested,
-                &mut skip,
-                &mut bytes,
-                &mut loaded,
-            );
-    if bytes > OVERVIEW_PAGE_BYTES || (loaded == 0 && offset < total) {
-        return Err(ProtocolError::new(
-            ErrorCode::InternalError,
-            "a plan record exceeds the response page budget",
-        ));
-    }
-    let next_offset = offset + loaded;
-    detail.next_offset = (next_offset < total).then_some(next_offset);
-    Ok(detail)
-}
-
-fn append_plan_page<T: Serialize>(
-    records: Vec<T>,
-    page: &mut Vec<T>,
-    skip: &mut usize,
-    bytes: &mut usize,
-    loaded: &mut u32,
-) -> bool {
-    if *skip >= records.len() {
-        *skip -= records.len();
-        return true;
-    }
-    for record in records.into_iter().skip(std::mem::take(skip)) {
-        let added = serde_json::to_vec(&record)
-            .expect("plan record is serializable")
-            .len()
-            + usize::from(!page.is_empty());
-        if added > OVERVIEW_PAGE_BYTES.saturating_sub(*bytes) {
-            return false;
-        }
-        *bytes += added;
-        *loaded += 1;
-        page.push(record);
-    }
-    true
-}
-
-fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Decision> {
+fn decision_from_row(row: &crate::database::Row<'_>) -> crate::database::Result<Decision> {
     let aspect: String = row.get(3)?;
     let aspect = serde_json::from_value(serde_json::Value::String(aspect)).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(error))
+        crate::database::Error::FromSqlConversionFailure(
+            3,
+            crate::database::types::Type::Text,
+            Box::new(error),
+        )
     })?;
     Ok(Decision {
         decision_id: row.get(0)?,
@@ -2009,66 +2127,65 @@ fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Decision> {
 }
 
 fn read_tasks(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
     repository_id: &str,
-    _collection_projection: bool,
+    after_sequence: u32,
+    limit: u16,
 ) -> Result<Vec<TaskRow>, DatabaseError> {
     let mut statement = connection.prepare(
-        "SELECT task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at FROM tasks WHERE repository_id=?1 AND status!='dropped' ORDER BY seq",
+        "SELECT task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at FROM tasks WHERE repository_id=$1 AND status!='dropped' AND seq>$2 ORDER BY seq LIMIT $3",
     )?;
     Ok(statement
-        .query_map([repository_id], task_from_row)?
+        .query_map(
+            crate::database::params![repository_id, after_sequence, u32::from(limit) + 1],
+            task_from_row,
+        )?
         .collect::<Result<Vec<_>, _>>()?)
 }
 
 fn read_release_overviews(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
     repository_id: &str,
+    after_sequence: u32,
+    limit: u16,
 ) -> Result<Vec<ReleaseOverviewRow>, DatabaseError> {
     let mut statement = connection.prepare(
-        "SELECT release_id,seq,name,kind,status,note,requested_at,delivered_at,url,port,EXISTS(SELECT 1 FROM planning_recovery_records WHERE record_kind='releases' AND record_id=releases.release_id) FROM releases WHERE repository_id=?1 AND status!='dropped' ORDER BY seq",
+        "WITH page AS (SELECT release_id,repository_id,seq,name,kind,status,note,requested_at,delivered_at,url,port FROM releases WHERE repository_id=$1 AND status!='dropped' AND seq>$2 ORDER BY seq LIMIT $3) SELECT r.release_id,r.seq,r.name,r.kind,r.status,r.note,r.requested_at,r.delivered_at,r.url,r.port,a.tasks_total,a.tasks_done,a.loc_total,a.loc_done FROM page r CROSS JOIN LATERAL (SELECT COUNT(*) tasks_total,COUNT(*) FILTER(WHERE t.status='done') tasks_done,COALESCE(SUM(t.estimated_loc),0)::bigint loc_total,COALESCE(SUM(t.estimated_loc) FILTER(WHERE t.status='done'),0)::bigint loc_done FROM tasks t WHERE t.repository_id=r.repository_id AND t.release_id=r.release_id AND t.status!='dropped' AND NOT EXISTS(SELECT 1 FROM tasks child WHERE child.repository_id=t.repository_id AND child.parent_task_id=t.task_id AND child.status!='dropped')) a ORDER BY r.seq",
     )?;
     Ok(statement
-        .query_map([repository_id], |row| {
-            Ok(ReleaseOverviewRow {
-                release_id: row.get(0)?,
-                seq: row.get(1)?,
-                name: row.get(2)?,
-                kind: row.get(3)?,
-                status: row.get(4)?,
-                note: row.get(5)?,
-                requested_at: row.get(6)?,
-                delivered_at: row.get(7)?,
-                url: row.get(8)?,
-                port: row.get(9)?,
-                historical: row.get(10)?,
-            })
-        })?
+        .query_map(
+            crate::database::params![repository_id, after_sequence, u32::from(limit) + 1],
+            |row| {
+                Ok(ReleaseOverviewRow {
+                    release_id: row.get(0)?,
+                    seq: row.get(1)?,
+                    name: row.get(2)?,
+                    kind: row.get(3)?,
+                    status: row.get(4)?,
+                    note: row.get(5)?,
+                    requested_at: row.get(6)?,
+                    delivered_at: row.get(7)?,
+                    url: row.get(8)?,
+                    port: row.get(9)?,
+                    aggregate: Aggregate {
+                        tasks_total: row.get(10)?,
+                        tasks_done: row.get(11)?,
+                        loc_total: row.get(12)?,
+                        loc_done: row.get(13)?,
+                    },
+                })
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?)
 }
 
-fn leaf_aggregates(tasks: &[TaskRow]) -> (BTreeMap<Option<String>, Aggregate>, HashSet<String>) {
-    let parents = tasks
-        .iter()
-        .filter_map(|task| task.parent_task_id.clone())
-        .collect::<HashSet<_>>();
-    let mut aggregates = BTreeMap::new();
-    for task in tasks {
-        if parents.contains(&task.task_id) {
-            continue;
-        }
-        let aggregate = aggregates
-            .entry(task.release_id.clone())
-            .or_insert_with(Aggregate::default);
-        let lines = u64::from(task.estimated_loc.unwrap_or(0));
-        aggregate.tasks_total += 1;
-        aggregate.loc_total += lines;
-        if task.status == "done" {
-            aggregate.tasks_done += 1;
-            aggregate.loc_done += lines;
-        }
-    }
-    (aggregates, parents)
+fn aggregate_from_row(row: &crate::database::Row<'_>) -> crate::database::Result<Aggregate> {
+    Ok(Aggregate {
+        tasks_total: row.get(0)?,
+        tasks_done: row.get(1)?,
+        loc_total: row.get(2)?,
+        loc_done: row.get(3)?,
+    })
 }
 
 fn clip(value: &str, limit: usize) -> String {
@@ -2086,7 +2203,7 @@ fn clip(value: &str, limit: usize) -> String {
     clipped
 }
 
-fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRow> {
+fn task_from_row(row: &crate::database::Row<'_>) -> crate::database::Result<TaskRow> {
     Ok(TaskRow {
         task_id: row.get(0)?,
         repository_id: row.get(1)?,
@@ -2174,7 +2291,7 @@ fn release_mutation(
 }
 
 fn place_task(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &crate::database::Transaction<'_>,
     repository_id: &str,
     parent_task_id: Option<&str>,
     release_id: Option<&str>,
@@ -2182,11 +2299,11 @@ fn place_task(
     index: Option<u32>,
 ) -> Result<u32, DatabaseError> {
     let mut statement = transaction.prepare(
-        "SELECT task_id FROM tasks WHERE repository_id=?1 AND parent_task_id IS ?2 AND release_id IS ?3 AND status!='dropped' AND task_id!=?4 ORDER BY position,seq",
+        "SELECT task_id FROM tasks WHERE repository_id=$1 AND parent_task_id IS NOT DISTINCT FROM $2 AND release_id IS NOT DISTINCT FROM $3 AND status!='dropped' AND task_id!=$4 ORDER BY position,seq",
     )?;
     let mut siblings = statement
         .query_map(
-            rusqlite::params![repository_id, parent_task_id, release_id, task_id],
+            crate::database::params![repository_id, parent_task_id, release_id, task_id],
             |row| row.get::<_, String>(0),
         )?
         .collect::<Result<Vec<_>, _>>()?;
@@ -2198,8 +2315,8 @@ fn place_task(
     for (offset, sibling) in siblings.into_iter().enumerate() {
         let next = (offset + 1) as u32;
         transaction.execute(
-            "UPDATE tasks SET position=?1 WHERE task_id=?2",
-            rusqlite::params![next, sibling],
+            "UPDATE tasks SET position=$1 WHERE task_id=$2",
+            crate::database::params![next, sibling],
         )?;
         if sibling == task_id {
             position = next;
@@ -2208,9 +2325,23 @@ fn place_task(
     Ok(position)
 }
 
+/// Serialize a repository's sequence allocation and ordered ledger mutations
+/// across every PostgreSQL connection, including separate daemon sessions.
+pub(crate) fn lock_repository(
+    connection: &crate::database::Connection,
+    repository_id: &str,
+) -> Result<(), DatabaseError> {
+    connection.query_row(
+        "SELECT repository_id FROM repositories WHERE repository_id=$1 FOR UPDATE",
+        [repository_id],
+        |_| Ok(()),
+    )?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_plan_event(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &crate::database::Transaction<'_>,
     repository_id: &str,
     subject_kind: &str,
     subject_id: &str,
@@ -2222,8 +2353,8 @@ fn append_plan_event(
     note: Option<&str>,
 ) -> Result<(), DatabaseError> {
     transaction.execute(
-        "INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at,note) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        rusqlite::params![
+        "INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        crate::database::params![
             repository_id,
             subject_kind,
             subject_id,
@@ -2347,7 +2478,7 @@ mod tests {
     fn world() -> (tempfile::TempDir, Database, PlanService) {
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
-        let evidence = Arc::new(SqliteDeploymentEvidence::new(
+        let evidence = Arc::new(PostgresDeploymentEvidence::new(
             database.clone(),
             "example.test",
         ));
@@ -2400,12 +2531,62 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(source.name, "project");
+        let mut after_repository_id = None;
+        let mut header_ids = Vec::new();
+        loop {
+            let PlanOverview::Headers(headers) = service
+                .overview_page(
+                    None,
+                    devcoordinator2_api::params::PlanReference {
+                        headers_only: true,
+                        limit: 1,
+                        after_repository_id,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("headers expected")
+            };
+            assert_eq!(headers.headers.len(), 1);
+            let header = &headers.headers[0];
+            assert_eq!(header.repository_source.as_ref(), Some(source));
+            let encoded = serde_json::to_value(header).unwrap();
+            assert!(encoded.get("open_tasks").is_none());
+            assert!(encoded.get("loc_total").is_none());
+            header_ids.push(header.repository_id.clone());
+            after_repository_id = headers.next_repository_id;
+            if after_repository_id.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            header_ids,
+            collection
+                .repositories
+                .iter()
+                .map(|row| row.repository_id.clone())
+                .collect::<Vec<_>>()
+        );
         for row in &collection.repositories {
             assert_eq!(row.repository_source.as_ref(), Some(source));
             assert_eq!(row.open_tasks, 0);
             assert!(
                 row.root_path == root.to_string_lossy() || row.root_path == clone.to_string_lossy()
             );
+            let PlanOverview::Detail(detail) = service
+                .overview_page(
+                    Some(&row.repository_id),
+                    devcoordinator2_api::params::PlanReference {
+                        limit: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            else {
+                panic!("detail expected")
+            };
+            assert_eq!(detail.repository_source.as_ref(), Some(source));
         }
         std::fs::remove_dir_all(&clone).unwrap();
         let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
@@ -2445,8 +2626,48 @@ mod tests {
             row.presentation.as_ref().unwrap().icon.as_deref(),
             Some("rocket")
         );
+        let PlanOverview::Detail(detail) = service
+            .overview_page(
+                Some(&request.repository_id),
+                devcoordinator2_api::params::PlanReference {
+                    limit: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        else {
+            panic!("detail expected")
+        };
+        assert_eq!(detail.presentation, row.presentation);
+        assert_eq!(detail.display_name, row.display_name);
+        let PlanOverview::Headers(headers) = service
+            .overview_page(
+                None,
+                devcoordinator2_api::params::PlanReference {
+                    headers_only: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        else {
+            panic!("headers expected")
+        };
+        assert_eq!(headers.headers[0].presentation, row.presentation);
+        assert_eq!(
+            service
+                .overview_page(
+                    Some(&request.repository_id),
+                    devcoordinator2_api::params::PlanReference {
+                        headers_only: true,
+                        ..Default::default()
+                    }
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::ParamsInvalid
+        );
         let reopened = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
-        let persisted: (String, String, String) = reopened.call(|connection| {
+        let persisted: (String, String, String) = reopened.read(|connection| {
             Ok(connection.query_row("SELECT r.root_path,r.display_name,p.display_name FROM repositories r JOIN repository_presentation p USING(repository_id)", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
         }).unwrap();
         assert_eq!(
@@ -2500,6 +2721,11 @@ mod tests {
             panic!("collection expected")
         };
         assert!(collection.repositories[0].presentation.is_none());
+        let PlanOverview::Detail(detail) = service.overview(Some("r1111111111111111")).unwrap()
+        else {
+            panic!("detail expected")
+        };
+        assert!(detail.presentation.is_none());
     }
 
     fn seed(database: &Database, spec_json: String) {
@@ -2508,7 +2734,7 @@ mod tests {
                 transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111','/fixture/repository','Fixture repository','t',1000,'t')", [])?;
                 transaction.execute("INSERT INTO worktrees VALUES('w1111111111111111','r1111111111111111','/fixture/repository','t','t')", [])?;
                 transaction.execute(
-                    "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at,public) VALUES('d1111111111111111','r1111111111111111','w1111111111111111','fixture','checkout',NULL,'spec',?1,'running',1,'t',1000,'codex','t',0)",
+                    "INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at,public) VALUES('d1111111111111111','r1111111111111111','w1111111111111111','fixture','checkout',NULL,'spec',$1,'running',1,'t',1000,'codex','t',0)",
                     [spec_json],
                 )?;
                 transaction.execute("INSERT INTO generations VALUES('d1111111111111111',1,'0123456789abcdef',0,'/fixture/generation','fingerprint','t','current')", [])?;
@@ -2549,7 +2775,7 @@ mod tests {
     #[test]
     fn no_domain_delivery_uses_the_declared_route_component() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../contracts/fixtures/no-domain-release-route-v2.json"
+            "../../../contracts/fixtures/no-domain-release-route-v3.json"
         ))
         .expect("fixture");
         let (_temporary, database, service) = world();
@@ -2581,7 +2807,7 @@ mod tests {
                 .map(|port| port as u16)
         );
         let stored: u16 = database
-            .call(|connection| {
+            .read(|connection| {
                 Ok(connection.query_row(
                     "SELECT port FROM releases WHERE release_id='v1111111111111111'",
                     [],
@@ -2624,7 +2850,7 @@ mod tests {
             Some("https://preview.example.test")
         );
         let retained = database
-            .call(|connection| {
+            .read(|connection| {
                 Ok(connection.query_row(
                     "SELECT port,url FROM releases WHERE release_id='v1111111111111111'",
                     [],
@@ -2693,7 +2919,7 @@ mod tests {
                 .is_err()
         );
         let state: (String, i64) = database
-            .call(|connection| {
+            .read(|connection| {
                 Ok((
                     connection.query_row(
                         "SELECT status FROM releases WHERE release_id='v1111111111111111'",
@@ -2734,7 +2960,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::ParamsInvalid);
         let state: (String, i64) = database
-            .call(|connection| {
+            .read(|connection| {
                 Ok((
                     connection.query_row(
                         "SELECT status FROM releases WHERE release_id='v1111111111111111'",
@@ -3054,6 +3280,58 @@ mod tests {
             ]
         );
         assert!(history.elaboration_requests.is_empty());
+
+        // Separate PostgreSQL sessions must allocate each sequence once and
+        // preserve the complete history across every overview page.
+        let barrier = std::sync::Barrier::new(6);
+        std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for worker in 0..6 {
+                let service = &service;
+                let barrier = &barrier;
+                workers.push(scope.spawn(move || {
+                    barrier.wait();
+                    for index in 0..3 {
+                        service
+                            .create_task(
+                                "r1111111111111111",
+                                task_params(&format!("Concurrent owner request {worker}-{index}")),
+                                "uid:1000",
+                                "2026-09-03T12:06:00Z",
+                            )
+                            .expect("concurrent planning write");
+                    }
+                }));
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+        let mut after_sequence = 0;
+        let mut sequences = Vec::new();
+        loop {
+            let PlanOverview::Detail(page) = service
+                .overview_page(
+                    Some("r1111111111111111"),
+                    devcoordinator2_api::params::PlanReference {
+                        after_sequence,
+                        limit: 3,
+                        ..Default::default()
+                    },
+                )
+                .expect("complete paginated history")
+            else {
+                panic!("detail page expected")
+            };
+            assert!(serde_json::to_vec(&page).unwrap().len() <= 192 * 1024);
+            sequences.extend(page.tasks.iter().map(|task| task.seq));
+            let Some(next) = page.next_sequence else {
+                break;
+            };
+            assert!(next > after_sequence);
+            after_sequence = next;
+        }
+        assert_eq!(sequences, (1..=21).collect::<Vec<_>>());
     }
 
     #[test]

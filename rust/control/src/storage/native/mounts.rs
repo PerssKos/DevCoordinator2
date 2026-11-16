@@ -289,6 +289,11 @@ impl HostBackend {
             )
             .into(),
             "--setenv=DEVCOORDINATOR2_INSTANCE_ENV=/nonexistent".into(),
+            format!(
+                "--setenv=DEVCOORDINATOR2_DATABASE_CONFIG={}",
+                self.config.postgres_config_path().display()
+            )
+            .into(),
             executable.into_os_string(),
             "storage-maintenance".into(),
             "--job-id".into(),
@@ -370,12 +375,18 @@ pub(crate) fn execute(
         return Err(blocked("helper_identity_changed"));
     }
     verify_installed_helper(config, &request)?;
-    let connection = rusqlite::Connection::open_with_flags(
-        config.state_dir.join("authority.sqlite3"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    let database = crate::database::Database::connect(
+        &config
+            .postgres_config()
+            .map_err(|_| unavailable("cleanup_authority_unavailable"))?,
     )
     .map_err(|_| unavailable("cleanup_job_unavailable"))?;
-    let (state,plan): (String,String)=connection.query_row("SELECT j.state,p.plan_json FROM storage_jobs j JOIN storage_plans p ON json_extract(j.job_json,'$.plan_id')=p.plan_id WHERE j.job_id=?1",[job_id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|_|blocked("cleanup_job_unavailable"))?;
+    let (state, plan): (String, String) = database.read_transaction(|connection| {
+        connection.query_row(
+            "SELECT j.state,p.plan_json FROM storage_jobs j JOIN storage_plans p ON (j.job_json::jsonb->>'plan_id')=p.plan_id WHERE j.job_id=$1",
+            [job_id], |r| Ok((r.get(0)?,r.get(1)?)),
+        ).map_err(crate::database::DatabaseError::from)
+    }).map_err(|_| blocked("cleanup_job_unavailable"))?;
     if state != "running" {
         return Err(blocked("cleanup_job_not_running"));
     }

@@ -179,7 +179,7 @@ impl RuntimeConfiguration {
                 .to_owned()
         });
         let stored_revision = disk.ok().map(|stored| revision(&stored));
-        let history = self.database.call(|connection| {
+        let history = self.database.read(|connection| {
             let mut statement = connection.prepare(
                 "SELECT sequence,action,outcome,previous_revision,revision,at FROM runtime_configuration_events ORDER BY sequence DESC LIMIT 20",
             )?;
@@ -218,8 +218,8 @@ impl RuntimeConfiguration {
         let values = [action, outcome, previous, revision, actor].map(str::to_owned);
         self.database.transaction(move |connection| {
             connection.execute(
-                "INSERT INTO runtime_configuration_events(action,outcome,previous_revision,revision,actor,at) VALUES(?1,?2,?3,?4,?5,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-                rusqlite::params![values[0],values[1],values[2],values[3],values[4]],
+                "INSERT INTO runtime_configuration_events(action,outcome,previous_revision,revision,actor,at) VALUES($1,$2,$3,$4,$5,to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))",
+                crate::database::params![values[0],values[1],values[2],values[3],values[4]],
             )?;
             Ok(())
         }).map_err(|_| unavailable())

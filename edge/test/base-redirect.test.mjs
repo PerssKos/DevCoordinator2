@@ -23,8 +23,9 @@ test('base redirect preserves dedicated public tickets and private authenticatio
       frame += chunk;
       if (!frame.endsWith('\n')) return;
       const call = JSON.parse(frame);
+      assert.equal(call.protocol, 3);
       daemonCalls.push(call);
-      socket.end(`${JSON.stringify({ protocol: 2, id: call.id, ok: true, data: { tickets: [] } })}\n`);
+      socket.end(`${JSON.stringify({ protocol: 3, id: call.id, ok: true, data: { tickets: [] } })}\n`);
     });
   });
   await new Promise(resolve => daemon.listen(daemonSocket, resolve));
@@ -124,7 +125,7 @@ test('base redirect preserves dedicated public tickets and private authenticatio
     assert.match(reply.location, /^\/auth\/login\?rt=/);
   }
   assert.equal((await request(enabled.port, '/auth/login', 'console.example.test')).status, 200);
-  assert.equal((await request(enabled.port, '/api/v2/deployment.remove', 'console.example.test',
+  assert.equal((await request(enabled.port, '/api/v3/deployment.remove', 'console.example.test',
     { method: 'POST', body: {} })).status, 401);
   for (const pathname of ['/requests', '/tickets.js', ticketPath]) {
     assert.equal((await request(enabled.port, pathname, 'example.test.outside.test')).status, 404);

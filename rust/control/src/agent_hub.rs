@@ -6,6 +6,7 @@
 //! adapter and instance bearer key.
 use std::time::Duration;
 
+use crate::database::{OptionalExtension, Row};
 use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -13,7 +14,6 @@ use base64::{
 use devcoordinator2_api::agent_hub as api;
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use reqwest::blocking::Client;
-use rusqlite::{OptionalExtension, Row};
 use sha2::{Digest, Sha256};
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -32,7 +32,9 @@ const MAX_PENDING_BYTES: i64 = 128 * 1024 * 1024;
 const MAX_OUTBOX_ROWS: i64 = 1_000;
 const MAX_OUTBOX_ATTEMPTS: i64 = 10;
 const MAX_OUTBOX_AGE_SECONDS: i64 = 24 * 60 * 60;
-const OUTBOX_BATCH: i64 = 20;
+// A scheduler turn performs at most one externally timed callback. The durable
+// outbox is the continuation cursor and retries retain their original identity.
+const OUTBOX_BATCH: i64 = 1;
 
 #[derive(Clone)]
 pub struct AgentHubService {
@@ -60,7 +62,7 @@ impl AgentHubService {
         let service = Self { database };
         service.database.call(|connection| {
             connection.execute(
-                "INSERT OR IGNORE INTO agent_hub_settings(singleton,revision,public_enabled,public_paused) VALUES(1,0,0,0)",
+                "INSERT INTO agent_hub_settings(singleton,revision,public_enabled,public_paused) VALUES(1,0,0,0) ON CONFLICT(singleton) DO NOTHING",
                 [],
             )?;
             Ok(())
@@ -112,8 +114,8 @@ impl AgentHubService {
         let callback_secret_for_insert = callback_secret.clone();
         self.database.transaction(move |tx| {
             tx.execute(
-                "INSERT INTO agent_hub_agents(agent_id,handle,space,display_name,repository_label,domain_label,current_subject,capabilities_json,token_hash,callback_url,callback_secret,state,lease_expires_at,created_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'active',?12,?13,?13)",
-                rusqlite::params![agent_id,handle,space_text(request.space),request.display_name,request.repository_label,request.domain_label,request.current_subject,capabilities,hash,callback_url,callback_secret_for_insert,expiry,now],
+                "INSERT INTO agent_hub_agents(agent_id,handle,space,display_name,repository_label,domain_label,current_subject,capabilities_json,token_hash,callback_url,callback_secret,state,lease_expires_at,created_at,last_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'active',$12,$13,$13)",
+                crate::database::params![agent_id,handle,space_text(request.space),request.display_name,request.repository_label,request.domain_label,request.current_subject,capabilities,hash,callback_url,callback_secret_for_insert,expiry,now],
             )?;
             Ok(())
         }).map_err(database_error)?;
@@ -137,7 +139,7 @@ impl AgentHubService {
         let id = agent.agent_id.clone();
         let subject = request.current_subject;
         self.database.call(move |db| {
-            let changed = db.execute("UPDATE agent_hub_agents SET current_subject=COALESCE(?1,current_subject),lease_expires_at=?2,last_seen_at=?3,state='active' WHERE agent_id=?4 AND state!='unregistered'", rusqlite::params![subject,expiry,now,id])?;
+            let changed = db.execute("UPDATE agent_hub_agents SET current_subject=COALESCE($1,current_subject),lease_expires_at=$2,last_seen_at=$3,state='active' WHERE agent_id=$4 AND state!='unregistered'", crate::database::params![subject,expiry,now,id])?;
             if changed == 0 { return Err(DatabaseError::Domain(hub_not_found())); }
             Ok(())
         }).map_err(database_error)?;
@@ -153,8 +155,8 @@ impl AgentHubService {
         let id = agent.agent_id.clone();
         let now = now_text()?;
         self.database.transaction(move |tx| {
-            tx.execute("UPDATE agent_hub_agents SET state='unregistered',unregistered_at=?1,last_seen_at=?1 WHERE agent_id=?2", rusqlite::params![now,id])?;
-            tx.execute("DELETE FROM agent_hub_room_members WHERE agent_id=?1", [id])?;
+            tx.execute("UPDATE agent_hub_agents SET state='unregistered',unregistered_at=$1,last_seen_at=$1 WHERE agent_id=$2", crate::database::params![now,id])?;
+            tx.execute("DELETE FROM agent_hub_room_members WHERE agent_id=$1", [id])?;
             Ok(())
         }).map_err(database_error)?;
         self.agent_profile(&agent.agent_id)
@@ -171,9 +173,9 @@ impl AgentHubService {
         let limit = bounded_page(request.limit);
         let after = request.after;
         let space = space_text(request.space);
-        let rows = self.database.call(move |db| {
-            let mut statement = db.prepare("SELECT agent_id,handle,space,display_name,repository_label,domain_label,current_subject,capabilities_json,token_hash,callback_url,callback_secret,state,lease_expires_at,created_at,last_seen_at FROM agent_hub_agents WHERE space=?1 AND state!='unregistered' AND (?2 IS NULL OR handle>?2) ORDER BY handle LIMIT ?3")?;
-            let iter = statement.query_map(rusqlite::params![space,after,limit as i64], agent_row)?;
+        let rows = self.database.read(move |db| {
+            let mut statement = db.prepare("SELECT agent_id,handle,space,display_name,repository_label,domain_label,current_subject,capabilities_json,token_hash,callback_url,callback_secret,state,lease_expires_at,created_at,last_seen_at FROM agent_hub_agents WHERE space=$1 AND state!='unregistered' AND ($2::text IS NULL OR handle>$2) ORDER BY handle LIMIT $3")?;
+            let iter = statement.query_map(crate::database::params![space,after,limit as i64], agent_row)?;
             iter.collect::<Result<Vec<_>,_>>().map_err(DatabaseError::from)
         }).map_err(database_error)?;
         let next = (rows.len() == limit as usize)
@@ -203,12 +205,12 @@ impl AgentHubService {
         let name = request.name.clone();
         let space = request.space;
         self.database.transaction(move |tx| {
-            tx.execute("INSERT INTO agent_hub_rooms(room_id,space,name,created_by,created_at) VALUES(?1,?2,?3,?4,?5)", rusqlite::params![room_id_for_insert.clone(),space_text(space),name,creator_id,now])?;
-            tx.execute("INSERT INTO agent_hub_room_members(room_id,agent_id,joined_at) VALUES(?1,?2,?3)", rusqlite::params![room_id_for_insert.clone(),creator_id,now])?;
+            tx.execute("INSERT INTO agent_hub_rooms(room_id,space,name,created_by,created_at) VALUES($1,$2,$3,$4,$5)", crate::database::params![room_id_for_insert.clone(),space_text(space),name,creator_id,now])?;
+            tx.execute("INSERT INTO agent_hub_room_members(room_id,agent_id,joined_at) VALUES($1,$2,$3)", crate::database::params![room_id_for_insert.clone(),creator_id,now])?;
             for member in requested_members {
-                let member_space: String = tx.query_row("SELECT space FROM agent_hub_agents WHERE agent_id=?1 AND state='active'", [&member], |r| r.get(0)).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+                let member_space: String = tx.query_row("SELECT space FROM agent_hub_agents WHERE agent_id=$1 AND state='active'", [&member], |r| r.get(0)).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
                 if member_space != space_text(space) { return Err(DatabaseError::Domain(invalid("room members must use one hub space"))); }
-                tx.execute("INSERT OR IGNORE INTO agent_hub_room_members(room_id,agent_id,joined_at) VALUES(?1,?2,?3)", rusqlite::params![room_id_for_insert.clone(),member,now])?;
+                tx.execute("INSERT INTO agent_hub_room_members(room_id,agent_id,joined_at) VALUES($1,$2,$3) ON CONFLICT(room_id,agent_id) DO NOTHING", crate::database::params![room_id_for_insert.clone(),member,now])?;
             }
             Ok(())
         }).map_err(database_error)?;
@@ -224,10 +226,10 @@ impl AgentHubService {
         let limit = bounded_page(request.limit);
         let id = agent.agent_id;
         let space = request.space.map(space_text);
-        let rooms = self.database.call(move |db| {
-            let mut statement = db.prepare("SELECT r.room_id,r.space,r.name,r.created_at FROM agent_hub_rooms r JOIN agent_hub_room_members m ON m.room_id=r.room_id WHERE m.agent_id=?1 AND (?2 IS NULL OR r.space=?2) AND r.archived_at IS NULL ORDER BY r.created_at,r.room_id LIMIT ?3")?;
+        let rooms = self.database.read(move |db| {
+            let mut statement = db.prepare("SELECT r.room_id,r.space,r.name,r.created_at FROM agent_hub_rooms r JOIN agent_hub_room_members m ON m.room_id=r.room_id WHERE m.agent_id=$1 AND ($2::text IS NULL OR r.space=$2) AND r.archived_at IS NULL ORDER BY r.created_at,r.room_id LIMIT $3")?;
             let mut rows = Vec::new();
-            for row in statement.query_map(rusqlite::params![id,space,limit as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))? {
+            for row in statement.query_map(crate::database::params![id,space,limit as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))? {
                 let (room_id,space,name,created_at) = row?;
                 let members = room_members(db, &room_id)?;
                 rows.push(api::Room {room_id,space:parse_space(&space)?,name,created_at,members});
@@ -263,14 +265,14 @@ impl AgentHubService {
         let actor_id = actor.agent_id.clone();
         let now = now_text()?;
         self.database.transaction(move |tx| {
-            let space: String = tx.query_row("SELECT space FROM agent_hub_rooms WHERE room_id=?1 AND archived_at IS NULL", [&room_id], |r| r.get(0)).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
-            let actor_member: i64 = tx.query_row("SELECT count(*) FROM agent_hub_room_members WHERE room_id=?1 AND agent_id=?2", rusqlite::params![room_id.clone(),actor_id], |r| r.get(0))?;
+            let space: String = tx.query_row("SELECT space FROM agent_hub_rooms WHERE room_id=$1 AND archived_at IS NULL", [&room_id], |r| r.get(0)).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+            let actor_member: i64 = tx.query_row("SELECT count(*) FROM agent_hub_room_members WHERE room_id=$1 AND agent_id=$2", crate::database::params![room_id.clone(),actor_id], |r| r.get(0))?;
             if actor_member == 0 { return Err(DatabaseError::Domain(denied())); }
-            let member_space: Option<String> = tx.query_row("SELECT space FROM agent_hub_agents WHERE agent_id=?1 AND state='active'", [&member], |r| r.get(0)).optional()?;
+            let member_space: Option<String> = tx.query_row("SELECT space FROM agent_hub_agents WHERE agent_id=$1 AND state='active'", [&member], |r| r.get(0)).optional()?;
             if add {
                 if member_space.as_deref() != Some(&space) { return Err(DatabaseError::Domain(hub_not_found())); }
-                tx.execute("INSERT OR IGNORE INTO agent_hub_room_members(room_id,agent_id,joined_at) VALUES(?1,?2,?3)", rusqlite::params![room_id.clone(),member,now])?;
-            } else { tx.execute("DELETE FROM agent_hub_room_members WHERE room_id=?1 AND agent_id=?2", rusqlite::params![room_id.clone(),member])?; }
+                tx.execute("INSERT INTO agent_hub_room_members(room_id,agent_id,joined_at) VALUES($1,$2,$3) ON CONFLICT(room_id,agent_id) DO NOTHING", crate::database::params![room_id.clone(),member,now])?;
+            } else { tx.execute("DELETE FROM agent_hub_room_members WHERE room_id=$1 AND agent_id=$2", crate::database::params![room_id.clone(),member])?; }
             Ok(())
         }).map_err(database_error)?;
         self.room(&request.room_id)
@@ -317,10 +319,10 @@ impl AgentHubService {
         self.database.transaction(move |tx| {
             for id in ids {
                 tx.execute(
-                    "UPDATE agent_hub_deliveries SET acknowledged_at=?1 WHERE delivery_id=?2 AND recipient_agent_id=?3",
-                    rusqlite::params![now, id, recipient_id],
+                    "UPDATE agent_hub_deliveries SET acknowledged_at=$1 WHERE delivery_id=$2 AND recipient_agent_id=$3",
+                    crate::database::params![now, id, recipient_id],
                 )?;
-                tx.execute("DELETE FROM agent_hub_outbox WHERE delivery_id=?1", [&id])?;
+                tx.execute("DELETE FROM agent_hub_outbox WHERE delivery_id=$1", [&id])?;
             }
             Ok(())
         }).map_err(database_error)?;
@@ -351,15 +353,16 @@ impl AgentHubService {
         let size = request.byte_size;
         let digest = request.sha256.to_ascii_lowercase();
         let result = self.database.transaction(move |tx| {
-            tx.execute("DELETE FROM agent_hub_uploads WHERE expires_at<?1", [&now])?;
-            if let Some(existing) = tx.query_row("SELECT upload_id,name,content_type,byte_size,sha256,length(content) FROM agent_hub_uploads WHERE owner_agent_id=?1 AND request_key=?2", rusqlite::params![owner_id,request_key], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?,r.get::<_,String>(4)?,r.get::<_,u32>(5)?))).optional()? {
+            tx.query_row("SELECT agent_id FROM agent_hub_agents WHERE agent_id=$1 FOR UPDATE", [&owner_id], |_| Ok(()))?;
+            tx.execute("DELETE FROM agent_hub_uploads WHERE expires_at<$1", [&now])?;
+            if let Some(existing) = tx.query_row("SELECT upload_id,name,content_type,byte_size,sha256,length(content) FROM agent_hub_uploads WHERE owner_agent_id=$1 AND request_key=$2", crate::database::params![owner_id,request_key], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?,r.get::<_,String>(4)?,r.get::<_,u32>(5)?))).optional()? {
                 if existing.1 != name || existing.3 != size || existing.4 != digest { return Err(DatabaseError::Domain(invalid("upload request key was reused for different content"))); }
                 return Ok(api::UploadStartResult {upload_id:existing.0,attachment:api::Attachment{attachment_id:String::new(),name:existing.1,content_type:existing.2,byte_size:existing.3,sha256:existing.4},next_offset:existing.5});
             }
-            let count: i64 = tx.query_row("SELECT count(*) FROM agent_hub_uploads WHERE owner_agent_id=?1", [&owner_id], |r| r.get(0))?;
-            let total: i64 = tx.query_row("SELECT coalesce(sum(byte_size),0) FROM agent_hub_uploads WHERE owner_agent_id=?1", [&owner_id], |r| r.get(0))?;
+            let count: i64 = tx.query_row("SELECT count(*) FROM agent_hub_uploads WHERE owner_agent_id=$1", [&owner_id], |r| r.get(0))?;
+            let total: i64 = tx.query_row("SELECT coalesce(sum(byte_size)::bigint,0) FROM agent_hub_uploads WHERE owner_agent_id=$1", [&owner_id], |r| r.get(0))?;
             if count >= MAX_PENDING_UPLOADS || total + i64::from(size) > MAX_PENDING_BYTES { return Err(DatabaseError::Domain(hub_attachment_invalid("pending upload quota exceeded"))); }
-            tx.execute("INSERT INTO agent_hub_uploads(upload_id,owner_agent_id,request_key,name,content_type,byte_size,sha256,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", rusqlite::params![upload_id,owner_id,request_key,name,ctype,size,digest,now,expiry])?;
+            tx.execute("INSERT INTO agent_hub_uploads(upload_id,owner_agent_id,request_key,name,content_type,byte_size,sha256,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", crate::database::params![upload_id,owner_id,request_key,name,ctype,size,digest,now,expiry])?;
             Ok(api::UploadStartResult {upload_id:upload_id.clone(),attachment:api::Attachment{attachment_id:String::new(),name,content_type:ctype,byte_size:size,sha256:digest},next_offset:0})
         }).map_err(database_error)?;
         Ok(result)
@@ -383,10 +386,10 @@ impl AgentHubService {
         let owner_id = owner.agent_id.clone();
         let offset = request.offset;
         self.database.transaction(move |tx| {
-            let (size,mut content):(u32,Vec<u8>)=tx.query_row("SELECT byte_size,content FROM agent_hub_uploads WHERE upload_id=?1 AND owner_agent_id=?2 AND expires_at>=?3", rusqlite::params![id,owner_id,now_text()?], |r| Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+            let (size,mut content):(u32,Vec<u8>)=tx.query_row("SELECT byte_size,content FROM agent_hub_uploads WHERE upload_id=$1 AND owner_agent_id=$2 AND expires_at>=$3 FOR UPDATE", crate::database::params![id,owner_id,now_text()?], |r| Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
             if content.len() as u32 != offset || content.len()+bytes.len() > size as usize { return Err(DatabaseError::Domain(hub_attachment_invalid("attachment offset or length does not match"))); }
             content.extend_from_slice(&bytes);
-            tx.execute("UPDATE agent_hub_uploads SET content=?1 WHERE upload_id=?2 AND owner_agent_id=?3", rusqlite::params![content,id,owner_id])?;
+            tx.execute("UPDATE agent_hub_uploads SET content=$1 WHERE upload_id=$2 AND owner_agent_id=$3", crate::database::params![content,id,owner_id])?;
             Ok(api::UploadChunkResult {upload_id:id,next_offset:offset + bytes.len() as u32,complete:offset + bytes.len() as u32 == size})
         }).map_err(database_error)
     }
@@ -401,13 +404,13 @@ impl AgentHubService {
         let offset = request.offset;
         let upload_id = request.upload_id.clone();
         let file_id = request.file_id.clone();
-        self.database.call(move |db| {
+        self.database.read(move |db| {
             if let Some(id) = upload_id {
-                let (name,ctype,size,digest,content):(String,String,u32,String,Vec<u8>)=db.query_row("SELECT name,content_type,byte_size,sha256,content FROM agent_hub_uploads WHERE upload_id=?1 AND owner_agent_id=?2", rusqlite::params![id,owner_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+                let (name,ctype,size,digest,content):(String,String,u32,String,Vec<u8>)=db.query_row("SELECT name,content_type,byte_size,sha256,content FROM agent_hub_uploads WHERE upload_id=$1 AND owner_agent_id=$2", crate::database::params![id,owner_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
                 return file_chunk(api::Attachment{attachment_id:id,name,content_type:ctype,byte_size:size,sha256:digest},content,offset);
             }
             let id=file_id.ok_or_else(|| DatabaseError::Domain(hub_attachment_invalid("upload_id or file_id is required")))?;
-            let (attachment,message_room,name,ctype,size,digest,content):(String,String,String,String,u32,String,Vec<u8>)=db.query_row("SELECT a.attachment_id,m.room_id,a.name,a.content_type,a.byte_size,a.sha256,a.content FROM agent_hub_attachments a JOIN agent_hub_messages m ON m.message_id=a.message_id JOIN agent_hub_room_members rm ON rm.room_id=m.room_id WHERE a.attachment_id=?1 AND rm.agent_id=?2", rusqlite::params![id,owner_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
+            let (attachment,message_room,name,ctype,size,digest,content):(String,String,String,String,u32,String,Vec<u8>)=db.query_row("SELECT a.attachment_id,m.room_id,a.name,a.content_type,a.byte_size,a.sha256,a.content FROM agent_hub_attachments a JOIN agent_hub_messages m ON m.message_id=a.message_id JOIN agent_hub_room_members rm ON rm.room_id=m.room_id WHERE a.attachment_id=$1 AND rm.agent_id=$2", crate::database::params![id,owner_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?.ok_or_else(|| DatabaseError::Domain(hub_not_found()))?;
             let _ = (message_room, attachment);
             file_chunk(api::Attachment{attachment_id:id,name,content_type:ctype,byte_size:size,sha256:digest},content,offset)
         }).map_err(database_error)
@@ -423,8 +426,8 @@ impl AgentHubService {
         self.database
             .call(move |db| {
                 db.execute(
-                    "DELETE FROM agent_hub_uploads WHERE upload_id=?1 AND owner_agent_id=?2",
-                    rusqlite::params![id, owner.agent_id],
+                    "DELETE FROM agent_hub_uploads WHERE upload_id=$1 AND owner_agent_id=$2",
+                    crate::database::params![id, owner.agent_id],
                 )?;
                 Ok(())
             })
@@ -433,7 +436,7 @@ impl AgentHubService {
     }
 
     pub fn settings(&self) -> Result<api::Settings, ProtocolError> {
-        self.database.call(|db| {
+        self.database.read(|db| {
             let (revision,enabled,paused,current,previous):(u64,bool,bool,Option<String>,Option<String>)=db.query_row("SELECT revision,public_enabled,public_paused,current_key_created_at,previous_key_expires_at FROM agent_hub_settings WHERE singleton=1", [], |r| Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? != 0,r.get::<_,i64>(2)? != 0,r.get(3)?,r.get(4)?)))?;
             let pending:u32=db.query_row("SELECT count(*) FROM agent_hub_outbox", [], |r| r.get(0))?;
             Ok(api::Settings{revision,public_enabled:enabled,public_paused:paused,current_key_created_at:current,previous_key_expires_at:previous,callback_outbox_pending:pending})
@@ -442,7 +445,7 @@ impl AgentHubService {
 
     pub fn settings_set(&self, request: api::SettingsSet) -> Result<api::Settings, ProtocolError> {
         self.database.transaction(move |tx| {
-            let changed=tx.execute("UPDATE agent_hub_settings SET revision=revision+1,public_enabled=?1,public_paused=?2 WHERE singleton=1 AND revision=?3", rusqlite::params![i64::from(request.public_enabled),i64::from(request.public_paused),request.expected_revision as i64])?;
+            let changed=tx.execute("UPDATE agent_hub_settings SET revision=revision+1,public_enabled=$1,public_paused=$2 WHERE singleton=1 AND revision=$3", crate::database::params![i64::from(request.public_enabled),i64::from(request.public_paused),request.expected_revision as i64])?;
             if changed==0{return Err(DatabaseError::Domain(conflict("hub settings changed; refresh before saving")));} Ok(())
         }).map_err(database_error)?;
         self.settings()
@@ -458,9 +461,9 @@ impl AgentHubService {
         let hash = hash_secret(&key);
         let expiry_for_store = expiry.clone();
         let revision=self.database.transaction(move |tx| {
-            let row: (u64,Option<String>)=tx.query_row("SELECT revision,current_key_hash FROM agent_hub_settings WHERE singleton=1", [], |r| Ok((r.get::<_,i64>(0)? as u64,r.get(1)?)))?;
+            let row: (u64,Option<String>)=tx.query_row("SELECT revision,current_key_hash FROM agent_hub_settings WHERE singleton=1 FOR UPDATE", [], |r| Ok((r.get::<_,i64>(0)? as u64,r.get(1)?)))?;
             if row.0 != request.expected_revision { return Err(DatabaseError::Domain(conflict("hub key changed; refresh before rotating"))); }
-            tx.execute("UPDATE agent_hub_settings SET revision=revision+1,previous_key_hash=current_key_hash,previous_key_expires_at=?1,current_key_hash=?2,current_key_created_at=?3 WHERE singleton=1", rusqlite::params![expiry_for_store,hash,now])?;
+            tx.execute("UPDATE agent_hub_settings SET revision=revision+1,previous_key_hash=current_key_hash,previous_key_expires_at=$1,current_key_hash=$2,current_key_created_at=$3 WHERE singleton=1", crate::database::params![expiry_for_store,hash,now])?;
             Ok(row.0+1)
         }).map_err(database_error)?;
         Ok(api::KeyRotateResult {
@@ -473,11 +476,11 @@ impl AgentHubService {
     pub fn activity(&self, request: api::Activity) -> Result<api::ActivityResult, ProtocolError> {
         self.expire_leases()?;
         let space = request.space.map(space_text);
-        self.database.call(move |db| {
-            let where_space = if space.is_some() { " AND space=?1" } else { "" };
-            let active: u32 = db.query_row(&format!("SELECT count(*) FROM agent_hub_agents WHERE state='active'{}",where_space), rusqlite::params_from_iter(space.iter()), |r| r.get(0))?;
-            let rooms: u32 = db.query_row(&format!("SELECT count(*) FROM agent_hub_rooms WHERE archived_at IS NULL{}",where_space), rusqlite::params_from_iter(space.iter()), |r| r.get(0))?;
-            let messages: u32 = db.query_row(&format!("SELECT count(*) FROM agent_hub_messages m JOIN agent_hub_rooms r ON r.room_id=m.room_id WHERE 1=1{}",space.as_ref().map(|_| " AND r.space=?1").unwrap_or("")), rusqlite::params_from_iter(space.iter()), |r| r.get(0))?;
+        self.database.read(move |db| {
+            let where_space = if space.is_some() { " AND space=$1" } else { "" };
+            let active: u32 = db.query_row(&format!("SELECT count(*) FROM agent_hub_agents WHERE state='active'{}",where_space), crate::database::params_from_iter(space.iter()), |r| r.get(0))?;
+            let rooms: u32 = db.query_row(&format!("SELECT count(*) FROM agent_hub_rooms WHERE archived_at IS NULL{}",where_space), crate::database::params_from_iter(space.iter()), |r| r.get(0))?;
+            let messages: u32 = db.query_row(&format!("SELECT count(*) FROM agent_hub_messages m JOIN agent_hub_rooms r ON r.room_id=m.room_id WHERE 1=1{}",space.as_ref().map(|_| " AND r.space=$1").unwrap_or("")), crate::database::params_from_iter(space.iter()), |r| r.get(0))?;
             let deliveries: u32 = db.query_row("SELECT count(*) FROM agent_hub_deliveries WHERE acknowledged_at IS NULL", [], |r| r.get(0))?;
             let outbox: u32 = db.query_row("SELECT count(*) FROM agent_hub_outbox", [], |r| r.get(0))?;
             Ok(api::ActivityResult{active_agents:active,rooms,messages,deliveries_pending:deliveries,outbox_pending:outbox})
@@ -506,12 +509,13 @@ impl AgentHubService {
         let room = request.room_id;
         let after = request.after;
         let space = space_text(request.space);
-        let messages = self.database.call(move |db| {
-            let mut statement = db.prepare("SELECT m.message_id,m.room_id,m.body,m.created_at FROM agent_hub_messages m JOIN agent_hub_rooms r ON r.room_id=m.room_id WHERE r.space=?1 AND (?2 IS NULL OR m.room_id=?2) AND (?3 IS NULL OR m.message_id>?3) ORDER BY m.created_at,m.message_id LIMIT ?4")?;
-            let mut result = Vec::new();
-            for row in statement.query_map(rusqlite::params![space,room,after,limit as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))? {
+        let messages = self.database.read(move |db| {
+            let mut statement = db.prepare("SELECT m.message_id,m.room_id,m.body,m.created_at FROM agent_hub_messages m JOIN agent_hub_rooms r ON r.room_id=m.room_id WHERE r.space=$1 AND ($2::text IS NULL OR m.room_id=$2) AND ($3::text IS NULL OR (m.created_at,m.message_id)>(SELECT p.created_at,p.message_id FROM agent_hub_messages p JOIN agent_hub_rooms pr ON pr.room_id=p.room_id WHERE p.message_id=$3 AND pr.space=$1)) ORDER BY m.created_at,m.message_id LIMIT $4")?;
+            let mut result = Vec::new();let mut bytes=1024;
+            for row in statement.query_map(crate::database::params![space,room,after,limit as i64], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))? {
                 let (message_id,room_id,body,created_at) = row?;
-                result.push(api::Delivery { delivery_id: format!("console:{message_id}"), message: message_from_parts(db,&message_id,&room_id,&body,&created_at)?, acknowledged: false });
+                let delivery=api::Delivery { delivery_id: format!("console:{message_id}"), message: message_from_parts(db,&message_id,&room_id,&body,&created_at)?, acknowledged: false };
+                if !push_delivery_page(&mut result,delivery,&mut bytes)?{break;}
             }
             Ok(result)
         }).map_err(database_error)?;
@@ -546,7 +550,7 @@ impl AgentHubService {
             .transaction(move |tx| {
                 let exists: Option<i64> = tx
                     .query_row(
-                        "SELECT 1 FROM agent_hub_agents WHERE agent_id=?1 AND state!='unregistered'",
+                        "SELECT 1 FROM agent_hub_agents WHERE agent_id=$1 AND state!='unregistered'",
                         [&agent_id],
                         |row| row.get(0),
                     )
@@ -555,20 +559,20 @@ impl AgentHubService {
                     return Ok(false);
                 }
                 tx.execute(
-                    "DELETE FROM agent_hub_outbox WHERE delivery_id IN (SELECT delivery_id FROM agent_hub_deliveries WHERE recipient_agent_id=?1)",
+                    "DELETE FROM agent_hub_outbox WHERE delivery_id IN (SELECT delivery_id FROM agent_hub_deliveries WHERE recipient_agent_id=$1)",
                     [&agent_id],
                 )?;
                 tx.execute(
-                    "DELETE FROM agent_hub_deliveries WHERE recipient_agent_id=?1",
+                    "DELETE FROM agent_hub_deliveries WHERE recipient_agent_id=$1",
                     [&agent_id],
                 )?;
                 tx.execute(
-                    "DELETE FROM agent_hub_room_members WHERE agent_id=?1",
+                    "DELETE FROM agent_hub_room_members WHERE agent_id=$1",
                     [&agent_id],
                 )?;
                 tx.execute(
-                    "UPDATE agent_hub_agents SET state='unregistered',unregistered_at=?1,last_seen_at=?1 WHERE agent_id=?2",
-                    rusqlite::params![now, agent_id],
+                    "UPDATE agent_hub_agents SET state='unregistered',unregistered_at=$1,last_seen_at=$1 WHERE agent_id=$2",
+                    crate::database::params![now, agent_id],
                 )?;
                 Ok(true)
             })
@@ -585,7 +589,7 @@ impl AgentHubService {
             .database
             .transaction(move |tx| {
                 let changed = tx.execute(
-                    "DELETE FROM agent_hub_messages WHERE message_id=?1",
+                    "DELETE FROM agent_hub_messages WHERE message_id=$1",
                     [&message_id],
                 )?;
                 Ok(changed != 0)
@@ -604,7 +608,7 @@ impl AgentHubService {
             .transaction(move |tx| {
                 let exists: Option<i64> = tx
                     .query_row(
-                        "SELECT 1 FROM agent_hub_rooms WHERE room_id=?1",
+                        "SELECT 1 FROM agent_hub_rooms WHERE room_id=$1",
                         [&room_id],
                         |row| row.get(0),
                     )
@@ -613,18 +617,18 @@ impl AgentHubService {
                     return Ok(false);
                 }
                 tx.execute(
-                    "DELETE FROM agent_hub_outbox WHERE delivery_id IN (SELECT d.delivery_id FROM agent_hub_deliveries d JOIN agent_hub_messages m ON m.message_id=d.message_id WHERE m.room_id=?1)",
+                    "DELETE FROM agent_hub_outbox WHERE delivery_id IN (SELECT d.delivery_id FROM agent_hub_deliveries d JOIN agent_hub_messages m ON m.message_id=d.message_id WHERE m.room_id=$1)",
                     [&room_id],
                 )?;
                 tx.execute(
-                    "DELETE FROM agent_hub_messages WHERE room_id=?1",
+                    "DELETE FROM agent_hub_messages WHERE room_id=$1",
                     [&room_id],
                 )?;
                 tx.execute(
-                    "DELETE FROM agent_hub_room_members WHERE room_id=?1",
+                    "DELETE FROM agent_hub_room_members WHERE room_id=$1",
                     [&room_id],
                 )?;
-                tx.execute("DELETE FROM agent_hub_rooms WHERE room_id=?1", [&room_id])?;
+                tx.execute("DELETE FROM agent_hub_rooms WHERE room_id=$1", [&room_id])?;
                 Ok(true)
             })
             .map_err(database_error)?;
@@ -706,13 +710,16 @@ impl AgentHubService {
         self.database
             .transaction(move |tx| {
                 tx.execute(
-                    "DELETE FROM agent_hub_outbox WHERE created_at<?1 OR attempts>=?2",
-                    rusqlite::params![cutoff, MAX_OUTBOX_ATTEMPTS],
+                    "DELETE FROM agent_hub_outbox WHERE created_at<$1 OR attempts>=$2",
+                    crate::database::params![cutoff, MAX_OUTBOX_ATTEMPTS],
                 )?;
                 Ok(())
             })
             .map_err(database_error)?;
-        let rows=self.database.call(move |db| { let mut q=db.prepare("SELECT outbox_id,callback_url,payload_json,signature,attempts FROM agent_hub_outbox WHERE next_attempt_at<=?1 ORDER BY outbox_id LIMIT ?2")?; q.query_map(rusqlite::params![now_text,OUTBOX_BATCH], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?))).and_then(|i| i.collect::<Result<Vec<_>,_>>()).map_err(DatabaseError::from) }).map_err(database_error)?;
+        let claim_until = (now + TimeDuration::seconds(30))
+            .format(&Rfc3339)
+            .map_err(|e| internal(e.to_string()))?;
+        let rows=self.database.maintenance_transaction(move |db| { let mut q=db.prepare("WITH candidates AS (SELECT outbox_id FROM agent_hub_outbox WHERE next_attempt_at<=$1 ORDER BY outbox_id FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE agent_hub_outbox o SET next_attempt_at=$3 FROM candidates c WHERE o.outbox_id=c.outbox_id RETURNING o.outbox_id,o.callback_url,o.payload_json,o.signature,o.attempts")?; q.query_map(crate::database::params![now_text,OUTBOX_BATCH,claim_until], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?))).and_then(|i| i.collect::<Result<Vec<_>,_>>()).map_err(DatabaseError::from) }).map_err(database_error)?;
         if rows.is_empty() {
             return Ok(0);
         }
@@ -734,7 +741,7 @@ impl AgentHubService {
             if result.is_ok() {
                 self.database
                     .call(move |db| {
-                        db.execute("DELETE FROM agent_hub_outbox WHERE outbox_id=?1", [id])?;
+                        db.execute("DELETE FROM agent_hub_outbox WHERE outbox_id=$1", [id])?;
                         Ok(())
                     })
                     .map_err(database_error)?;
@@ -745,7 +752,7 @@ impl AgentHubService {
                 let retry = (OffsetDateTime::now_utc() + TimeDuration::seconds(delay))
                     .format(&Rfc3339)
                     .map_err(|e| internal(e.to_string()))?;
-                self.database.call(move |db| { db.execute("UPDATE agent_hub_outbox SET attempts=?1,next_attempt_at=?2,last_error='callback delivery failed' WHERE outbox_id=?3",rusqlite::params![next_attempt,retry,id])?; Ok(()) }).map_err(database_error)?;
+                self.database.call(move |db| { db.execute("UPDATE agent_hub_outbox SET attempts=$1,next_attempt_at=$2,last_error='callback delivery failed' WHERE outbox_id=$3",crate::database::params![next_attempt,retry,id])?; Ok(()) }).map_err(database_error)?;
             }
         }
         Ok(delivered)
@@ -774,23 +781,24 @@ impl AgentHubService {
         let now = now_text()?;
         let message_id = ids::agent_message_id().map_err(id_error)?;
         let inserted=self.database.transaction(move |tx| {
-            let (space,): (String,)=tx.query_row("SELECT space FROM agent_hub_rooms WHERE room_id=?1 AND archived_at IS NULL", [&room_id_owned], |r| Ok((r.get(0)?,))).optional()?.ok_or_else(||DatabaseError::Domain(hub_not_found()))?;
-            if let Some(ref id)=sender_id { let count:i64=tx.query_row("SELECT count(*) FROM agent_hub_room_members WHERE room_id=?1 AND agent_id=?2",rusqlite::params![room_id_owned,id],|r|r.get(0))?; if count==0{return Err(DatabaseError::Domain(denied()));} }
-            if let Some(ref existing)=client_id && let Some(found)=tx.query_row("SELECT message_id FROM agent_hub_messages WHERE sender_agent_id IS ?1 AND client_message_id=?2",rusqlite::params![sender_id,existing],|r|r.get::<_,String>(0)).optional()? { return Ok(found); }
-            if !ids.is_empty() { let total:i64=tx.query_row("SELECT coalesce(sum(byte_size),0) FROM agent_hub_uploads WHERE owner_agent_id IS ?1 AND upload_id IN (SELECT value FROM json_each(?2))",rusqlite::params![sender_id,serde_json::to_string(&ids).unwrap_or_default()],|r|r.get(0)).unwrap_or(0); if total as u64 > MAX_MESSAGE_BYTES{return Err(DatabaseError::Domain(hub_attachment_invalid("message attachment total exceeds 32 MiB")));} }
-            tx.execute("INSERT INTO agent_hub_messages(message_id,room_id,sender_agent_id,body,client_message_id,created_at) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params![message_id,room_id_owned,sender_id,body_owned,client_id,now])?;
+            tx.query_row("SELECT pg_advisory_xact_lock(hashtextextended('hub-send:'||COALESCE($1::text,'console'),0))", [sender_id.as_deref()], |_| Ok(()))?;
+            let (space,): (String,)=tx.query_row("SELECT space FROM agent_hub_rooms WHERE room_id=$1 AND archived_at IS NULL", [&room_id_owned], |r| Ok((r.get(0)?,))).optional()?.ok_or_else(||DatabaseError::Domain(hub_not_found()))?;
+            if let Some(ref id)=sender_id { let count:i64=tx.query_row("SELECT count(*) FROM agent_hub_room_members WHERE room_id=$1 AND agent_id=$2",crate::database::params![room_id_owned,id],|r|r.get(0))?; if count==0{return Err(DatabaseError::Domain(denied()));} }
+            if let Some(ref existing)=client_id && let Some(found)=tx.query_row("SELECT message_id FROM agent_hub_messages WHERE sender_agent_id IS NOT DISTINCT FROM $1 AND client_message_id=$2",crate::database::params![sender_id,existing],|r|r.get::<_,String>(0)).optional()? { return Ok(found); }
+            if !ids.is_empty() { let total:i64=tx.query_row("SELECT coalesce(sum(byte_size)::bigint,0) FROM agent_hub_uploads WHERE owner_agent_id IS NOT DISTINCT FROM $1 AND upload_id IN (SELECT value FROM jsonb_array_elements_text($2::jsonb))",crate::database::params![sender_id,serde_json::to_string(&ids).unwrap_or_default()],|r|r.get(0))?; if total as u64 > MAX_MESSAGE_BYTES{return Err(DatabaseError::Domain(hub_attachment_invalid("message attachment total exceeds 32 MiB")));} }
+            tx.execute("INSERT INTO agent_hub_messages(message_id,room_id,sender_agent_id,body,client_message_id,created_at) VALUES($1,$2,$3,$4,$5,$6)",crate::database::params![message_id,room_id_owned,sender_id,body_owned,client_id,now])?;
             for (position,upload_id) in ids.iter().enumerate() {
-                let (name,ctype,size,digest,content):(String,String,u32,String,Vec<u8>)=tx.query_row("SELECT name,content_type,byte_size,sha256,content FROM agent_hub_uploads WHERE upload_id=?1 AND owner_agent_id IS ?2 AND length(content)=byte_size",rusqlite::params![upload_id,sender_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?.ok_or_else(||DatabaseError::Domain(hub_attachment_invalid("attachment upload is incomplete or unavailable")))?;
+                let (name,ctype,size,digest,content):(String,String,u32,String,Vec<u8>)=tx.query_row("SELECT name,content_type,byte_size,sha256,content FROM agent_hub_uploads WHERE upload_id=$1 AND owner_agent_id IS NOT DISTINCT FROM $2 AND length(content)=byte_size FOR UPDATE",crate::database::params![upload_id,sender_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?.ok_or_else(||DatabaseError::Domain(hub_attachment_invalid("attachment upload is incomplete or unavailable")))?;
                 let actual=hex_digest(&content); if actual != digest {return Err(DatabaseError::Domain(hub_attachment_invalid("attachment digest mismatch")));}
                 let attachment_id=ids::hub_attachment_id().map_err(id_error)?;
-                tx.execute("INSERT INTO agent_hub_attachments(attachment_id,message_id,position,name,content_type,byte_size,sha256,content) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![attachment_id,message_id,position as i64,name,ctype,size,digest,content])?;
-                tx.execute("DELETE FROM agent_hub_uploads WHERE upload_id=?1",[upload_id])?;
+                tx.execute("INSERT INTO agent_hub_attachments(attachment_id,message_id,position,name,content_type,byte_size,sha256,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",crate::database::params![attachment_id,message_id,position as i64,name,ctype,size,digest,content])?;
+                tx.execute("DELETE FROM agent_hub_uploads WHERE upload_id=$1",[upload_id])?;
             }
             let attachment_meta = attachments_for(tx, &message_id)?;
-            let mut recipients=Vec::new(); let mut q=tx.prepare("SELECT a.agent_id,a.callback_url,a.callback_secret FROM agent_hub_room_members m JOIN agent_hub_agents a ON a.agent_id=m.agent_id WHERE m.room_id=?1 AND a.state='active' AND a.agent_id IS NOT ?2")?;
-            for row in q.query_map(rusqlite::params![room_id_owned,sender_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<String>>(2)?)))? { recipients.push(row?); }
-            for (recipient,callback,secret) in recipients { let delivery=ids::hub_delivery_id().map_err(id_error)?; let callback_nonce=ids::hub_delivery_id().map_err(id_error)?; tx.execute("INSERT INTO agent_hub_deliveries(delivery_id,message_id,recipient_agent_id,created_at,next_attempt_at) VALUES(?1,?2,?3,?4,?4)",rusqlite::params![delivery,message_id,recipient,now])?; if let (Some(url),Some(secret))=(callback,secret) { let payload=serde_json::json!({"delivery_id":delivery,"message_id":message_id,"room_id":room_id_owned,"body":body_owned,"attachments":attachment_meta,"created_at":now,"timestamp":now,"nonce":callback_nonce}); let payload_json=serde_json::to_string(&payload).map_err(|e|DatabaseError::Domain(internal(e.to_string())))?; let signature=hmac_signature(&secret,payload_json.as_bytes()); tx.execute("INSERT INTO agent_hub_outbox(delivery_id,callback_url,payload_json,signature,callback_nonce,signed_at,next_attempt_at,created_at) VALUES(?1,?2,?3,?4,?5,?6,?6,?6)",rusqlite::params![delivery,url,payload_json,signature,callback_nonce,now])?; } }
-            tx.execute("DELETE FROM agent_hub_outbox WHERE outbox_id IN (SELECT outbox_id FROM agent_hub_outbox ORDER BY outbox_id DESC LIMIT -1 OFFSET ?1)",[MAX_OUTBOX_ROWS])?;
+            let mut recipients=Vec::new(); let mut q=tx.prepare("SELECT a.agent_id,a.callback_url,a.callback_secret FROM agent_hub_room_members m JOIN agent_hub_agents a ON a.agent_id=m.agent_id WHERE m.room_id=$1 AND a.state='active' AND a.agent_id IS DISTINCT FROM $2")?;
+            for row in q.query_map(crate::database::params![room_id_owned,sender_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<String>>(2)?)))? { recipients.push(row?); }
+            for (recipient,callback,secret) in recipients { let delivery=ids::hub_delivery_id().map_err(id_error)?; let callback_nonce=ids::hub_delivery_id().map_err(id_error)?; tx.execute("INSERT INTO agent_hub_deliveries(delivery_id,message_id,recipient_agent_id,created_at,next_attempt_at) VALUES($1,$2,$3,$4,$4)",crate::database::params![delivery,message_id,recipient,now])?; if let (Some(url),Some(secret))=(callback,secret) { let payload=serde_json::json!({"delivery_id":delivery,"message_id":message_id,"room_id":room_id_owned,"body":body_owned,"attachments":attachment_meta,"created_at":now,"timestamp":now,"nonce":callback_nonce}); let payload_json=serde_json::to_string(&payload).map_err(|e|DatabaseError::Domain(internal(e.to_string())))?; let signature=hmac_signature(&secret,payload_json.as_bytes()); tx.execute("INSERT INTO agent_hub_outbox(delivery_id,callback_url,payload_json,signature,callback_nonce,signed_at,next_attempt_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$6,$6)",crate::database::params![delivery,url,payload_json,signature,callback_nonce,now])?; } }
+            tx.execute("DELETE FROM agent_hub_outbox WHERE outbox_id IN (SELECT outbox_id FROM agent_hub_outbox ORDER BY outbox_id DESC OFFSET $1)",[MAX_OUTBOX_ROWS])?;
             let _=space;
             Ok(message_id)
         }).map_err(database_error)?;
@@ -808,7 +816,7 @@ impl AgentHubService {
         let room = room_id.map(str::to_owned);
         let after = after.map(str::to_owned);
         let limit = bounded_page(limit);
-        let deliveries=self.database.call(move |db| { let mut q=db.prepare("SELECT d.delivery_id,d.message_id,d.acknowledged_at,m.room_id,m.body,m.created_at FROM agent_hub_deliveries d JOIN agent_hub_messages m ON m.message_id=d.message_id WHERE d.recipient_agent_id=?1 AND (?2 IS NULL OR m.room_id=?2) AND (?3 IS NULL OR d.delivery_id>?3) ORDER BY d.created_at,d.delivery_id LIMIT ?4")?; let mut out=Vec::new(); for row in q.query_map(rusqlite::params![recipient,room,after,limit as i64],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))? { let (delivery_id,message_id,acked,room_id,body,created)=row?; out.push(api::Delivery{delivery_id,message:message_from_parts(db,&message_id,&room_id,&body,&created)?,acknowledged:acked.is_some()}); } Ok(out) }).map_err(database_error)?;
+        let deliveries=self.database.read(move |db| { let mut q=db.prepare("SELECT d.delivery_id,d.message_id,d.acknowledged_at,m.room_id,m.body,m.created_at FROM agent_hub_deliveries d JOIN agent_hub_messages m ON m.message_id=d.message_id WHERE d.recipient_agent_id=$1 AND ($2::text IS NULL OR m.room_id=$2) AND ($3::text IS NULL OR (d.created_at,d.delivery_id)>(SELECT p.created_at,p.delivery_id FROM agent_hub_deliveries p WHERE p.delivery_id=$3 AND p.recipient_agent_id=$1)) ORDER BY d.created_at,d.delivery_id LIMIT $4")?; let mut out=Vec::new();let mut bytes=1024; for row in q.query_map(crate::database::params![recipient,room,after,limit as i64],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))? { let (delivery_id,message_id,acked,room_id,body,created)=row?;let delivery=api::Delivery{delivery_id,message:message_from_parts(db,&message_id,&room_id,&body,&created)?,acknowledged:acked.is_some()}; if !push_delivery_page(&mut out,delivery,&mut bytes)?{break;} } Ok(out) }).map_err(database_error)?;
         let next = deliveries.last().map(|d| d.delivery_id.clone());
         Ok(api::ReceiveResult { deliveries, next })
     }
@@ -816,10 +824,10 @@ impl AgentHubService {
     fn message(&self, id: &str) -> Result<api::Message, ProtocolError> {
         let id = id.to_owned();
         self.database
-            .call(move |db| {
+            .read(move |db| {
                 let (room, body, created): (String, String, String) = db
                 .query_row(
-                    "SELECT room_id,body,created_at FROM agent_hub_messages WHERE message_id=?1",
+                    "SELECT room_id,body,created_at FROM agent_hub_messages WHERE message_id=$1",
                     [&id],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
@@ -833,10 +841,10 @@ impl AgentHubService {
     fn room(&self, id: &str) -> Result<api::Room, ProtocolError> {
         let id = id.to_owned();
         self.database
-            .call(move |db| {
+            .read(move |db| {
                 let (space, name, created): (String, String, String) = db
                     .query_row(
-                        "SELECT space,name,created_at FROM agent_hub_rooms WHERE room_id=?1",
+                        "SELECT space,name,created_at FROM agent_hub_rooms WHERE room_id=$1",
                         [id.clone()],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
@@ -856,7 +864,7 @@ impl AgentHubService {
     fn agent_profile(&self, id: &str) -> Result<api::AgentProfile, ProtocolError> {
         let id = id.to_owned();
         self.database
-            .call(move |db| Ok(agent_row_from_id(db, &id)?.to_profile()))
+            .read(move |db| Ok(agent_row_from_id(db, &id)?.to_profile()))
             .map_err(database_error)
     }
 
@@ -871,7 +879,7 @@ impl AgentHubService {
         let local = caller.is_local();
         let row = self
             .database
-            .call(move |db| agent_row_from_id(db, &id))
+            .read(move |db| agent_row_from_id(db, &id))
             .map_err(database_error)?;
         if expected.is_some_and(|space| space != row.space) {
             return Err(hub_not_found());
@@ -896,7 +904,7 @@ impl AgentHubService {
         let token = auth.token.clone();
         let row = self
             .database
-            .call(move |db| agent_row_from_id(db, &id))
+            .read(move |db| agent_row_from_id(db, &id))
             .map_err(database_error)?;
         if hash_secret(&token) != row.token_hash {
             return Err(denied());
@@ -929,11 +937,11 @@ impl AgentHubService {
         };
         let hash = hash_secret(value);
         let now = now_text()?;
-        self.database.call(move |db| { let (current,previous,expires):(Option<String>,Option<String>,Option<String>)=db.query_row("SELECT current_key_hash,previous_key_hash,previous_key_expires_at FROM agent_hub_settings WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?; Ok(current.as_deref()==Some(&hash) || (previous.as_deref()==Some(&hash) && expires.is_some_and(|e|e>=now))) }).map_err(database_error)
+        self.database.read(move |db| { let (current,previous,expires):(Option<String>,Option<String>,Option<String>)=db.query_row("SELECT current_key_hash,previous_key_hash,previous_key_expires_at FROM agent_hub_settings WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?; Ok(current.as_deref()==Some(&hash) || (previous.as_deref()==Some(&hash) && expires.is_some_and(|e|e>=now))) }).map_err(database_error)
     }
     fn public_enabled(&self) -> Result<bool, ProtocolError> {
         self.database
-            .call(|db| {
+            .read(|db| {
                 Ok(db.query_row(
                     "SELECT public_enabled FROM agent_hub_settings WHERE singleton=1",
                     [],
@@ -948,7 +956,7 @@ impl AgentHubService {
         self.database
             .call(move |db| {
                 db.execute(
-                    "UPDATE agent_hub_agents SET state='expired' WHERE state='active' AND lease_expires_at<=?1",
+                    "UPDATE agent_hub_agents SET state='expired' WHERE state='active' AND lease_expires_at<=$1",
                     [&now],
                 )?;
                 Ok(())
@@ -956,7 +964,7 @@ impl AgentHubService {
             .map_err(database_error)
     }
     fn public_available(&self) -> Result<bool, ProtocolError> {
-        self.database.call(|db|Ok(db.query_row("SELECT public_enabled=1 AND public_paused=0 FROM agent_hub_settings WHERE singleton=1",[],|r|r.get::<_,bool>(0))?)).map_err(database_error)
+        self.database.read(|db|Ok(db.query_row("SELECT public_enabled=1 AND public_paused=0 FROM agent_hub_settings WHERE singleton=1",[],|r|r.get::<_,bool>(0))?)).map_err(database_error)
     }
     fn ensure_public(&self, space: api::Space) -> Result<(), ProtocolError> {
         if space == api::Space::Public && !self.public_available()? {
@@ -1142,12 +1150,35 @@ fn hmac_signature(secret: &str, payload: &[u8]) -> String {
     )
 }
 
-fn agent_row(row: &Row<'_>) -> rusqlite::Result<AgentRow> {
+fn push_delivery_page(
+    out: &mut Vec<api::Delivery>,
+    delivery: api::Delivery,
+    bytes: &mut usize,
+) -> Result<bool, DatabaseError> {
+    let size = serde_json::to_vec(&delivery)
+        .map_err(|_| DatabaseError::Domain(internal("cannot encode hub delivery")))?
+        .len()
+        + 1;
+    if size + 1024 > 192 * 1024 {
+        return Err(DatabaseError::Domain(internal(
+            "one hub delivery exceeds the response budget",
+        )));
+    }
+    if *bytes + size > 192 * 1024 {
+        return Ok(false);
+    }
+    *bytes += size;
+    out.push(delivery);
+    Ok(true)
+}
+
+fn agent_row(row: &Row<'_>) -> crate::database::Result<AgentRow> {
     let capabilities_json: String = row.get(7)?;
     Ok(AgentRow {
         agent_id: row.get(0)?,
         handle: row.get(1)?,
-        space: parse_space(&row.get::<_, String>(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        space: parse_space(&row.get::<_, String>(2)?)
+            .map_err(|_| crate::database::Error::InvalidQuery)?,
         display_name: row.get(3)?,
         repository_label: row.get(4)?,
         domain_label: row.get(5)?,
@@ -1156,12 +1187,15 @@ fn agent_row(row: &Row<'_>) -> rusqlite::Result<AgentRow> {
         token_hash: row.get(8)?,
         callback_url: row.get(9)?,
         state: parse_state(&row.get::<_, String>(11)?)
-            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            .map_err(|_| crate::database::Error::InvalidQuery)?,
         lease_expires_at: row.get(12)?,
     })
 }
-fn agent_row_from_id(db: &rusqlite::Connection, id: &str) -> Result<AgentRow, DatabaseError> {
-    db.query_row("SELECT agent_id,handle,space,display_name,repository_label,domain_label,current_subject,capabilities_json,token_hash,callback_url,callback_secret,state,lease_expires_at,created_at,last_seen_at FROM agent_hub_agents WHERE agent_id=?1",[id],agent_row).optional()?.ok_or_else(||DatabaseError::Domain(hub_not_found()))
+fn agent_row_from_id(
+    db: &crate::database::Connection,
+    id: &str,
+) -> Result<AgentRow, DatabaseError> {
+    db.query_row("SELECT agent_id,handle,space,display_name,repository_label,domain_label,current_subject,capabilities_json,token_hash,callback_url,callback_secret,state,lease_expires_at,created_at,last_seen_at FROM agent_hub_agents WHERE agent_id=$1",[id],agent_row).optional()?.ok_or_else(||DatabaseError::Domain(hub_not_found()))
 }
 impl AgentRow {
     fn to_profile(&self) -> api::AgentProfile {
@@ -1180,19 +1214,22 @@ impl AgentRow {
         }
     }
 }
-fn room_members(db: &rusqlite::Connection, room_id: &str) -> Result<Vec<String>, DatabaseError> {
+fn room_members(
+    db: &crate::database::Connection,
+    room_id: &str,
+) -> Result<Vec<String>, DatabaseError> {
     let mut q = db.prepare(
-        "SELECT agent_id FROM agent_hub_room_members WHERE room_id=?1 ORDER BY agent_id",
+        "SELECT agent_id FROM agent_hub_room_members WHERE room_id=$1 ORDER BY agent_id",
     )?;
     q.query_map([room_id], |r| r.get(0))
         .and_then(|i| i.collect::<Result<Vec<_>, _>>())
         .map_err(DatabaseError::from)
 }
 fn attachments_for(
-    db: &rusqlite::Connection,
+    db: &crate::database::Connection,
     message_id: &str,
 ) -> Result<Vec<api::Attachment>, DatabaseError> {
-    let mut q=db.prepare("SELECT attachment_id,name,content_type,byte_size,sha256 FROM agent_hub_attachments WHERE message_id=?1 ORDER BY position")?;
+    let mut q=db.prepare("SELECT attachment_id,name,content_type,byte_size,sha256 FROM agent_hub_attachments WHERE message_id=$1 ORDER BY position")?;
     q.query_map([message_id], |r| {
         Ok(api::Attachment {
             attachment_id: r.get(0)?,
@@ -1239,14 +1276,14 @@ fn console_profile() -> api::AgentProfile {
     }
 }
 fn message_from_parts(
-    db: &rusqlite::Connection,
+    db: &crate::database::Connection,
     message_id: &str,
     room_id: &str,
     body: &str,
     created_at: &str,
 ) -> Result<api::Message, DatabaseError> {
     let sender: Option<String> = db.query_row(
-        "SELECT sender_agent_id FROM agent_hub_messages WHERE message_id=?1",
+        "SELECT sender_agent_id FROM agent_hub_messages WHERE message_id=$1",
         [message_id],
         |r| r.get(0),
     )?;
@@ -1410,7 +1447,7 @@ mod tests {
             .database
             .call(move |db| {
                 db.execute(
-                    "UPDATE agent_hub_agents SET lease_expires_at='1970-01-01T00:00:00Z' WHERE agent_id=?1",
+                    "UPDATE agent_hub_agents SET lease_expires_at='1970-01-01T00:00:00Z' WHERE agent_id=$1",
                     [&agent.agent.agent_id],
                 )?;
                 Ok(())
@@ -1453,18 +1490,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(room.members.len(), 2);
-        let message = service
-            .send(
-                api::Send {
-                    auth: auth(&first),
-                    room_id: room.room_id.clone(),
-                    body: "hello".into(),
-                    attachments: vec![],
-                    client_message_id: Some("msg-1".into()),
-                },
-                &local(),
-            )
-            .unwrap();
+        let barrier = std::sync::Barrier::new(4);
+        let messages = std::thread::scope(|scope| {
+            let workers = (0..4)
+                .map(|_| {
+                    let service = &service;
+                    let first = &first;
+                    let room = &room;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        service
+                            .send(
+                                api::Send {
+                                    auth: auth(first),
+                                    room_id: room.room_id.clone(),
+                                    body: "hello".into(),
+                                    attachments: vec![],
+                                    client_message_id: Some("msg-1".into()),
+                                },
+                                &local(),
+                            )
+                            .expect("concurrent idempotent send")
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.message_id == messages[0].message_id)
+        );
+        let message = messages.into_iter().next().unwrap();
         let duplicate = service
             .send(
                 api::Send {
@@ -1504,7 +1565,7 @@ mod tests {
             .receive(
                 api::Receive {
                     auth: auth(&second),
-                    room_id: Some(room.room_id),
+                    room_id: Some(room.room_id.clone()),
                     after: None,
                     limit: 20,
                 },
@@ -1512,6 +1573,78 @@ mod tests {
             )
             .unwrap();
         assert!(after.deliveries[0].acknowledged);
+        for index in 0..10 {
+            service
+                .send(
+                    api::Send {
+                        auth: auth(&first),
+                        room_id: room.room_id.clone(),
+                        body: format!("payload-{index}:{}", "x".repeat(31_000)),
+                        attachments: vec![],
+                        client_message_id: Some(format!("large-{index}")),
+                    },
+                    &local(),
+                )
+                .unwrap();
+        }
+        // Opaque IDs are intentionally opposite to chronological order. A
+        // cursor on ID alone would discard the next response page.
+        let recipient = second.agent.agent_id.clone();
+        service.database.transaction(|connection|{
+            let mut statement=connection.prepare("SELECT delivery_id FROM agent_hub_deliveries WHERE recipient_agent_id=$1 ORDER BY delivery_id DESC")?;
+            let ids=statement.query_map([&recipient],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+            for(index,id)in ids.into_iter().enumerate(){connection.execute("UPDATE agent_hub_deliveries SET created_at=$1 WHERE delivery_id=$2",crate::database::params![format!("2026-09-03T12:00:{index:02}Z"),id])?;}
+            Ok(())
+        }).unwrap();
+        let mut after = None;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut pages = 0;
+        loop {
+            let page = service
+                .receive(
+                    api::Receive {
+                        auth: auth(&second),
+                        room_id: Some(room.room_id.clone()),
+                        after,
+                        limit: 100,
+                    },
+                    &local(),
+                )
+                .unwrap();
+            assert!(serde_json::to_vec(&page).unwrap().len() < 192 * 1024);
+            if page.deliveries.is_empty() {
+                break;
+            }
+            for delivery in &page.deliveries {
+                assert!(seen.insert(delivery.message.message_id.clone()));
+            }
+            pages += 1;
+            after = page.next;
+            assert!(pages < 10);
+        }
+        assert_eq!(seen.len(), 11);
+        assert!(pages > 1);
+        let mut after = None;
+        let mut seen = std::collections::BTreeSet::new();
+        loop {
+            let page = service
+                .console_receive(api::ConsoleReceive {
+                    space: api::Space::Private,
+                    room_id: Some(room.room_id.clone()),
+                    after,
+                    limit: 100,
+                })
+                .unwrap();
+            assert!(serde_json::to_vec(&page).unwrap().len() < 192 * 1024);
+            if page.deliveries.is_empty() {
+                break;
+            }
+            for delivery in &page.deliveries {
+                assert!(seen.insert(delivery.message.message_id.clone()));
+            }
+            after = page.next;
+        }
+        assert_eq!(seen.len(), 11);
     }
 
     #[test]
@@ -1582,7 +1715,7 @@ mod tests {
             .unwrap();
         let payload: serde_json::Value = service
             .database
-            .call(|db| {
+            .read(|db| {
                 Ok(db.query_row(
                     "SELECT payload_json FROM agent_hub_outbox LIMIT 1",
                     [],
@@ -1619,7 +1752,7 @@ mod tests {
             .unwrap();
         let pending: u32 = service
             .database
-            .call(|db| Ok(db.query_row("SELECT count(*) FROM agent_hub_outbox", [], |r| r.get(0))?))
+            .read(|db| Ok(db.query_row("SELECT count(*) FROM agent_hub_outbox", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(pending, 0);
     }

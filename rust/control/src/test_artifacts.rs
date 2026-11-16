@@ -13,6 +13,7 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::params::{
     ArtifactCatalog as ArtifactCatalogParams, ArtifactFile as ArtifactFileParams,
     ValidationTier as ApiValidationTier,
@@ -28,7 +29,6 @@ use protocol::{
     RunStatus, ValidationTier,
 };
 use regex::Regex;
-use rusqlite::OptionalExtension;
 use rustix::fs::{self as unix_fs, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -369,10 +369,10 @@ impl TestArtifactService {
             let requested = path.to_string_lossy().into_owned();
             return self
                 .database
-                .call(move |connection| {
+                .read(move |connection| {
                     connection
                         .query_row(
-                            "SELECT worktree_path,worktree_id,repository_id FROM worktrees WHERE worktree_path=?1",
+                            "SELECT worktree_path,worktree_id,repository_id FROM worktrees WHERE worktree_path=$1",
                             [&requested],
                             |row| {
                                 Ok(ResolvedWorktree {
@@ -977,11 +977,11 @@ mod tests {
             database
                 .transaction(move |transaction| {
                     transaction.execute(
-                        "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',?1,'repo','t',1,'t')",
+                        "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',$1,'repo','t',1,'t')",
                         [&stored],
                     )?;
                     transaction.execute(
-                        "INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','r1111111111111111',?1,'t','t')",
+                        "INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','r1111111111111111',$1,'t','t')",
                         [&stored],
                     )?;
                     Ok(())

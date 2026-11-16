@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -11,7 +12,8 @@ use devcoordinator2_executor_core::{
     Cancellation, Executor, LocalPermitProvider,
     log_query::{
         LogPruneRequest, LogQueryError, LogQueryOperation, LogQueryOptions, LogQueryRequest,
-        LogQueryResult, LogQuerySelector, execute_log_query, lock_retention, prune_logs,
+        LogQueryResult, LogQuerySelector, RetentionPruneOutcome, discover_retention_step,
+        execute_log_query, lock_retention, prune_logs, prune_retention_observation,
         remove_retained_run, retention_runs,
     },
     protocol::{
@@ -643,6 +645,39 @@ async fn executor_logs_remain_complete_queryable_and_catalogue_safe() {
     };
     let tracked =
         retention_runs(&repository.root, &retention).expect("content-free evidence inventory");
+    let mut continuation = None;
+    let mut discovered = Vec::new();
+    let mut turns = 0;
+    loop {
+        let page = discover_retention_step(
+            &repository.root,
+            &retention,
+            continuation.as_deref(),
+            2,
+            Duration::from_millis(100),
+        )
+        .expect("resume bounded real executor evidence");
+        assert!(page.visited_entries <= 2);
+        discovered.extend(page.observations);
+        turns += 1;
+        continuation = page.next_cursor;
+        if continuation.is_none() {
+            break;
+        }
+        assert!(turns < 1000);
+    }
+    assert!(turns > 1);
+    assert!(!discovered.is_empty());
+    assert!(
+        discovered
+            .iter()
+            .all(|leaf| leaf.run_id == RUN_ID && !leaf.active)
+    );
+    assert_eq!(
+        prune_retention_observation(&repository.root, &retention, &discovered[0], || Ok(true))
+            .expect("fresh protection gate"),
+        RetentionPruneOutcome::Protected
+    );
     assert_eq!(tracked.len(), 1);
     assert_eq!(tracked[0].run_id, RUN_ID);
     assert!(!tracked[0].active);

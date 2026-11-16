@@ -9,14 +9,51 @@ history. Public inventory projections omit private paths and raw host output.
 Existing deployment ownership, planning records and evidence-retention settings
 are preserved. Migration adds these tables without adopting or deleting data.
 
-One SQLite authority database (default
-`/var/lib/devcoordinator2/authority.sqlite3`; dev override via instance
-configuration). WAL mode, foreign keys on. Table count is an architectural
-budget, not a target. Tests use repository-local files — **no test tables,
-ever**. Docker/process observations are current projections plus bounded
-samples, not an append-only archive. The planning/decision tables (schema 8)
-are the deliberate exception: the product's first append-only permanent
-history — their rows are never deleted (DC2-2026-08-24-PLANNING-LEDGER).
+Protocol v3 uses one dedicated local PostgreSQL authority cluster, schema 35.
+Ordered native migrations live in `rust/persistence/migrations`; synchronous
+services use bounded read/write/maintenance pools. PostgreSQL runs under its
+own non-root service identity, with a private Unix socket and no TCP listener.
+Root owns the daemon's mode-0600 connection configuration outside source.
+The approved trust boundary is recorded in `security-assumptions.md`.
+
+When maintenance holds a deployment's mutation guard, an authorized command
+can wait asynchronously for a handoff before entering normal execution.
+At most four such waits are pending, each with a 15-second deadline; they hold
+no database connection, preparation worker or execution slot. A pending command
+prevents maintenance from reacquiring that deployment's guard. Other requests
+continue, and conflicting foreground commands retain their existing admission
+and cancellation behavior. A handoff timeout reports that the mutation did not
+start.
+
+All 95 legacy authority tables, IDs, sequence high-water marks, timestamps,
+permissions, histories, current projections, attachments and relationships are
+preserved. Serialized records use JSONB; byte-signed hub payloads stay exact TEXT.
+Authorization, paging and retention use typed indexed columns. Decision/sketch
+search uses tsvector/GIN; time partitions and indexed batches retain metrics for
+30 days (low cardinality) or 7 days (runtime subjects). Append-only constraints
+and narrow invariant triggers preserve permanent ledger history.
+
+Native migration 14 adds the repository/worktree cursor index and disables
+deferred GIN updates for storage ancestor and lease membership lookups. It
+flushes those two indexes' existing pending entries once during migration.
+Storage writes maintain them directly so subsequent inventory requests do not
+repeatedly scan an insert backlog; stored records and safety rules are unchanged.
+
+The migration binary opens SQLite read-only, streams tables in dependency order,
+restores sequences, rebuilds search projections and verifies canonical typed
+hashes, row counts, foreign keys and invariants. Migration and recovery archives
+remain private. The installer drains accepted work, switches clients and daemon
+together, verifies representative API results and the original journeys, and
+retains a verified PostgreSQL backup before deleting the frozen SQLite authority
+and temporary backup. Failure before new writes are admitted can restore the
+old daemon and SQLite snapshot. Once new writes are admitted, recovery uses
+PostgreSQL; restoring the stale SQLite snapshot is forbidden.
+
+Governed test execution, repository-local state/history, open bug JSON files,
+and external Codex usage collectors remain separate systems. Legacy SQLite
+readers exist only for read-only migration/recovery and those external collectors.
+Docker/process observations are replaceable projections with bounded history.
+The planning and decision ledger is permanent append-only authority.
 The schema-16 owned event journal is a separate bounded notification history,
 not a completion ledger; it retains only the newest 1,024 rows.
 
@@ -26,6 +63,11 @@ result summaries (run id/name, terminal status, start/finish, duration, exit
 code). It is symlink-safe and atomically replaced, contains no test output,
 caller identity, private path, or command, and may be rebuilt or lost without
 affecting the authoritative current test result.
+
+## Historical logical schema additions
+
+The following sections document preserved logical entities; native PostgreSQL
+migrations are the current executable schema.
 
 ## Schema version 1 (Phase 1)
 
@@ -254,8 +296,8 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 Schema 21 adds immutable port lease identities and route references. Migration
 promotes the exact existing routed assignment to generation zero; a conflict
 withdraws the route, preserves reservations and marks the component for repair.
-The route-generation floor is durable publication metadata outside the SQLite
-backup; restoring a database does not restore that floor.
+The route-generation floor is durable publication metadata outside authority
+backups; restoring a database does not restore that floor.
 
 ## Schema version 32 — harness routing policy
 

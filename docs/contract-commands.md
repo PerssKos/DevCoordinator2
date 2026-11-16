@@ -5,23 +5,22 @@ operations in the exhaustive Rust registry. Every listed operation has a
 typed implementation; the generated contract bundle is authoritative for
 input/output schemas, policies, CLI routes, and MCP exposure.
 
-The CLI maps `devcoordinator2 test start …` to operation `test.start`; the MCP
-server exposes applicable operations as tools such as `test_start`, `test_retry`,
-`test_status`, `test_log_catalog`, `test_log_tail`, `test_log_search`,
-`test_log_range`, `test_log_failure_context`, `test_log_retention_get`,
-`test_log_retention_set`, `test_stop`, `test_capacity_get`,
-`test_capacity_set`, and `repository_list`. All three
-surfaces return the identical result JSON. `event_wait` is the blocking
-multi-filter event/heartbeat tool described below.
+The CLI accepts `devcoordinator2 call <operation> --params JSON` or a bounded
+`--params-file FILE` (use `-` for stdin). `operations --prefix PREFIX` discovers
+names; `schema <operation>` gives its typed parameters and result. MCP exposes
+`operations`, `operation_schema`, and `call_operation`. Both use the exact
+operation name and typed JSON. There is no v2 command-tree compatibility.
+`event.wait` is the blocking multi-filter event/heartbeat operation below.
 
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 34, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 35, "socket": "<path>"}`
 
 ## event.wait
 
-CLI: `event wait`; MCP: `event_wait`. The operation blocks until at least one
+CLI: `call event.wait`; MCP: `call_operation` with operation `event.wait`.
+The operation blocks until at least one
 authorized retained/new event matches, or one or more filter deadlines become
 due. One request accepts 1..32 filters and returns at most 100 events.
 
@@ -119,8 +118,9 @@ applicable; interruption and deadline expiry never establish readiness.
 
 ## test.container.create | start | inspect | remove | retry
 
-These operations are the only supported Docker boundary for temporary solver
-containers. Requests carry the registered worktree `path`, accepted `run_id`,
+These operations are the supported Docker boundary for temporary test
+containers, including solver containers and Coordinator-owned PostgreSQL
+fixtures. Requests carry the registered worktree `path`, accepted `run_id`,
 `check`, and (for create) an image plus argv; they do not accept a Docker
 socket, host path, privilege flag, or raw Docker option. The daemon adds exact
 run, check, repository, worktree, purpose, and opaque owner labels, persists
@@ -129,10 +129,53 @@ after forced removal. `inspect` returns the bounded state, exit code/signal,
 labels, native-start flag, cleanup attempts, retryability, and next action.
 
 Cleanup results use `cleanup_pending`, `cleanup_complete`, or
-`cleanup_failed`. Pending cleanup is retried by the Coordinator reconciliation
-worker and by `retry`; failed or pending cleanup keeps the governed run from
-being reported as passed. Unrelated containers are never selected by name or
-prefix alone.
+`cleanup_failed`. Current-run reconciliation, startup recovery, and `retry`
+reconcile retained ownership; failed or pending run cleanup prevents a passed
+result. A removal timeout still produces `cleanup_complete` when independent
+checks prove both exact ID and name absent, with the command failure retained
+in the attempt. Repeating completed cleanup returns its existing receipt.
+Unrelated containers are never selected by name or prefix alone.
+
+Fixture handles hold active leases. Removal and retry refuse an active
+fixture or cached template; retiring the handle releases its lease. A cached
+template can outlive the run that created it, so that run does not owe template
+removal while the pool still owns it. Process death releases the lease and
+startup recovery reconciles its persisted exact identity.
+
+Active fixture use and an operation already in progress have separate leases.
+Cleanup or start contention reports typed transient
+`container_operation_in_progress` with `retryable: true`; it does not claim
+that a fixture is still active. Completed receipts are reusable without
+waiting for another mutation lease. Retention preserves ownership while
+either lease is held.
+
+Owned fixture cleanup observes an already-admitted operation within its
+existing phase budget. A short metadata-only conflict can wait before the
+original cleanup starts; after Docker returns, only receipt persistence is
+retried. A settled removal or ownership failure is not retried by this wait.
+The same absolute budget caps owned-cleanup Docker commands, and expiry keeps
+the cleanup obligation pending instead of claiming success.
+
+Finalization seals new container creation before taking its cleanup snapshot.
+Already admitted creation remains visible through its persisted intent and
+active-use lease; if it is still active, the run retains a pending cleanup
+obligation and cannot pass. Ordinary mid-run cleanup leaves creation open.
+A refused start of a removed container preserves its completed receipt, and
+any unresolved matching-label candidate keeps crash recovery incomplete even
+when its original name is absent.
+
+Ownership survives replacement of `current/` in one per-run record under
+`.devcoordinator/test/containers/pending/<run-id>/`. After every container is
+proven absent and all leases are released, that directory moves atomically to
+`containers/receipts/<run-id>/`. Requests resolve the exact run; startup scans
+pending ownership. Completed receipts expire through the existing run-log
+retention path. Pending or failed ownership survives expired logs.
+
+Older shared fixtures can acquire a typed receipt only when the current run's
+retained `containers.json` contains that exact ID and Docker inspection proves
+the expected fixture name and all ownership labels. Labels alone, an unrelated
+name, or a missing historical receipt cannot authorize adoption. Inspection
+and retry refuse those cases instead of reconstructing ownership from guesses.
 
 Additive `targets: ["api","ui"]` selects multiple declarations for one invocation,
 instead of `test`. `checks` accepts qualified `target/check` names, and
@@ -199,6 +242,23 @@ When a check declares `coordinator-json`, the summary also carries
 `failed_diagnostics`, native execution state, and cleanup status. A nonzero
 diagnostic count is terminal failure even if the reporting command exits zero.
 
+## test.container.diagnostic
+
+Args: the same exact `path`, `run_id`, `check`, and `container_id` as
+`test.container.inspect`, plus `byte_offset` (default 0) and `max_bytes`
+(default 16384, maximum 49152). The result returns verified diagnostic metadata,
+bounded `text`, and a `next_byte_offset` when another page remains. Offsets
+must follow UTF-8 character boundaries. Each read verifies the private retained
+file against its recorded size and SHA-256 before disclosing content.
+
+Ordinary inspection returns metadata only. Unexpected fixture exits retain up
+to 500 log lines and 64 KiB before exact cleanup, with exit/OOM state and an
+explicit truncation flag. A failed capture leaves a retryable cleanup obligation
+and preserves the container for `test.container.retry`. Normal cleanup creates
+no failure log. Diagnostic files expire with their owning run's existing
+retention policy; no diagnostic is `log_not_found`, and missing or changed
+retained bytes are `test_log_unavailable`.
+
 ## test.capacity.get | test.capacity.set
 
 - `test.capacity.get` takes no arguments.
@@ -210,7 +270,8 @@ Both return `{learned_capacity, effective_capacity, cap, active, waiting,
 paused, last_adjustment}`. `last_adjustment` is null or `{event_id, at, actor,
 reason, previous_capacity, new_capacity, cap, p95_cpu_percent,
 p95_memory_percent, saturation_fraction, epoch_seconds}`. Evidence values may
-be null when unavailable. CLI equivalents are `test capacity show|set|clear`.
+be null when unavailable. Use `call test.capacity.get` to read and
+`call test.capacity.set --params '{"cap":null}'` to restore Auto admission.
 
 ## test.log.catalog
 
@@ -274,7 +335,7 @@ storage path.
 reopens every component without following links, verifies the complete file
 against its manifest receipt, and returns
 `{sha256,total_bytes,offset,bytes,base64,next_offset}`. Errors distinguish
-expired, unknown, and changed evidence. CLI `test artifact materialize` pages
+expired, unknown, and changed evidence. The local CLI `materialize` helper pages
 these two read-only operations, writes only a new caller-owned destination, and
 revalidates every file and tree digest locally.
 
@@ -371,11 +432,11 @@ commits, active use, changed identities, and unknown ownership remain blocked.
 
 Existing server administrators and trusted local callers can use:
 
-- `config.get {}` (CLI `config show`, MCP `config_get`) returns the configured
+- `config.get {}` returns the configured
   policy's active/stored revisions, reload state, entry count, supported live
   and restart-required settings, validation state, and bounded value-free history.
 - `config.env.set {path?, name?, deployment_id?, file, authorized,
-  expected_revision}` (CLI `config authorize|revoke`, MCP `config_env_set`)
+  expected_revision}`
   changes one exact declared repository/file pair and activates it atomically.
   A grant validates the ignored regular non-symlink file; revoke can remove an
   obsolete entry without requiring the file to remain present.
@@ -394,10 +455,12 @@ Reference args on every command except `list`: `path` (required) plus
 - `deployment.list {path?}` → `{deployments: [...], declared: [...]}` — all
   applied deployments; with `path`, also the declared-but-not-applied
   `name`/`source`/`deployment_id` triples of that repository.
-- `deployment.preflight` → `{repository_id, name, ready, blockers:
-  [{component, code, file, message}]}`. Deployment administrators can inspect
-  every declared environment-file and Docker host prerequisite without
-  registration, port reservation, or runtime changes. A
+- `deployment.preflight {candidate?: {path, commit}}` →
+  `{repository_id, name, ready, blockers: [{component, code, file, message}]}`.
+  Deployment administrators can inspect every declared environment-file and
+  Docker host prerequisite without registration, port reservation, or runtime
+  changes; a candidate preflight also verifies the candidate repository,
+  declared source, cleanliness, and exact commit before apply. A
   `docker_network_unavailable` blocker names the missing bridge/veth condition
   and the authorized host-repair boundary; retry `apply`, `start`, or
   `restart` only after preflight is clear. `authorization_required` names the
@@ -405,7 +468,7 @@ Reference args on every command except `list`: `path` (required) plus
 - `deployment.apply` → status (below) after: validate all environment-file
   prerequisites, fingerprint (spec + commit + dirty flag + source digest),
   reserve ports/domain transactionally, prepare the
-  candidate (checkout worktree + optional build), start components in
+  candidate (clean repository worktree + optional build), start components in
   declared order (blue/green for generation-scoped components, in-place for
   stable data-owning ones), prove health, publish the route atomically,
   retire the previous generation in reverse order. Errors:
@@ -437,9 +500,14 @@ Reference args on every command except `list`: `path` (required) plus
   use explicit status for source freshness. Observed-only
   deployments have no managed-source readiness claim.
 - `deployment.wait` waits for `applied`, `ready`, `source_current`, or
-  `route_acknowledged` until a caller-supplied RFC 3339 deadline. A timeout is
-  returned as `wait_deadline_reached` with the latest status and recovery
-  choices.
+  `route_acknowledged` until a caller-supplied RFC 3339 deadline. It subscribes
+  before rechecking state and wakes on the target deployment's changes,
+  including committed route recovery. The existing event scheduler provides
+  bounded one-second rechecks for external source edits and unavailable
+  notifications. Admission, state checks and idle observation share the original
+  absolute deadline; a heartbeat never extends it. Expiry returns
+  `wait_deadline_reached` with recovery choices, without admitting a late status
+  check.
 - `deployment.start | stop | restart {component?}` → status. Whole
   deployment in declared/reverse order, or one component whose declaration
   permits independent control. A declared independent Compose service is
@@ -448,18 +516,36 @@ Reference args on every command except `list`: `path` (required) plus
   setup are not started, and unrelated services/routes remain. Stop withdraws
   the route for a whole routed component, never for an unrelated Compose
   worker, and never deletes data.
-- `deployment.logs {component, tail_lines<=5000}` → `{component, tail,
-  log_path | container_id}`.
+- `deployment.logs {component, generation?, attempt?, tail_lines<=5000}` → `{component,
+  tail, log_path | container_id, process_log?}`. Process logs expose retained
+  generation and stable startup-attempt identities; omit
+  `generation` for the selected current component or provide a retained
+  generation when inspecting a failed candidate. `attempt` requires a
+  generation. Metadata reports exact identities, availability and retention;
+  selectors never fall back to an unrelated legacy log.
 - `deployment.rollback` → status with `rolled_back_from`/`rolled_back_to`;
-  checkout source only (`rollback_unavailable` otherwise).
+  an owned retained previous source is required (`rollback_unavailable`
+  otherwise), including an explicit frozen worktree candidate.
 - `deployment.apply` accepts an optional `candidate: {path, commit}` with an
   existing `deployment_id`. Trusted local callers can promote a clean linked
-  worktree at the full expected commit into the same versioned deployment.
-  Different repositories, changed/dirty candidates and live-source targets
-  are refused before runtime mutation. The deployment keeps its identity,
+  worktree at the full expected commit into the same deployment.
+  Different repositories and changed/dirty candidates are refused before
+  runtime mutation. Live-source targets can promote an exact candidate while
+  preserving the deployment identity and recorded source origin.
+  The deployment keeps its identity,
   domain override, data ownership and generation history. The CLI exposes
   `--candidate-path` and `--candidate-commit` together with `--deployment-id`.
+  Each new explicit-candidate generation retains its validated source worktree
+  identity and path separately from the deployment's declaration. Status and
+  waits by deployment ID compare that actual origin with the applied receipt;
+  a removed/replaced origin is unverified, never substituted with another
+  checkout. Delivery qualification retains the same source, generation and
+  route checks and also verifies this origin. Rollback carries the retained
+  generation's binding and configuration. Older receipts have no inferred
+  origin and keep their existing behavior.
   Omitting `candidate` preserves the existing declared-source behavior.
+  A later ordinary apply records no candidate binding and resumes tracking
+  the declared checkout, even when its content matches the previous candidate.
 - `deployment.remove {delete_data=false}` → `{removed, data_deleted,
   deleted_volumes}`. Stops everything, removes containers/units/generation
   checkouts and records; named volumes and PostgreSQL data survive unless
@@ -511,8 +597,9 @@ reports removed items without a space measurement, including interrupted steps
 whose absence was reconciled after restart. It is not an estimate from volume size.
 
 Progress uses `storage.job.started|progress|finished|failed` events in the
-existing `other` category. CLI `storage --help` describes the command grammar;
-MCP tool names replace dots with underscores, such as `storage_cleanup_plan`.
+existing `other` category. Use `operations --prefix storage.` and
+`schema storage.cleanup.plan` to discover the generated contract. CLI `call`
+and MCP `call_operation` both accept the dotted operation name.
 
 ## health.containers (Phase 3, implemented)
 
@@ -748,7 +835,7 @@ jargon — the register rule lives in the agent instructions).
   `title` or `outcome`, and appends `elaboration_completed` atomically with
   the `edited` event.
   `note` is stored on each appended event. Errors: `task_not_found`,
-  `release_not_found`, `args_invalid` ("nothing to change" when a no-op).
+  `release_not_found`, `params_invalid` ("nothing to change" when a no-op).
 - `task.history {task_id}` → `{task: <full row>, events: [{event, from, to,
   actor, at, note}], events_truncated, elaboration_requests}` — the bounded permanent history
   (last 200), loaded on concrete need.
@@ -786,9 +873,10 @@ jargon — the register rule lives in the agent instructions).
   summary + last N; `before_seq` pages older windows (decisions with a
   lower sequence).
 - `decision.search {path|repository_id, query, aspect?, n?}` →
-  `{repository_id, query, decisions: [...], has_more}` — FTS5 full-text
-  search over every decision (title, body, technical note, ref), bm25
-  ranked; user text is quoted so FTS operators are literal.
+  `{repository_id, query, decisions: [...], has_more}` — PostgreSQL full-text
+  search over every decision (title, body, technical note, ref), using the
+  indexed search vector and `plainto_tsquery('simple', ...)`. Text matches use
+  cover-density ranking; exact identifier lookups use descending sequence.
 - `decision.summarize {path|repository_id, body, covers_through_seq}` →
   `{repository_id, covers_through_seq, unsummarized_count, summary_due}`.
   Stores the agent-written rolling summary; all summaries are kept. When
@@ -810,13 +898,10 @@ and is refused); all mutations require administrator; local socket callers
 are unrestricted. New error codes: `task_not_found`, `release_not_found`,
 `decision_not_found`.
 
-MCP tools: `plan_overview`, `task_create`, `task_update`, `task_history`,
-`release_create`, `release_deliver`, `decision_record`, `decision_tail`,
-`decision_search`, `decision_summarize`. `release.request` and
-`release.update` are owner controls (Console + CLI only). CLI:
-`devcoordinator2 plan overview [--all]`, `task create|update|history`,
-`release create|update|request|deliver`, `decision
-record|tail|search|summarize`.
+CLI: `devcoordinator2 call plan.overview --params JSON` and the corresponding
+`task.*`, `release.*`, and `decision.*` operation names. MCP clients discover
+available names with `operations` and use `call_operation`. Owner-only operations
+remain excluded from MCP according to the generated catalog policy.
 
 All follow the same envelope, error model, and file-reference conventions.
 
@@ -845,10 +930,10 @@ the instruction while the Coordinator is temporarily unavailable.
 
 ## Agent hub
 
-The dedicated Agent hub uses `agent.hub.*` operations and MCP tools such as
-`agent_hub_register`, `agent_hub_heartbeat`, `agent_hub_directory`,
-`agent_hub_room_create`, `agent_hub_send`, `agent_hub_receive`,
-`agent_hub_ack`, and the bounded `agent_hub_upload_*` family. Profiles and
+The dedicated Agent hub uses `agent.hub.*` operations through CLI `call` and
+MCP `call_operation`, including `agent.hub.register`, `agent.hub.heartbeat`,
+`agent.hub.directory`, `agent.hub.room.create`, `agent.hub.send`,
+`agent.hub.receive`, `agent.hub.ack`, and the bounded `agent.hub.upload.*` family. Profiles and
 messages are isolated into private and opt-in public spaces. Remote
 installations use only `agent.hub.remote` through
 `/.well-known/devcoordinator2/agent-hub`; it accepts the explicit action

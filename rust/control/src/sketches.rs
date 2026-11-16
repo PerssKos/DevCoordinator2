@@ -1,6 +1,7 @@
 //! Project-scoped retained sketches and postmortem review state.
 use crate::access::Caller;
 use crate::config::Config;
+use crate::database::OptionalExtension;
 use crate::database::{Database, DatabaseError};
 use crate::ids;
 use crate::platform::{Clock, HostClock};
@@ -8,7 +9,6 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use devcoordinator2_api::params::{self, SketchDecision};
 use devcoordinator2_api::results;
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -87,7 +87,7 @@ impl SketchService {
         let request_sha = sha(&serde_json::to_vec(&p).map_err(|_| invalid("invalid manifest"))?);
         let repo = p.repository_id.clone();
         let key = p.idempotency_key.clone();
-        let existing = self.database.call(move |c| Ok(c.query_row("SELECT batch_id,request_sha256 FROM sketch_batches WHERE repository_id=?1 AND idempotency_key=?2", rusqlite::params![repo,key], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).optional()?)).map_err(db_error)?;
+        let existing = self.database.read(move |c| Ok(c.query_row("SELECT batch_id,request_sha256 FROM sketch_batches WHERE repository_id=$1 AND idempotency_key=$2", crate::database::params![repo,key], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).optional()?)).map_err(db_error)?;
         if let Some((id, digest)) = existing {
             if digest.as_deref() != Some(&request_sha) {
                 return Err(conflict(
@@ -165,36 +165,47 @@ impl SketchService {
         let actor = caller.actor();
         let path = dir.clone();
         let result = self.database.transaction(move |tx| {
+            crate::plan::lock_repository(tx, &repo)?;
+            if let Some((id,digest)) = tx.query_row("SELECT batch_id,request_sha256 FROM sketch_batches WHERE repository_id=$1 AND idempotency_key=$2", crate::database::params![repo,p.idempotency_key], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).optional()? {
+                if digest.as_deref() != Some(&request_sha) { return Err(conflict("idempotency key belongs to a different publication").into()); }
+                return Ok(id);
+            }
             // Validate inside the same transaction as insertion. Parents must already
             // exist: immutable edges into fresh child IDs cannot introduce a cycle.
             for item in &prepared {
-                let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=?1 AND sha256=?2)",rusqlite::params![repo,item.digest],|r|r.get(0))?;
+                let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=$1 AND sha256=$2)",crate::database::params![repo,item.digest],|r|r.get(0))?;
                 if duplicate { return Err(invalid("image digest is already retained; generate a distinct image").into()); }
                 for parent in &item.manifest.parent_relations {
-                    let owner: Option<(Option<String>,bool)> = tx.query_row("SELECT surface_id,legacy FROM sketches WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![repo,parent.parent_sketch_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+                    let owner: Option<(Option<String>,bool)> = tx.query_row("SELECT surface_id,legacy FROM sketches WHERE repository_id=$1 AND sketch_id=$2",crate::database::params![repo,parent.parent_sketch_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
                     if !owner.is_some_and(|(scope,legacy)| !legacy && scope.as_deref()==Some(surface.as_str())) { return Err(invalid("lineage parent must be an existing nonlegacy image on the same repository and surface").into()); }
                 }
             }
-            tx.execute("INSERT INTO sketch_surfaces(repository_id,surface_id,title,revision) VALUES(?1,?2,?3,0) ON CONFLICT DO NOTHING",rusqlite::params![repo,surface,prepared[0].manifest.surface_title])?;
-            tx.execute("INSERT INTO sketch_batches(batch_id,repository_id,sketch_set,source_skill,generation_record_path,generation_record_size,generation_record_sha256,manifest_version,request_sha256,idempotency_key,created_at,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7,2,?8,?9,?10,?11)",rusqlite::params![batch,repo,p.sketch_set,p.source_skill,path.join("generation-record.bin").to_string_lossy(),record_size as i64,record_sha,request_sha,p.idempotency_key,now,actor])?;
+            tx.execute("INSERT INTO sketch_surfaces(repository_id,surface_id,title,revision) VALUES($1,$2,$3,0) ON CONFLICT DO NOTHING",crate::database::params![repo,surface,prepared[0].manifest.surface_title])?;
+            tx.execute("INSERT INTO sketch_batches(batch_id,repository_id,sketch_set,source_skill,generation_record_path,generation_record_size,generation_record_sha256,manifest_version,request_sha256,idempotency_key,created_at,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,2,$8,$9,$10,$11)",crate::database::params![batch,repo,p.sketch_set,p.source_skill,path.join("generation-record.bin").to_string_lossy(),record_size as i64,record_sha,request_sha,p.idempotency_key,now,actor])?;
             for item in prepared {
                 let m=&item.manifest;
                 let elements=json_text(&m.element_ids)?;
-                tx.execute("INSERT INTO sketches(sketch_id,batch_id,repository_id,title,file_path,byte_size,sha256,mime,width,height,decision,decision_revision,surface_id,surface_title,display_order,element_ids_json,state_name,theme,viewport,description,journey,decisions,instructions,constraints,transition_note,manifest_version,legacy,description_revision,created_at,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7,'image/png',?8,?9,'undecided',0,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,2,0,0,?23,?24)",rusqlite::params![item.id,batch,repo,item.title,path.join(format!("{}.png",item.id)).to_string_lossy(),item.bytes.len() as i64,item.digest,item.width,item.height,m.surface_id,m.surface_title,item.display_order,elements,m.state,m.theme,m.viewport,m.description,m.journey,m.decisions,m.instructions,m.constraints,m.transition_note,now,actor])?;
-                tx.execute("INSERT INTO sketch_description_history(sketch_id,revision,description,journey,decisions,instructions,constraints,rationale,actor,created_at) VALUES(?1,0,?2,?3,?4,?5,?6,'Initial agent-authored context',?7,?8)",rusqlite::params![item.id,m.description,m.journey,m.decisions,m.instructions,m.constraints,actor,now])?;
+                tx.execute("INSERT INTO sketches(sketch_id,batch_id,repository_id,title,file_path,byte_size,sha256,mime,width,height,decision,decision_revision,surface_id,surface_title,display_order,element_ids_json,state_name,theme,viewport,description,journey,decisions,instructions,constraints,transition_note,manifest_version,legacy,description_revision,created_at,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,'image/png',$8,$9,'undecided',0,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,2,0,0,$23,$24)",crate::database::params![item.id,batch,repo,item.title,path.join(format!("{}.png",item.id)).to_string_lossy(),item.bytes.len() as i64,item.digest,item.width,item.height,m.surface_id,m.surface_title,item.display_order,elements,m.state,m.theme,m.viewport,m.description,m.journey,m.decisions,m.instructions,m.constraints,m.transition_note,now,actor])?;
+                tx.execute("INSERT INTO sketch_description_history(sketch_id,revision,description,journey,decisions,instructions,constraints,rationale,actor,created_at) VALUES($1,0,$2,$3,$4,$5,$6,'Initial agent-authored context',$7,$8)",crate::database::params![item.id,m.description,m.journey,m.decisions,m.instructions,m.constraints,actor,now])?;
                 for parent in &m.parent_relations {
-                    tx.execute("INSERT INTO sketch_lineage(lineage_id,repository_id,parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![ids::sketch_lineage_id().map_err(id_error)?,repo,parent.parent_sketch_id,item.id,lineage_relation_text(&parent.relation),m.transition_note,actor,now])?;
+                    tx.execute("INSERT INTO sketch_lineage(lineage_id,repository_id,parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",crate::database::params![ids::sketch_lineage_id().map_err(id_error)?,repo,parent.parent_sketch_id,item.id,lineage_relation_text(&parent.relation),m.transition_note,actor,now])?;
                 }
                 reindex_sketch(tx,&item.id)?;
             }
             bump_surface(tx,&repo,&surface)?;
-            Ok(())
+            Ok(batch)
         });
-        if let Err(error) = result {
+        let committed_batch = match result {
+            Ok(id) => id,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&dir);
+                return Err(db_error(error));
+            }
+        };
+        if committed_batch != batch_id {
             let _ = fs::remove_dir_all(&dir);
-            return Err(db_error(error));
         }
-        self.batch(&p.repository_id, &batch_id)
+        self.batch(&p.repository_id, &committed_batch)
     }
     fn batch(
         &self,
@@ -203,9 +214,9 @@ impl SketchService {
     ) -> Result<results::SketchBatch, ProtocolError> {
         let repo = repository_id.to_owned();
         let batch = batch_id.to_owned();
-        self.database.call(move |c| {
-            let b=c.query_row("SELECT sketch_set,source_skill,generation_record_size,generation_record_sha256,created_at FROM sketch_batches WHERE repository_id=?1 AND batch_id=?2",rusqlite::params![repo,batch],|r|Ok((r.get(0)?,r.get(1)?,r.get::<_,i64>(2)? as u64,r.get(3)?,r.get(4)?)))?;
-            let sketches=query_summaries(c,"sketches.repository_id=? AND sketches.batch_id=? ORDER BY sketches.display_order,sketches.rowid",vec![repo.clone().into(),batch.clone().into()])?;
+        self.database.read(move |c| {
+            let b=c.query_row("SELECT sketch_set,source_skill,generation_record_size,generation_record_sha256,created_at FROM sketch_batches WHERE repository_id=$1 AND batch_id=$2",crate::database::params![repo,batch],|r|Ok((r.get(0)?,r.get(1)?,r.get::<_,i64>(2)? as u64,r.get(3)?,r.get(4)?)))?;
+            let sketches=query_summaries(c,"sketches.repository_id=$1 AND sketches.batch_id=$2 ORDER BY sketches.display_order,sketches.rowid",vec![repo.clone().into(),batch.clone().into()])?;
             Ok(results::SketchBatch {batch_id:batch,repository_id:repo,sketch_set:b.0,source_skill:b.1,generation_record_size:b.2,generation_record_sha256:b.3,created_at:b.4,sketches})
         }).map_err(db_error)
     }
@@ -267,14 +278,14 @@ impl SketchService {
         if !(1..=100).contains(&limit) || offset > 4_000_000 {
             return Err(invalid("invalid page bounds"));
         }
-        self.database.call(move |c| {
-            let mut where_sql="sketches.repository_id=?".to_owned();let mut values=vec![repo.clone().into()];
+        self.database.read(move |c| {
+            let mut where_sql="sketches.repository_id=$1".to_owned();let mut values=vec![repo.clone().into()];
             for (column,value) in [("sketch_batches.source_skill",skill),("sketches.decision",decision.map(|d|decision_text(&d).to_owned())),("sketch_batches.sketch_set",set),("sketches.surface_id",surface),("sketches.batch_id",batch),("sketches.state_name",state),("sketches.theme",theme)] {
-                if let Some(value)=value {where_sql.push_str(&format!(" AND {column}=?"));values.push(value.into());}
+                if let Some(value)=value {where_sql.push_str(&format!(" AND {column}=${}",values.len()+1));values.push(value.into());}
             }
             if !legacy {where_sql.push_str(" AND sketches.legacy=0");}
             if current {where_sql.push_str(&format!(" AND {CURRENT_SQL}"));}
-            if let Some(query)=query {where_sql.push_str(" AND sketches.sketch_id IN (SELECT sketch_id FROM sketches_fts WHERE repository_id=? AND sketches_fts MATCH ?)");values.push(repo.clone().into());values.push(literal_fts_query(&query).into());}
+            if let Some(query)=query {where_sql.push_str(&format!(" AND sketches.search_vector @@ plainto_tsquery('simple',${})",values.len()+1));values.push(query.into());}
             where_sql.push_str(&format!(" ORDER BY sketch_batches.rowid DESC,sketches.display_order ASC,sketches.rowid LIMIT {} OFFSET {offset}",u32::from(limit)+1));
             let rows=query_summaries(c,&where_sql,values)?;
             let (sketches,has_more)=bounded_summaries(rows,usize::from(limit));
@@ -285,16 +296,16 @@ impl SketchService {
         &self,
         p: params::SketchStory,
     ) -> Result<results::SketchStoryResult, ProtocolError> {
-        self.database.call(move |c| {
+        self.database.read(move |c| {
             let current=resolve_current(c,&p.repository_id,&p.surface_id)?;
-            let rows=query_summaries(c,&format!("sketches.repository_id=? AND sketches.surface_id=? ORDER BY sketch_batches.rowid DESC,sketches.display_order ASC,sketches.rowid LIMIT {} OFFSET {}",p.limit.clamp(1,100)+1,p.offset),vec![p.repository_id.clone().into(),p.surface_id.clone().into()])?;
+            let rows=query_summaries(c,&format!("sketches.repository_id=$1 AND sketches.surface_id=$2 ORDER BY sketch_batches.rowid DESC,sketches.display_order ASC,sketches.rowid LIMIT {} OFFSET {}",p.limit.clamp(1,100)+1,p.offset),vec![p.repository_id.clone().into(),p.surface_id.clone().into()])?;
             let (nodes,has_more)=bounded_summaries(rows,usize::from(p.limit.clamp(1,100)));
             let mut lineage=Vec::new();
-            for node in &nodes {let mut q=c.prepare("SELECT parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at FROM sketch_lineage WHERE repository_id=?1 AND child_sketch_id=?2 ORDER BY rowid")?;lineage.extend(q.query_map(rusqlite::params![p.repository_id,node.sketch_id],lineage_row)?.collect::<Result<Vec<_>,_>>()?);}
-            let mut q=c.prepare("SELECT revision,action,sketch_ids_json,rationale,actor,created_at FROM sketch_surface_activations WHERE repository_id=?1 AND surface_id=?2 ORDER BY revision DESC LIMIT 21 OFFSET ?3")?;
-            let mut activations=q.query_map(rusqlite::params![p.repository_id,p.surface_id,p.activation_offset],activation_row)?.collect::<Result<Vec<_>,_>>()?;
+            for node in &nodes {let mut q=c.prepare("SELECT parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at FROM sketch_lineage WHERE repository_id=$1 AND child_sketch_id=$2 ORDER BY rowid")?;lineage.extend(q.query_map(crate::database::params![p.repository_id,node.sketch_id],lineage_row)?.collect::<Result<Vec<_>,_>>()?);}
+            let mut q=c.prepare("SELECT revision,action,sketch_ids_json,rationale,actor,created_at FROM sketch_surface_activations WHERE repository_id=$1 AND surface_id=$2 ORDER BY revision DESC LIMIT 21 OFFSET $3")?;
+            let mut activations=q.query_map(crate::database::params![p.repository_id,p.surface_id,p.activation_offset],activation_row)?.collect::<Result<Vec<_>,_>>()?;
             let next_activation_offset=(activations.len()>20).then_some(p.activation_offset+20);activations.truncate(20);
-            let title=c.query_row("SELECT title FROM sketch_surfaces WHERE repository_id=?1 AND surface_id=?2",rusqlite::params![p.repository_id,p.surface_id],|r|r.get(0)).optional()?;
+            let title=c.query_row("SELECT title FROM sketch_surfaces WHERE repository_id=$1 AND surface_id=$2",crate::database::params![p.repository_id,p.surface_id],|r|r.get(0)).optional()?;
             let next_offset=has_more.then_some(p.offset+nodes.len() as u32);
             bound_story(results::SketchStoryResult{repository_id:p.repository_id,surface_id:p.surface_id,surface_title:title,current:current.current,nodes,lineage,activations,has_more,next_offset,revision:current.revision,next_activation_offset},p.offset,p.activation_offset)
         }).map_err(db_error)
@@ -304,7 +315,7 @@ impl SketchService {
         p: params::SketchResolve,
     ) -> Result<results::SketchResolveResult, ProtocolError> {
         self.database
-            .call(move |c| resolve_current(c, &p.repository_id, &p.surface_id))
+            .read(move |c| resolve_current(c, &p.repository_id, &p.surface_id))
             .map_err(db_error)
     }
     pub fn get(
@@ -313,19 +324,19 @@ impl SketchService {
         actor: &str,
     ) -> Result<results::SketchDetail, ProtocolError> {
         let actor = actor.to_owned();
-        self.database.call(move |c| {
-            let mut sketch=c.query_row(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1 AND sketch_id=?2"),rusqlite::params![p.repository_id,p.sketch_id],summary_row)?;
+        self.database.read(move |c| {
+            let mut sketch=c.query_row(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=$1 AND sketch_id=$2"),crate::database::params![p.repository_id,p.sketch_id],summary_row)?;
             sketch.current=is_current_sketch(c,sketch.surface_id.as_deref(),&p.sketch_id,&p.repository_id)?;
-            let (size,digest)=c.query_row("SELECT generation_record_size,generation_record_sha256 FROM sketch_batches WHERE batch_id=?1",[&sketch.batch_id],|r|Ok((r.get::<_,i64>(0)? as u64,r.get(1)?)))?;
-            let mut q=c.prepare("SELECT revision,decision,rationale,actor,created_at FROM sketch_decision_history WHERE sketch_id=?1 ORDER BY revision DESC LIMIT 20")?;
+            let (size,digest)=c.query_row("SELECT generation_record_size,generation_record_sha256 FROM sketch_batches WHERE batch_id=$1",[&sketch.batch_id],|r|Ok((r.get::<_,i64>(0)? as u64,r.get(1)?)))?;
+            let mut q=c.prepare("SELECT revision,decision,rationale,actor,created_at FROM sketch_decision_history WHERE sketch_id=$1 ORDER BY revision DESC LIMIT 20")?;
             let history=q.query_map([&p.sketch_id],|r|Ok(results::SketchDecisionEvent{revision:r.get(0)?,decision:parse_decision(&r.get::<_,String>(1)?),rationale:r.get(2)?,actor:r.get(3)?,created_at:r.get(4)?}))?.collect::<Result<Vec<_>,_>>()?;
-            let mut q=c.prepare("SELECT annotation_id,sketch_id,body,marks_json,state,created_by,created_at,updated_at FROM sketch_annotations WHERE repository_id=?1 AND sketch_id=?2 AND state!='deleted' ORDER BY created_at,rowid")?;
-            let annotations=q.query_map(rusqlite::params![p.repository_id,p.sketch_id],|r|annotation_row(r,&actor))?.collect::<Result<Vec<_>,_>>()?;
-            let mut q=c.prepare("SELECT parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at FROM sketch_lineage WHERE repository_id=?1 AND child_sketch_id=?2 ORDER BY rowid")?;
-            let lineage=q.query_map(rusqlite::params![p.repository_id,p.sketch_id],lineage_row)?.collect::<Result<Vec<_>,_>>()?;
-            let initial_context=c.query_row(&format!("SELECT {CONTEXT_COLUMNS} FROM sketch_description_history WHERE sketch_id=?1 AND revision=0"),[&p.sketch_id],context_row).optional()?;
-            let mut q=c.prepare(&format!("SELECT {CONTEXT_COLUMNS} FROM sketch_description_history WHERE sketch_id=?1 AND (?2 IS NULL OR revision<?2) ORDER BY revision DESC LIMIT 4"))?;
-            let mut description_history=q.query_map(rusqlite::params![p.sketch_id,p.context_before_revision],context_row)?.collect::<Result<Vec<_>,_>>()?;
+            let mut q=c.prepare("SELECT annotation_id,sketch_id,body,marks_json,state,created_by,created_at,updated_at FROM sketch_annotations WHERE repository_id=$1 AND sketch_id=$2 AND state!='deleted' ORDER BY created_at,rowid")?;
+            let annotations=q.query_map(crate::database::params![p.repository_id,p.sketch_id],|r|annotation_row(r,&actor))?.collect::<Result<Vec<_>,_>>()?;
+            let mut q=c.prepare("SELECT parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at FROM sketch_lineage WHERE repository_id=$1 AND child_sketch_id=$2 ORDER BY rowid")?;
+            let lineage=q.query_map(crate::database::params![p.repository_id,p.sketch_id],lineage_row)?.collect::<Result<Vec<_>,_>>()?;
+            let initial_context=c.query_row(&format!("SELECT {CONTEXT_COLUMNS} FROM sketch_description_history WHERE sketch_id=$1 AND revision=0"),[&p.sketch_id],context_row).optional()?;
+            let mut q=c.prepare(&format!("SELECT {CONTEXT_COLUMNS} FROM sketch_description_history WHERE sketch_id=$1 AND ($2::bigint IS NULL OR revision<$2) ORDER BY revision DESC LIMIT 4"))?;
+            let mut description_history=q.query_map(crate::database::params![p.sketch_id,p.context_before_revision],context_row)?.collect::<Result<Vec<_>,_>>()?;
             let context_history_has_more=description_history.len()>3;description_history.truncate(3);
             Ok(results::SketchDetail{sketch,generation_record_size:size,generation_record_sha256:digest,history,annotations,lineage,description_history,initial_context,context_history_has_more})
         }).map_err(db_error)
@@ -358,22 +369,23 @@ impl SketchService {
         let actor_tx = actor.clone();
         let time_tx = now.clone();
         let revision=self.database.transaction(move |tx|{
-            let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sketch_surfaces WHERE repository_id=?1 AND surface_id=?2)",rusqlite::params![request.repository_id,request.surface_id],|r|r.get(0))?;
+            crate::plan::lock_repository(tx, &request.repository_id)?;
+            let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sketch_surfaces WHERE repository_id=$1 AND surface_id=$2)",crate::database::params![request.repository_id,request.surface_id],|r|r.get(0))?;
             if !exists {return Err(invalid("surface has no manifest-complete mockups").into());}
             let current=surface_revision(tx,&request.repository_id,&request.surface_id)?;
             if current!=request.expected_revision {return Err(conflict("mockup history changed; refresh before saving this selection").into());}
             for id in &request.sketch_ids {
                 validate_id(id,'s')?;
-                let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=?1 AND surface_id=?2 AND sketch_id=?3 AND legacy=0)",rusqlite::params![request.repository_id,request.surface_id,id],|r|r.get(0))?;
+                let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=$1 AND surface_id=$2 AND sketch_id=$3 AND legacy=0)",crate::database::params![request.repository_id,request.surface_id,id],|r|r.get(0))?;
                 if !valid{return Err(invalid("only nonlegacy options from this surface and repository can become current").into());}
             }
             let next=bump_surface(tx,&request.repository_id,&request.surface_id)?;
-            tx.execute("INSERT INTO sketch_surface_activations(activation_id,repository_id,surface_id,revision,action,sketch_ids_json,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![ids::sketch_activation_id().map_err(id_error)?,request.repository_id,request.surface_id,next,activation_action_text(&request.action),json_text(&request.sketch_ids)?,request.rationale,actor_tx,time_tx])?;
+            tx.execute("INSERT INTO sketch_surface_activations(activation_id,repository_id,surface_id,revision,action,sketch_ids_json,rationale,actor,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",crate::database::params![ids::sketch_activation_id().map_err(id_error)?,request.repository_id,request.surface_id,next,activation_action_text(&request.action),json_text(&request.sketch_ids)?,request.rationale,actor_tx,time_tx])?;
             for id in &request.sketch_ids {
-                let (revision,decision):(u32,String)=tx.query_row("SELECT decision_revision,decision FROM sketches WHERE sketch_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                let (revision,decision):(u32,String)=tx.query_row("SELECT decision_revision,decision FROM sketches WHERE sketch_id=$1",[id],|r|Ok((r.get(0)?,r.get(1)?)))?;
                 if decision!="keep" {
-                    tx.execute("UPDATE sketches SET decision='keep',decision_revision=?2 WHERE sketch_id=?1",rusqlite::params![id,revision+1])?;
-                    tx.execute("INSERT INTO sketch_decision_history VALUES(?1,?2,'keep',?3,?4,?5)",rusqlite::params![id,revision+1,request.rationale,actor_tx,time_tx])?;
+                    tx.execute("UPDATE sketches SET decision='keep',decision_revision=$2 WHERE sketch_id=$1",crate::database::params![id,revision+1])?;
+                    tx.execute("INSERT INTO sketch_decision_history VALUES($1,$2,'keep',$3,$4,$5)",crate::database::params![id,revision+1,request.rationale,actor_tx,time_tx])?;
                 }
                 reindex_sketch(tx,id)?;
             }
@@ -424,11 +436,12 @@ impl SketchService {
         let now = self.now()?;
         let q = p.clone();
         self.database.transaction(move|tx|{
-            let (revision,legacy,surface):(u32,bool,Option<String>)=tx.query_row("SELECT description_revision,legacy,surface_id FROM sketches WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![q.repository_id,q.sketch_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            crate::plan::lock_repository(tx, &q.repository_id)?;
+            let (revision,legacy,surface):(u32,bool,Option<String>)=tx.query_row("SELECT description_revision,legacy,surface_id FROM sketches WHERE repository_id=$1 AND sketch_id=$2",crate::database::params![q.repository_id,q.sketch_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
             if legacy{return Err(invalid("legacy context remains historical").into());}
             if revision!=q.expected_revision{return Err(conflict("description changed; refresh before saving").into());}
-            tx.execute("INSERT INTO sketch_description_history VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",rusqlite::params![q.sketch_id,revision+1,q.description,q.journey,q.decisions,q.instructions,q.constraints,q.rationale,actor,now])?;
-            tx.execute("UPDATE sketches SET description=?3,journey=?4,decisions=?5,instructions=?6,constraints=?7,description_revision=?8 WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![q.repository_id,q.sketch_id,q.description,q.journey,q.decisions,q.instructions,q.constraints,revision+1])?;
+            tx.execute("INSERT INTO sketch_description_history VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",crate::database::params![q.sketch_id,revision+1,q.description,q.journey,q.decisions,q.instructions,q.constraints,q.rationale,actor,now])?;
+            tx.execute("UPDATE sketches SET description=$3,journey=$4,decisions=$5,instructions=$6,constraints=$7,description_revision=$8 WHERE repository_id=$1 AND sketch_id=$2",crate::database::params![q.repository_id,q.sketch_id,q.description,q.journey,q.decisions,q.instructions,q.constraints,revision+1])?;
             bump_surface(tx,&q.repository_id,surface.as_deref().unwrap_or_default())?;reindex_sketch(tx,&q.sketch_id)?;Ok(())
         }).map_err(db_error)?;
         self.add_message(
@@ -496,9 +509,9 @@ impl SketchService {
         if max == 0 || max > MAX_CHUNK {
             return Err(invalid("max_bytes is invalid"));
         }
-        let (path,size,digest)=self.database.call({let repo=repo.clone();let id=id.clone();move|c|{
-            let sql=if record{"SELECT generation_record_path,generation_record_size,generation_record_sha256 FROM sketch_batches JOIN sketches USING(batch_id) WHERE sketches.repository_id=?1 AND sketch_id=?2"}else{"SELECT file_path,byte_size,sha256 FROM sketches WHERE repository_id=?1 AND sketch_id=?2"};
-            c.query_row(sql,rusqlite::params![repo,id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)? as u64,r.get::<_,String>(2)?))).map_err(DatabaseError::from)
+        let (path,size,digest)=self.database.read({let repo=repo.clone();let id=id.clone();move|c|{
+            let sql=if record{"SELECT generation_record_path,generation_record_size,generation_record_sha256 FROM sketch_batches JOIN sketches USING(batch_id) WHERE sketches.repository_id=$1 AND sketch_id=$2"}else{"SELECT file_path,byte_size,sha256 FROM sketches WHERE repository_id=$1 AND sketch_id=$2"};
+            c.query_row(sql,crate::database::params![repo,id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)? as u64,r.get::<_,String>(2)?))).map_err(DatabaseError::from)
         }}).map_err(db_error)?;
         let bytes = read_file(&path, MAX_RECORD)?;
         if bytes.len() as u64 != size || sha(&bytes) != digest {
@@ -544,17 +557,18 @@ impl SketchService {
         let repo_for_message = repo.clone();
         let fallback_task = ids::task_id().map_err(id_error)?;
         self.database.transaction(move|tx|{
-            let current:(u32,String)=tx.query_row("SELECT decision_revision,decision FROM sketches WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![repo,id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            crate::plan::lock_repository(tx, &repo)?;
+            let current:(u32,String)=tx.query_row("SELECT decision_revision,decision FROM sketches WHERE repository_id=$1 AND sketch_id=$2",crate::database::params![repo,id],|r|Ok((r.get(0)?,r.get(1)?)))?;
             if current.0!=expected{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict,"sketch decision changed; refresh and retry")))}
-            let next=current.0+1; tx.execute("UPDATE sketches SET decision=?1,decision_revision=?2 WHERE sketch_id=?3",rusqlite::params![decision,next,id])?;
-            tx.execute("INSERT INTO sketch_decision_history(sketch_id,revision,decision,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params![id,next,decision,rationale,actor,now])?;
-            let surface:Option<String>=tx.query_row("SELECT surface_id FROM sketches WHERE sketch_id=?1",[&id],|r|r.get(0))?;
+            let next=current.0+1; tx.execute("UPDATE sketches SET decision=$1,decision_revision=$2 WHERE sketch_id=$3",crate::database::params![decision,next,id])?;
+            tx.execute("INSERT INTO sketch_decision_history(sketch_id,revision,decision,rationale,actor,created_at) VALUES($1,$2,$3,$4,$5,$6)",crate::database::params![id,next,decision,rationale,actor,now])?;
+            let surface:Option<String>=tx.query_row("SELECT surface_id FROM sketches WHERE sketch_id=$1",[&id],|r|r.get(0))?;
             if let Some(surface)=surface {
                 let next_surface=bump_surface(tx,&repo,&surface)?;
                 let mut heads=current_ids(tx,&repo,&surface)?;
                 if decision!="keep" && heads.contains(&id) {
                     heads.retain(|head|head!=&id);
-                    tx.execute("INSERT INTO sketch_surface_activations VALUES(?1,?2,?3,?4,'supersede',?5,?6,?7,?8)",rusqlite::params![ids::sketch_activation_id().map_err(id_error)?,repo,surface,next_surface,json_text(&heads)?,rationale,actor,now])?;
+                    tx.execute("INSERT INTO sketch_surface_activations VALUES($1,$2,$3,$4,'supersede',$5,$6,$7,$8)",crate::database::params![ids::sketch_activation_id().map_err(id_error)?,repo,surface,next_surface,json_text(&heads)?,rationale,actor,now])?;
                 }
             }
             reindex_sketch(tx,&id)?;
@@ -598,7 +612,7 @@ impl SketchService {
         let sketch = p.sketch_id.clone();
         let id_for_lookup = id.clone();
         let fallback_task = ids::task_id().map_err(id_error)?;
-        self.database.transaction(move|tx|{let surface:Option<String>=tx.query_row("SELECT surface_id FROM sketches WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![repo,sketch],|r|r.get(0))?;if let Some(surface)=surface{bump_surface(tx,&repo,&surface)?;}tx.execute("INSERT INTO sketch_annotations(annotation_id,sketch_id,repository_id,body,marks_json,state,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'open',?6,?7,?7)",rusqlite::params![id,sketch,repo,body,marks,actor,now])?;reindex_sketch(tx,&sketch)?;insert_fallback_task(tx,&fallback_task,&repo_for_task,"Review a sketch annotation","The marked sketch feedback must be handled by the next agent review.",&actor,&now)?;Ok(())}).map_err(db_error)?;
+        self.database.transaction(move|tx|{crate::plan::lock_repository(tx,&repo)?;let surface:Option<String>=tx.query_row("SELECT surface_id FROM sketches WHERE repository_id=$1 AND sketch_id=$2",crate::database::params![repo,sketch],|r|r.get(0))?;if let Some(surface)=surface{bump_surface(tx,&repo,&surface)?;}tx.execute("INSERT INTO sketch_annotations(annotation_id,sketch_id,repository_id,body,marks_json,state,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'open',$6,$7,$7)",crate::database::params![id,sketch,repo,body,marks,actor,now])?;reindex_sketch(tx,&sketch)?;insert_fallback_task(tx,&fallback_task,&repo_for_task,"Review a sketch annotation","The marked sketch feedback must be handled by the next agent review.",&actor,&now)?;Ok(())}).map_err(db_error)?;
         self.add_message(
             &p.repository_id,
             "sketch.annotation",
@@ -637,7 +651,7 @@ impl SketchService {
         let kind = kind.map(str::to_owned);
         let repo = p.repository_id;
         let limit = p.limit.clamp(1, 100);
-        self.database.call(move|c|{ let mut st=c.prepare("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=?1 AND acknowledged_at IS NULL AND (?3 IS NULL OR kind=?3) AND NOT EXISTS (SELECT 1 FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.message_id=agent_messages.message_id AND (r.resolved=1 OR p.active=0)) ORDER BY created_at LIMIT ?2")?; let rows=st.query_map(rusqlite::params![repo,limit,kind],message_row)?.collect::<Result<Vec<_>,_>>()?; Ok(results::AgentMessageList{has_more:rows.len()==usize::from(limit),messages:rows}) }).map_err(db_error)
+        self.database.read(move|c|{ let mut st=c.prepare("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=$1 AND acknowledged_at IS NULL AND ($3::text IS NULL OR kind=$3) AND NOT EXISTS (SELECT 1 FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.message_id=agent_messages.message_id AND (r.resolved=1 OR p.active=0)) ORDER BY created_at LIMIT $2")?; let rows=st.query_map(crate::database::params![repo,limit,kind],message_row)?.collect::<Result<Vec<_>,_>>()?; Ok(results::AgentMessageList{has_more:rows.len()==usize::from(limit),messages:rows}) }).map_err(db_error)
     }
     fn add_message(
         &self,
@@ -652,7 +666,7 @@ impl SketchService {
         let kind = kind.to_owned();
         let subject = subject.to_owned();
         let summary = summary.to_owned();
-        self.database.call(move|c|{c.execute("INSERT INTO agent_messages(message_id,repository_id,kind,subject_id,summary,created_at) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params![id,repo,kind,subject,summary,now])?;Ok(())}).map_err(db_error)
+        self.database.call(move|c|{c.execute("INSERT INTO agent_messages(message_id,repository_id,kind,subject_id,summary,created_at) VALUES($1,$2,$3,$4,$5,$6)",crate::database::params![id,repo,kind,subject,summary,now])?;Ok(())}).map_err(db_error)
     }
     pub fn message_claim(
         &self,
@@ -671,7 +685,7 @@ impl SketchService {
         let id = p.message_id.clone();
         let actor2 = actor.clone();
         let until2 = until.clone();
-        self.database.transaction(move|tx|{ let updated=tx.execute("UPDATE agent_messages SET claimed_by=?1,claimed_until=?2 WHERE repository_id=?3 AND message_id=?4 AND acknowledged_at IS NULL AND (claimed_until IS NULL OR claimed_until <= ?5)",rusqlite::params![actor2,until2,repo,id,now])?; if updated==0{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict,"message is already claimed or acknowledged")))} Ok(()) }).map_err(db_error)?;
+        self.database.transaction(move|tx|{ let updated=tx.execute("UPDATE agent_messages SET claimed_by=$1,claimed_until=$2 WHERE repository_id=$3 AND message_id=$4 AND acknowledged_at IS NULL AND (claimed_until IS NULL OR claimed_until <= $5)",crate::database::params![actor2,until2,repo,id,now])?; if updated==0{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict,"message is already claimed or acknowledged")))} Ok(()) }).map_err(db_error)?;
         self.message_by_id(&p.repository_id, &p.message_id)
     }
     pub fn message_ack(
@@ -683,7 +697,7 @@ impl SketchService {
         let now = self.now()?;
         let repo = p.repository_id.clone();
         let id = p.message_id.clone();
-        self.database.transaction(move|tx|{let updated=tx.execute("UPDATE agent_messages SET acknowledged_at=?4,acknowledged_by=?1 WHERE repository_id=?2 AND message_id=?3 AND acknowledged_at IS NULL AND claimed_by=?1 AND claimed_until>?4",rusqlite::params![actor,repo,id,now])?; if updated==0{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::PermissionDenied,"message is not claimed by this agent")))} Ok(())}).map_err(db_error)?;
+        self.database.transaction(move|tx|{let updated=tx.execute("UPDATE agent_messages SET acknowledged_at=$4,acknowledged_by=$1 WHERE repository_id=$2 AND message_id=$3 AND acknowledged_at IS NULL AND claimed_by=$1 AND claimed_until>$4",crate::database::params![actor,repo,id,now])?; if updated==0{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::PermissionDenied,"message is not claimed by this agent")))} Ok(())}).map_err(db_error)?;
         self.message_by_id(&p.repository_id, &p.message_id)
     }
     fn message_by_id(
@@ -693,13 +707,13 @@ impl SketchService {
     ) -> Result<results::AgentMessageMutation, ProtocolError> {
         let repo = repo.to_owned();
         let id = id.to_owned();
-        self.database.call(move|c|{let row=c.query_row("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=?1 AND message_id=?2",rusqlite::params![repo,id],message_row)?;Ok(results::AgentMessageMutation{message:row})}).map_err(db_error)
+        self.database.read(move|c|{let row=c.query_row("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=$1 AND message_id=$2",crate::database::params![repo,id],message_row)?;Ok(results::AgentMessageMutation{message:row})}).map_err(db_error)
     }
 }
 
 const CONTEXT_COLUMNS: &str =
     "revision,description,journey,decisions,instructions,constraints,rationale,actor,created_at";
-const CURRENT_SQL: &str = "EXISTS(SELECT 1 FROM sketch_surface_activations a,json_each(a.sketch_ids_json) j WHERE a.repository_id=sketches.repository_id AND a.surface_id=sketches.surface_id AND j.value=sketches.sketch_id AND a.revision=(SELECT MAX(revision) FROM sketch_surface_activations WHERE repository_id=a.repository_id AND surface_id=a.surface_id))";
+const CURRENT_SQL: &str = "EXISTS(SELECT 1 FROM sketch_surface_activations a CROSS JOIN LATERAL jsonb_array_elements_text(a.sketch_ids_json) j WHERE a.repository_id=sketches.repository_id AND a.surface_id=sketches.surface_id AND j.value=sketches.sketch_id AND a.revision=(SELECT MAX(revision) FROM sketch_surface_activations WHERE repository_id=a.repository_id AND surface_id=a.surface_id))";
 fn text_field(name: &str, value: &str, min: usize, max: usize) -> Result<(), ProtocolError> {
     if value.trim().len() < min
         || value.len() > max
@@ -730,22 +744,26 @@ fn json_text(value: &impl serde::Serialize) -> Result<String, DatabaseError> {
         .map_err(|_| DatabaseError::Domain(invalid("cannot encode mockup context")))
 }
 fn surface_revision(
-    c: &rusqlite::Connection,
+    c: &crate::database::Connection,
     repo: &str,
     surface: &str,
 ) -> Result<u32, DatabaseError> {
     Ok(c.query_row(
-        "SELECT revision FROM sketch_surfaces WHERE repository_id=?1 AND surface_id=?2",
-        rusqlite::params![repo, surface],
+        "SELECT revision FROM sketch_surfaces WHERE repository_id=$1 AND surface_id=$2",
+        crate::database::params![repo, surface],
         |r| r.get(0),
     )
     .optional()?
     .unwrap_or(0))
 }
-fn bump_surface(c: &rusqlite::Connection, repo: &str, surface: &str) -> Result<u32, DatabaseError> {
+fn bump_surface(
+    c: &crate::database::Connection,
+    repo: &str,
+    surface: &str,
+) -> Result<u32, DatabaseError> {
     c.execute(
-        "UPDATE sketch_surfaces SET revision=revision+1 WHERE repository_id=?1 AND surface_id=?2",
-        rusqlite::params![repo, surface],
+        "UPDATE sketch_surfaces SET revision=revision+1 WHERE repository_id=$1 AND surface_id=$2",
+        crate::database::params![repo, surface],
     )?;
     surface_revision(c, repo, surface)
 }
@@ -763,7 +781,9 @@ fn parse_decision(value: &str) -> SketchDecision {
         _ => SketchDecision::Undecided,
     }
 }
-fn context_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchDescriptionRevision> {
+fn context_row(
+    r: &crate::database::Row<'_>,
+) -> crate::database::Result<results::SketchDescriptionRevision> {
     Ok(results::SketchDescriptionRevision {
         revision: r.get(0)?,
         description: r.get(1)?,
@@ -776,7 +796,9 @@ fn context_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchDescrip
         created_at: r.get(8)?,
     })
 }
-fn lineage_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchLineageEvent> {
+fn lineage_row(
+    r: &crate::database::Row<'_>,
+) -> crate::database::Result<results::SketchLineageEvent> {
     Ok(results::SketchLineageEvent {
         parent_sketch_id: r.get(0)?,
         child_sketch_id: r.get(1)?,
@@ -786,10 +808,16 @@ fn lineage_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchLineage
         created_at: r.get(5)?,
     })
 }
-fn activation_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchActivationEvent> {
+fn activation_row(
+    r: &crate::database::Row<'_>,
+) -> crate::database::Result<results::SketchActivationEvent> {
     let json: String = r.get(2)?;
     let ids = serde_json::from_str(&json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        crate::database::Error::FromSqlConversionFailure(
+            2,
+            crate::database::types::Type::Text,
+            Box::new(e),
+        )
     })?;
     Ok(results::SketchActivationEvent {
         revision: r.get(0)?,
@@ -811,13 +839,13 @@ fn compact_summary(mut row: results::SketchImageSummary) -> results::SketchImage
     row
 }
 fn query_summaries(
-    c: &rusqlite::Connection,
+    c: &crate::database::Connection,
     condition: &str,
-    values: Vec<rusqlite::types::Value>,
+    values: Vec<crate::database::types::Value>,
 ) -> Result<Vec<results::SketchImageSummary>, DatabaseError> {
     let mut q=c.prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE {condition}"))?;
     let rows = q
-        .query_map(rusqlite::params_from_iter(values), summary_row)?
+        .query_map(crate::database::params_from_iter(values), summary_row)?
         .collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
         .map(|row| {
@@ -879,7 +907,7 @@ fn bound_story(
     Ok(story)
 }
 fn resolve_current(
-    c: &rusqlite::Connection,
+    c: &crate::database::Connection,
     repo: &str,
     surface: &str,
 ) -> Result<results::SketchResolveResult, DatabaseError> {
@@ -887,7 +915,7 @@ fn resolve_current(
     let revision = surface_revision(c, repo, surface)?;
     let mut nodes = Vec::new();
     for id in &ids {
-        let row=c.query_row(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1 AND surface_id=?2 AND sketch_id=?3 AND legacy=0"),rusqlite::params![repo,surface,id],summary_row).optional()?;
+        let row=c.query_row(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=$1 AND surface_id=$2 AND sketch_id=$3 AND legacy=0"),crate::database::params![repo,surface,id],summary_row).optional()?;
         if let Some(mut row) = row {
             row.current = true;
             nodes.push(compact_summary(row));
@@ -904,7 +932,7 @@ fn resolve_current(
             "The saved selection has an unavailable member; resolve it before implementation.",
         )
     } else if let Some(batch) = surface.strip_prefix("legacy:") {
-        let legacy:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=?1 AND batch_id=?2 AND legacy=1)",rusqlite::params![repo,batch],|r|r.get(0))?;
+        let legacy:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=$1 AND batch_id=$2 AND legacy=1)",crate::database::params![repo,batch],|r|r.get(0))?;
         if legacy {
             (
                 results::SketchResolveStatus::LegacyOnly,
@@ -931,14 +959,22 @@ fn resolve_current(
         current: nodes,
     })
 }
-pub(crate) fn reindex_sketch(c: &rusqlite::Connection, id: &str) -> Result<(), DatabaseError> {
-    let (repo,surface,base):(String,String,String)=c.query_row("SELECT repository_id,COALESCE(surface_id,''),title||' '||COALESCE(surface_title,'')||' '||COALESCE(surface_id,'')||' '||element_ids_json||' '||COALESCE(state_name,'')||' '||COALESCE(theme,'')||' '||COALESCE(viewport,'')||' '||transition_note FROM sketches WHERE sketch_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-    let context:String=c.query_row("SELECT COALESCE(group_concat(description||' '||journey||' '||decisions||' '||instructions||' '||constraints||' '||rationale,' '),'') FROM sketch_description_history WHERE sketch_id=?1",[id],|r|r.get(0))?;
-    let decisions:String=c.query_row("SELECT COALESCE(group_concat(rationale,' '),'') FROM sketch_decision_history WHERE sketch_id=?1",[id],|r|r.get(0))?;
-    let comments:String=c.query_row("SELECT COALESCE(group_concat(body,' '),'') FROM sketch_annotations WHERE sketch_id=?1 AND state!='deleted'",[id],|r|r.get(0))?;
-    let activations:String=c.query_row("SELECT COALESCE(group_concat(rationale,' '),'') FROM sketch_surface_activations a WHERE repository_id=?1 AND EXISTS(SELECT 1 FROM json_each(a.sketch_ids_json) WHERE value=?2)",rusqlite::params![repo,id],|r|r.get(0))?;
-    c.execute("DELETE FROM sketches_fts WHERE sketch_id=?1", [id])?;
-    c.execute("INSERT INTO sketches_fts(sketch_id,repository_id,surface_id,searchable) VALUES(?1,?2,?3,?4)",rusqlite::params![id,repo,surface,format!("{base} {context} {decisions} {comments} {activations}")])?;
+pub(crate) fn reindex_sketch(
+    c: &crate::database::Connection,
+    id: &str,
+) -> Result<(), DatabaseError> {
+    let (repo,base):(String,String)=c.query_row("SELECT repository_id,title||' '||COALESCE(surface_title,'')||' '||COALESCE(surface_id,'')||' '||element_ids_json::text||' '||COALESCE(state_name,'')||' '||COALESCE(theme,'')||' '||COALESCE(viewport,'')||' '||transition_note FROM sketches WHERE sketch_id=$1",[id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let context:String=c.query_row("SELECT COALESCE(string_agg(description||' '||journey||' '||decisions||' '||instructions||' '||constraints||' '||rationale,' '),'') FROM sketch_description_history WHERE sketch_id=$1",[id],|r|r.get(0))?;
+    let decisions:String=c.query_row("SELECT COALESCE(string_agg(rationale,' '),'') FROM sketch_decision_history WHERE sketch_id=$1",[id],|r|r.get(0))?;
+    let comments:String=c.query_row("SELECT COALESCE(string_agg(body,' '),'') FROM sketch_annotations WHERE sketch_id=$1 AND state!='deleted'",[id],|r|r.get(0))?;
+    let activations:String=c.query_row("SELECT COALESCE(string_agg(rationale,' '),'') FROM sketch_surface_activations a WHERE repository_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements_text(a.sketch_ids_json) WHERE value=$2)",crate::database::params![repo,id],|r|r.get(0))?;
+    c.execute(
+        "UPDATE sketches SET searchable=$2 WHERE sketch_id=$1",
+        crate::database::params![
+            id,
+            format!("{base} {context} {decisions} {comments} {activations}")
+        ],
+    )?;
     Ok(())
 }
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ProtocolError> {
@@ -953,7 +989,9 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ProtocolError> {
         .map_err(io_error)?;
     file.write_all(bytes).map_err(io_error)
 }
-fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchImageSummary> {
+fn summary_row(
+    r: &crate::database::Row<'_>,
+) -> crate::database::Result<results::SketchImageSummary> {
     let element_ids =
         serde_json::from_str::<Vec<String>>(&r.get::<_, String>(14)?).unwrap_or_default();
     Ok(results::SketchImageSummary {
@@ -994,14 +1032,14 @@ fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchImageSu
 }
 
 fn current_ids(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
     repository_id: &str,
     surface_id: &str,
 ) -> Result<Vec<String>, DatabaseError> {
     let value: Option<String> = connection
         .query_row(
-            "SELECT sketch_ids_json FROM sketch_surface_activations WHERE repository_id=?1 AND surface_id=?2 ORDER BY revision DESC LIMIT 1",
-            rusqlite::params![repository_id, surface_id],
+            "SELECT sketch_ids_json FROM sketch_surface_activations WHERE repository_id=$1 AND surface_id=$2 ORDER BY revision DESC LIMIT 1",
+            crate::database::params![repository_id, surface_id],
             |row| row.get(0),
         )
         .optional()?;
@@ -1013,7 +1051,7 @@ fn current_ids(
 }
 
 fn is_current_sketch(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
     surface_id: Option<&str>,
     sketch_id: &str,
     repository_id: &str,
@@ -1121,17 +1159,10 @@ fn parse_activation_action(value: &str) -> params::SketchActivationAction {
     }
 }
 
-fn literal_fts_query(query: &str) -> String {
-    query
-        .split_whitespace()
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 fn annotation_row(
-    r: &rusqlite::Row<'_>,
+    r: &crate::database::Row<'_>,
     actor: &str,
-) -> rusqlite::Result<results::SketchAnnotation> {
+) -> crate::database::Result<results::SketchAnnotation> {
     Ok(results::SketchAnnotation {
         annotation_id: r.get(0)?,
         sketch_id: r.get(1)?,
@@ -1144,7 +1175,7 @@ fn annotation_row(
         can_delete: r.get::<_, String>(5)? == actor,
     })
 }
-fn message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::AgentMessage> {
+fn message_row(r: &crate::database::Row<'_>) -> crate::database::Result<results::AgentMessage> {
     Ok(results::AgentMessage {
         message_id: r.get(0)?,
         repository_id: r.get(1)?,
@@ -1203,7 +1234,7 @@ fn db_error(e: DatabaseError) -> ProtocolError {
     }
 }
 fn insert_fallback_task(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &crate::database::Transaction<'_>,
     task_id: &str,
     repo: &str,
     title: &str,
@@ -1211,12 +1242,13 @@ fn insert_fallback_task(
     actor: &str,
     now: &str,
 ) -> Result<(), DatabaseError> {
+    crate::plan::lock_repository(tx, repo)?;
     let seq: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(seq),0)+1 FROM tasks WHERE repository_id=?1",
+        "SELECT COALESCE(MAX(seq),0)+1 FROM tasks WHERE repository_id=$1",
         [repo],
         |r| r.get(0),
     )?;
-    tx.execute("INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,impact,verification,kind,status,created_at,created_by,updated_at) VALUES(?1,?2,?3,1,?4,?5,?6,?7,'user_feedback','planned',?8,?9,?8)",rusqlite::params![task_id,repo,seq,title,outcome,"A retained sketch decision or annotation needs agent follow-up.","Inspect the linked sketch and record the resulting change or resolution.",now,actor])?;
+    tx.execute("INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,impact,verification,kind,status,created_at,created_by,updated_at) VALUES($1,$2,$3,1,$4,$5,$6,$7,'user_feedback','planned',$8,$9,$8)",crate::database::params![task_id,repo,seq,title,outcome,"A retained sketch decision or annotation needs agent follow-up.","Inspect the linked sketch and record the resulting change or resolution.",now,actor])?;
     Ok(())
 }
 
@@ -1271,7 +1303,7 @@ mod tests {
         let root = temp.path();
         let db = Database::open(root.join("authority.sqlite3")).unwrap();
         let root_path = root.to_string_lossy().to_string();
-        db.transaction(move |tx| { tx.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',?1,'fixture','t',1000,'t')",[root_path])?; Ok(()) }).unwrap();
+        db.transaction(move |tx| { tx.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',$1,'fixture','t',1000,'t')",[root_path])?; Ok(()) }).unwrap();
         let png=base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk/x8AAusB9Y9Z4rUAAAAASUVORK5CYII=").unwrap();
         let image = root.join("sketch.png");
         fs::write(&image, &png).unwrap();

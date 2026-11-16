@@ -60,6 +60,9 @@ pub trait MetricSource: Send + Sync + 'static {
     fn directory_size(&self, path: &Path, timeout: Duration) -> Option<u64>;
     fn container_sizes(&self, timeout: Duration) -> BTreeMap<String, u64>;
     fn docker_shared_sizes(&self, timeout: Duration) -> DockerStorage;
+    fn managed_volume_size(&self, _name: &str, _timeout: Duration) -> Option<u64> {
+        None
+    }
     fn logical_cpus(&self) -> u32;
 }
 
@@ -302,6 +305,43 @@ impl MetricSource for HostMetricSource {
         parse_projected_docker_storage(&output.stdout)
     }
 
+    fn managed_volume_size(&self, name: &str, timeout: Duration) -> Option<u64> {
+        if name.is_empty()
+            || name.len() > 200
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+        {
+            return None;
+        }
+        let deadline = Instant::now() + timeout;
+        let invocation = DockerInvocation::new(
+            vec![
+                "volume".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{.Mountpoint}}".into(),
+                name.into(),
+            ],
+            timeout,
+        )
+        .ok()?;
+        let output = self.docker.invoke(invocation).ok()?;
+        if !output.success() || output.stdout_truncated {
+            return None;
+        }
+        let mount = Path::new(output.stdout.trim());
+        if !mount.is_absolute() {
+            return None;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            None
+        } else {
+            self.directory_size(mount, remaining)
+        }
+    }
+
     fn logical_cpus(&self) -> u32 {
         std::thread::available_parallelism()
             .map(std::num::NonZeroUsize::get)
@@ -330,6 +370,7 @@ fn read_integer(path: &Path) -> u64 {
 pub(crate) struct ProcessOutput {
     pub(crate) status: std::process::ExitStatus,
     pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
     pub(crate) truncated: bool,
 }
 
@@ -344,11 +385,13 @@ pub(crate) fn run_bounded(
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .ok()?;
     let stdout = child.stdout.take()?;
-    let reader = thread::spawn(move || read_output(stdout));
+    let stderr = child.stderr.take()?;
+    let stdout_reader = thread::spawn(move || read_output(stdout));
+    let stderr_reader = thread::spawn(move || read_output(stderr));
     let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child.try_wait().ok()? {
@@ -364,17 +407,20 @@ pub(crate) fn run_bounded(
             // cleanup if the kernel cannot terminate it immediately.
             thread::spawn(move || {
                 let _ = child.wait();
-                let _ = reader.join();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
             });
             return None;
         }
         thread::sleep(PROCESS_POLL.min(deadline.saturating_duration_since(now)));
     };
-    let (stdout, truncated) = reader.join().ok()?.ok()?;
+    let (stdout, stdout_truncated) = stdout_reader.join().ok()?.ok()?;
+    let (stderr, stderr_truncated) = stderr_reader.join().ok()?.ok()?;
     Some(ProcessOutput {
         status,
         stdout,
-        truncated,
+        stderr,
+        truncated: stdout_truncated || stderr_truncated,
     })
 }
 

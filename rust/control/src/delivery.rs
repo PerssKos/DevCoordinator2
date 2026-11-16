@@ -1,8 +1,8 @@
+use crate::database::OptionalExtension;
 use base64::Engine;
 use devcoordinator2_api::delivery::*;
 use devcoordinator2_api::params::{ArtifactCatalog as CatalogParams, ArtifactFile};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
@@ -10,7 +10,7 @@ use crate::access::Caller;
 use crate::completion::CompletionService;
 use crate::database::Database;
 use crate::deployment_state::DeploymentStore;
-use crate::plan::{DeploymentEvidenceReader, SqliteDeploymentEvidence};
+use crate::plan::{DeploymentEvidenceReader, PostgresDeploymentEvidence};
 use crate::review::timestamp;
 use crate::review_validation::{database_error, invalid, page, text};
 use crate::test_artifacts::TestArtifactService;
@@ -51,6 +51,7 @@ pub(crate) struct DeliveryService {
     artifacts: TestArtifactService,
     base_domain: String,
     native_console: Option<(PathBuf, String)>,
+    deployment_files: crate::deployment_files::DeploymentFiles,
 }
 
 impl DeliveryService {
@@ -58,12 +59,14 @@ impl DeliveryService {
         database: Database,
         artifacts: TestArtifactService,
         base_domain: String,
+        deployment_files: crate::deployment_files::DeploymentFiles,
     ) -> Self {
         Self {
             database,
             artifacts,
             base_domain,
             native_console: None,
+            deployment_files,
         }
     }
 
@@ -83,8 +86,8 @@ impl DeliveryService {
     ) -> Result<Receipt, ProtocolError> {
         text(&params.target, 1, 100)?;
         let release_id = params.release_id.clone();
-        let (repository_id, status) = self.database.call(move |connection| {
-            Ok(connection.query_row("SELECT releases.repository_id,status FROM releases JOIN repositories USING(repository_id) WHERE release_id=?1 AND archived_at IS NULL", [&release_id],
+        let (repository_id, status) = self.database.read(move |connection| {
+            Ok(connection.query_row("SELECT releases.repository_id,status FROM releases JOIN repositories USING(repository_id) WHERE release_id=$1 AND archived_at IS NULL", [&release_id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).optional()?)
         }).map_err(database_error)?.ok_or_else(|| ProtocolError::new(ErrorCode::ReleaseNotFound, "No active release"))?;
         let catalog = self.artifacts.catalog(
@@ -266,23 +269,24 @@ impl DeliveryService {
         let stored = receipt.clone();
         let actor = actor.to_owned();
         self.database.transaction(move |transaction| {
-            let existing = transaction.query_row("SELECT receipt_json FROM release_evidence WHERE receipt_id=?1", [&stored.receipt_id], |row| row.get::<_, String>(0)).optional()?;
+            crate::plan::lock_repository(transaction, &stored.repository_id)?;
+            let existing = transaction.query_row("SELECT receipt_json FROM release_evidence WHERE receipt_id=$1", [&stored.receipt_id], |row| row.get::<_, String>(0)).optional()?;
             if let Some(existing) = existing {
                 return serde_json::from_str(&existing).map_err(|_| invalid("Stored delivery receipt is invalid").into());
             }
-            let current: String = transaction.query_row("SELECT status FROM releases WHERE release_id=?1", [&stored.release_id], |row| row.get(0))?;
+            let current: String = transaction.query_row("SELECT status FROM releases WHERE release_id=$1", [&stored.release_id], |row| row.get(0))?;
             if !matches!(current.as_str(), "planned" | "requested") || current != status {
                 return Err(invalid("Release changed or is already delivered; create a new release").into());
             }
             let encoded = serde_json::to_string(&stored).map_err(|_| invalid("Cannot encode delivery receipt"))?;
-            transaction.execute("INSERT INTO release_evidence(receipt_id,release_id,repository_id,receipt_json) VALUES(?1,?2,?3,?4)",
-                rusqlite::params![stored.receipt_id,stored.release_id,stored.repository_id,encoded])?;
+            transaction.execute("INSERT INTO release_evidence(receipt_id,release_id,repository_id,receipt_json) VALUES($1,$2,$3,$4)",
+                crate::database::params![stored.receipt_id,stored.release_id,stored.repository_id,encoded])?;
             if let Some(delivered_ms) = stored.delivered_at_ms {
                 let delivered = timestamp(delivered_ms)?;
-                transaction.execute("UPDATE releases SET status='delivered',delivered_at=?1,url=?2,updated_at=?3 WHERE release_id=?4",
-                    rusqlite::params![delivered,stored.access,timestamp(now_ms)?,stored.release_id])?;
-                transaction.execute("INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at) VALUES(?1,'release',?2,'delivered',?3,?4,?5,?6)",
-                    rusqlite::params![stored.repository_id,stored.release_id,current,stored.receipt_id,actor,timestamp(now_ms)?])?;
+                transaction.execute("UPDATE releases SET status='delivered',delivered_at=$1,url=$2,updated_at=$3 WHERE release_id=$4",
+                    crate::database::params![delivered,stored.access,timestamp(now_ms)?,stored.release_id])?;
+                transaction.execute("INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at) VALUES($1,'release',$2,'delivered',$3,$4,$5,$6)",
+                    crate::database::params![stored.repository_id,stored.release_id,current,stored.receipt_id,actor,timestamp(now_ms)?])?;
             }
             Ok(stored)
         }).map_err(database_error)
@@ -290,9 +294,9 @@ impl DeliveryService {
 
     pub(crate) fn show(&self, params: Show) -> Result<Page, ProtocolError> {
         page(params.offset, params.limit)?;
-        self.database.call(move |connection| {
-            let mut query = connection.prepare("SELECT receipt_json FROM release_evidence WHERE release_id=?1 ORDER BY rowid LIMIT ?2 OFFSET ?3")?;
-            let mut receipts = query.query_map(rusqlite::params![params.release_id,u32::from(params.limit)+1,params.offset], |row| row.get::<_, String>(0))?
+        self.database.read(move |connection| {
+            let mut query = connection.prepare("SELECT receipt_json FROM release_evidence WHERE release_id=$1 ORDER BY rowid LIMIT $2 OFFSET $3")?;
+            let mut receipts = query.query_map(crate::database::params![params.release_id,u32::from(params.limit)+1,params.offset], |row| row.get::<_, String>(0))?
                 .map(|row| serde_json::from_str::<Receipt>(&row?).map_err(|_| invalid("Stored delivery receipt is invalid").into()))
                 .collect::<Result<Vec<_>, crate::database::DatabaseError>>()?;
             let more = receipts.len() > usize::from(params.limit);
@@ -321,8 +325,8 @@ impl DeliveryService {
         }
         text(&web.deployment_id, 1, 100)?;
         let deployment_id = web.deployment_id.clone();
-        let row = self.database.call(move |connection| {
-            Ok(connection.query_row("SELECT deployment.repository_id,deployment.state,deployment.current_generation,deployment.spec_json,generation.commit_hash,generation.dirty,generation.fingerprint,generation.created_at,generation.state FROM deployments deployment JOIN generations generation ON generation.deployment_id=deployment.deployment_id AND generation.number=deployment.current_generation WHERE deployment.deployment_id=?1", [&deployment_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u32>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,i64>(5)? != 0,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,String>(8)?))).optional()?)
+        let row = self.database.read(move |connection| {
+            Ok(connection.query_row("SELECT deployment.repository_id,deployment.state,deployment.current_generation,deployment.spec_json,generation.commit_hash,generation.dirty,generation.fingerprint,generation.created_at,generation.state,deployment.created_by_uid,deployment.name,deployment.source FROM deployments deployment JOIN generations generation ON generation.deployment_id=deployment.deployment_id AND generation.number=deployment.current_generation WHERE deployment.deployment_id=$1", [&deployment_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u32>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,i64>(5)? != 0,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,String>(8)?,row.get::<_,u32>(9)?,row.get::<_,String>(10)?,row.get::<_,String>(11)?))).optional()?)
         }).map_err(database_error)?.ok_or_else(|| invalid("Web deployment has no current generation"))?;
         let created =
             time::OffsetDateTime::parse(&row.7, &time::format_description::well_known::Rfc3339)
@@ -349,8 +353,50 @@ impl DeliveryService {
                 "Retained source does not match the applied web deployment",
             ));
         }
-        let owned = SqliteDeploymentEvidence::new(self.database.clone(), self.base_domain.clone())
-            .read(&web.deployment_id)?;
+        if let Some(origin) = DeploymentStore::new(self.database.clone())
+            .generation_origin(&web.deployment_id, row.2)?
+        {
+            let retained = DeploymentStore::new(self.database.clone())
+                .generation(&web.deployment_id, row.2)?;
+            if !matches!(row.11.as_str(), "checkout" | "worktree")
+                || row.9 == 0
+                || !retained.is_some_and(|generation| {
+                    generation.path.is_dir()
+                        && self
+                            .deployment_files
+                            .owned_generation(&web.deployment_id, &generation.path)
+                            .is_some()
+                })
+            {
+                return Err(invalid(
+                    "Web deployment candidate source binding is invalid",
+                ));
+            }
+            let gid = crate::systemd::primary_gid(row.9)
+                .map_err(|_| invalid("Cannot verify web deployment source owner"))?;
+            let path = crate::deployment_origin::resolve(&origin, repository_id, row.9, gid)?;
+            let spec = crate::repository_config::load_deployment_spec(&path, &row.10)
+                .map_err(|_| invalid("Cannot verify current web candidate specification"))?;
+            let snapshot = crate::deployment_git::DeploymentGit::snapshot(
+                &crate::deployment_git::GitCli,
+                &path,
+                row.9,
+                gid,
+            )
+            .map_err(|_| invalid("Cannot verify current web candidate source"))?;
+            let current = DeploymentStore::fingerprint(&serde_json::json!({
+                "spec": spec.canonical(&row.11), "commit": snapshot.commit,
+                "dirty": snapshot.dirty, "source_digest": snapshot.source_digest,
+            }));
+            if !spec.sources.contains(&row.11) || current != row.6 {
+                return Err(invalid(
+                    "Recorded candidate origin no longer matches the applied web generation",
+                ));
+            }
+        }
+        let owned =
+            PostgresDeploymentEvidence::new(self.database.clone(), self.base_domain.clone())
+                .read(&web.deployment_id)?;
         let base = owned
             .url
             .unwrap_or_else(|| format!("http://127.0.0.1:{}", owned.port));
@@ -433,10 +479,10 @@ impl DeliveryService {
     ) -> Result<Receipt, ProtocolError> {
         text(&params.reference, 1, 100)?;
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let encoded = connection
                     .query_row(
-                        "SELECT receipt_json FROM release_evidence WHERE receipt_id=?1",
+                        "SELECT receipt_json FROM release_evidence WHERE receipt_id=$1",
                         [&params.reference],
                         |row| row.get::<_, String>(0),
                     )

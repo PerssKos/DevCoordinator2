@@ -4,11 +4,12 @@ use std::path::PathBuf;
 
 use devcoordinator2_api::recovery::{Mapping, Receipt, Request};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::database::{Database, DatabaseError};
+use crate::database::{
+    Connection, Database, DatabaseError, OptionalExtension, params, params_from_iter,
+};
 use crate::planning_backup::{InspectRequest, Inspection};
 
 type Row = BTreeMap<String, Value>;
@@ -42,10 +43,18 @@ pub fn recover(
         task_ids: vec![],
         include_identities: true,
     };
-    let (snapshot, source) = crate::planning_backup::inspect_with(&inspection, |connection| {
-        read_tables(connection, &request.repository_id)
-            .map_err(|_| "cannot read the repository planning rows".to_owned())
-    })
+    let (snapshot, source) = crate::planning_backup::inspect_with_sources(
+        database,
+        &inspection,
+        |connection| {
+            read_legacy_tables(connection, &request.repository_id)
+                .map_err(|_| "cannot read the repository planning rows".to_owned())
+        },
+        |connection| {
+            read_tables(connection, &request.repository_id)
+                .map_err(|_| "cannot read the repository planning rows".to_owned())
+        },
+    )
     .map_err(|message| ProtocolError::new(ErrorCode::ParamsInvalid, message))?;
     if snapshot.backup_sha256 != request.backup_sha256 {
         return Err(ProtocolError::new(
@@ -78,11 +87,14 @@ pub fn recover(
         })
 }
 
-fn read_tables(connection: &Connection, repository_id: &str) -> Result<Tables, DatabaseError> {
+fn read_legacy_tables(
+    connection: &rusqlite::Connection,
+    repository_id: &str,
+) -> Result<Tables, DatabaseError> {
     let mut result = Tables::new();
     for &(table, key) in TABLES {
         let exists: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=$1)",
             [table],
             |r| r.get(0),
         )?;
@@ -101,9 +113,9 @@ fn read_tables(connection: &Connection, repository_id: &str) -> Result<Tables, D
             return Err(invalid("the backup is missing a required planning table"));
         }
         let scope = if matches!(table, "visual_feedback_comments" | "visual_feedback_events") {
-            "feedback_id IN (SELECT feedback_id FROM visual_feedback WHERE repository_id=?1)"
+            "feedback_id IN (SELECT feedback_id FROM visual_feedback WHERE repository_id=$1)"
         } else {
-            "repository_id=?1"
+            "repository_id=$1"
         };
         let mut statement = connection.prepare(&format!(
             "SELECT * FROM {table} WHERE {scope} ORDER BY {key}"
@@ -132,7 +144,7 @@ fn read_tables(connection: &Connection, repository_id: &str) -> Result<Tables, D
                     }
                     _ => return Err(invalid("unsupported planning storage value")),
                 };
-                values.insert(name.clone(), value);
+                values.insert(name.clone(), normalize_column(name, value)?);
             }
             saved.push(values);
             if saved.len() > 100_000 || bytes > 64 * 1024 * 1024 {
@@ -144,6 +156,46 @@ fn read_tables(connection: &Connection, repository_id: &str) -> Result<Tables, D
         result.insert(table.to_owned(), saved);
     }
     Ok(result)
+}
+
+fn normalize_column(name: &str, value: Value) -> Result<Value, DatabaseError> {
+    if name.ends_with("_json")
+        && let Value::String(encoded) = &value
+    {
+        return serde_json::from_str(encoded).map_err(|_| invalid("invalid saved planning JSON"));
+    }
+    Ok(value)
+}
+
+fn read_tables(connection: &Connection, repository_id: &str) -> Result<Tables, DatabaseError> {
+    let mut tables = Tables::new();
+    for &(table, key) in TABLES {
+        let scope = if matches!(table, "visual_feedback_comments" | "visual_feedback_events") {
+            "feedback_id IN (SELECT feedback_id FROM visual_feedback WHERE repository_id=$1)"
+        } else {
+            "repository_id=$1"
+        };
+        let mut statement = connection.prepare(&format!(
+            "SELECT to_jsonb(t)-'rowid'-'search_vector'-'searchable' FROM {table} t WHERE {scope} ORDER BY {key}"
+        ))?;
+        let mut rows = Vec::new();
+        let mut bytes = 0usize;
+        for row in statement.query_map([repository_id], |row| row.get::<_, String>(0))? {
+            let encoded = row?;
+            bytes = bytes.saturating_add(encoded.len());
+            rows.push(
+                serde_json::from_str(&encoded)
+                    .map_err(|_| invalid("invalid live planning JSON"))?,
+            );
+            if rows.len() > 100_000 || bytes > 64 * 1024 * 1024 {
+                return Err(invalid(
+                    "repository planning history exceeds the bounded recovery limit",
+                ));
+            }
+        }
+        tables.insert(table.to_owned(), rows);
+    }
+    Ok(tables)
 }
 
 fn text<'a>(row: &'a Row, field: &str) -> Result<&'a str, DatabaseError> {
@@ -168,7 +220,7 @@ fn digest(bytes: impl AsRef<[u8]>) -> String {
 fn fingerprint(connection: &Connection, repository_id: &str) -> Result<String, DatabaseError> {
     let tables = read_tables(connection, repository_id)?;
     let repository: (String, Option<String>, Option<String>) = connection.query_row(
-        "SELECT root_path,archived_at,merged_into_repository_id FROM repositories WHERE repository_id=?1",
+        "SELECT root_path,archived_at,merged_into_repository_id FROM repositories WHERE repository_id=$1",
         [repository_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     )?;
     let rows = serde_json::to_vec(&(repository, tables))
@@ -192,7 +244,7 @@ fn verify_reference(
     }
     let owner: Option<String> = connection
         .query_row(
-            &format!("SELECT repository_id FROM {table} WHERE {key}=?1"),
+            &format!("SELECT repository_id FROM {table} WHERE {key}=$1"),
             [id],
             |r| r.get(0),
         )
@@ -214,9 +266,9 @@ fn validate(
 ) -> Result<(), DatabaseError> {
     let mut parents = BTreeMap::new();
     for &(table, key) in TABLES {
-        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut statement = connection.prepare("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=$1")?;
         let columns = statement
-            .query_map([], |r| r.get::<_, String>(1))?
+            .query_map([table], |r| r.get::<_, String>(0))?
             .collect::<Result<BTreeSet<_>, _>>()?;
         let live_ids: BTreeSet<&str> = live[table]
             .iter()
@@ -238,7 +290,7 @@ fn validate(
             }
             let id = text(row, key)?;
             let exists: bool = connection.query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {key}=?1)"),
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {key}=$1)"),
                 [id],
                 |r| r.get(0),
             )?;
@@ -290,7 +342,7 @@ fn validate(
         }
         if let Some(reference) = row.get("ref").and_then(Value::as_str) {
             let exists: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM decisions WHERE repository_id=?1 AND ref=?2 AND decision_id<>?3)",
+                "SELECT EXISTS(SELECT 1 FROM decisions WHERE repository_id=$1 AND ref=$2 AND decision_id<>$3)",
                 params![repository, reference, text(row, "decision_id")?],
                 |r| r.get(0),
             )?;
@@ -343,19 +395,22 @@ fn insert_row(connection: &Connection, table: &str, row: &Row) -> Result<(), Dat
         .map(|s| format!("\"{s}\""))
         .collect::<Vec<_>>()
         .join(",");
-    let placeholders = std::iter::repeat_n("?", row.len())
+    let placeholders = (1..=row.len())
+        .map(|index| format!("${index}"))
         .collect::<Vec<_>>()
         .join(",");
     let values = row
         .values()
         .map(|value| match value {
-            Value::Null => Ok(rusqlite::types::Value::Null),
-            Value::String(s) => Ok(rusqlite::types::Value::Text(s.clone())),
+            Value::Null => Ok(crate::database::types::Value::Null),
+            Value::String(s) => Ok(crate::database::types::Value::Text(s.clone())),
             Value::Number(n) => n
                 .as_i64()
-                .map(rusqlite::types::Value::Integer)
+                .map(crate::database::types::Value::Integer)
                 .ok_or_else(|| invalid("non-integer planning value")),
-            _ => Err(invalid("unsupported planning value")),
+            value => serde_json::to_string(value)
+                .map(crate::database::types::Value::Text)
+                .map_err(|_| invalid("unsupported planning value")),
         })
         .collect::<Result<Vec<_>, _>>()?;
     connection.execute(
@@ -373,8 +428,9 @@ fn apply(
     actor: &str,
     now: &str,
 ) -> Result<Receipt, DatabaseError> {
+    crate::plan::lock_repository(connection, &request.repository_id)?;
     let existing: Option<String> = connection.query_row(
-        "SELECT receipt_json FROM planning_recoveries WHERE repository_id=?1 AND backup_sha256=?2",
+        "SELECT receipt_json FROM planning_recoveries WHERE repository_id=$1 AND backup_sha256=$2",
         params![request.repository_id, snapshot.backup_sha256], |r| r.get(0),
     ).optional()?;
     if let Some(existing) = existing {
@@ -389,7 +445,7 @@ fn apply(
             };
             let owner: Option<String> = connection
                 .query_row(
-                    &format!("SELECT repository_id FROM {} WHERE {key}=?1", mapping.kind),
+                    &format!("SELECT repository_id FROM {} WHERE {key}=$1", mapping.kind),
                     [&mapping.id],
                     |r| r.get(0),
                 )
@@ -403,7 +459,7 @@ fn apply(
         for choice in &receipt.preserved_live_tasks {
             let owner: Option<String> = connection
                 .query_row(
-                    "SELECT repository_id FROM tasks WHERE task_id=?1",
+                    "SELECT repository_id FROM tasks WHERE task_id=$1",
                     [&choice.task_id],
                     |row| row.get(0),
                 )
@@ -418,7 +474,7 @@ fn apply(
         return Ok(receipt);
     }
     let present: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id=?1)",
+        "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id=$1)",
         [&request.repository_id],
         |r| r.get(0),
     )?;
@@ -454,7 +510,7 @@ fn apply(
     let mut prepared = source.clone();
     for &(table, key) in &TABLES[..3] {
         let mut next: i64 = connection.query_row(
-            &format!("SELECT COALESCE(MAX(seq),0) FROM {table} WHERE repository_id=?1"),
+            &format!("SELECT COALESCE(MAX(seq),0) FROM {table} WHERE repository_id=$1"),
             [&request.repository_id],
             |r| r.get(0),
         )?;
@@ -517,9 +573,9 @@ fn apply(
     if !request.apply {
         return Ok(receipt);
     }
-    connection.execute_batch("PRAGMA defer_foreign_keys=ON;")?;
+    connection.execute_batch("SET CONSTRAINTS ALL DEFERRED")?;
     connection.execute(
-        "INSERT INTO planning_recoveries(recovery_id,repository_id,backup_sha256,before_sha256,at,actor,receipt_json) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        "INSERT INTO planning_recoveries(recovery_id,repository_id,backup_sha256,before_sha256,at,actor,receipt_json) VALUES($1,$2,$3,$4,$5,$6,$7)",
         params![recovery_id, request.repository_id, snapshot.backup_sha256, receipt.live_sha256, now, actor, serde_json::to_string(&receipt).map_err(|_| invalid("cannot encode recovery receipt"))?],
     )?;
     for &(table, key) in TABLES {
@@ -552,7 +608,7 @@ fn apply(
                 insert_row(connection, table, &row)?;
             }
             connection.execute(
-                "INSERT INTO planning_recovery_records(recovery_id,record_kind,record_id,original_sequence,assigned_sequence,original_json) VALUES(?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO planning_recovery_records(recovery_id,record_kind,record_id,original_sequence,assigned_sequence,original_json) VALUES($1,$2,$3,$4,$5,$6)",
                 params![recovery_id, if conflict_preserved { format!("conflict_saved:{table}") } else if existing { format!("existing:{table}") } else { table.to_owned() }, id, original_sequence, mapping.map(|m| m.assigned_sequence), serde_json::to_string(original).map_err(|_| invalid("cannot encode recovery provenance"))?],
             )?;
             if conflict_preserved {
@@ -561,7 +617,7 @@ fn apply(
                     .find(|row| row.get(key).and_then(Value::as_str) == Some(&id))
                     .ok_or_else(|| invalid("preserved live task is unavailable"))?;
                 connection.execute(
-                    "INSERT INTO planning_recovery_records(recovery_id,record_kind,record_id,original_sequence,assigned_sequence,original_json) VALUES(?1,?2,?3,?4,NULL,?5)",
+                    "INSERT INTO planning_recovery_records(recovery_id,record_kind,record_id,original_sequence,assigned_sequence,original_json) VALUES($1,$2,$3,$4,NULL,$5)",
                     params![recovery_id, format!("conflict_live:{table}"), id, prior.get("seq").and_then(Value::as_i64), serde_json::to_string(prior).map_err(|_| invalid("cannot encode live conflict provenance"))?],
                 )?;
             }

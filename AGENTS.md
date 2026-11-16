@@ -70,14 +70,14 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 
 - Read `security-assumptions.md`, relevant requirements, and applicable
   recorded decisions, user feedback, and durable corrections before
-  consequential work. Use `devcoordinator2 plan overview`, `task history`,
-  and `decision tail`/`search`; include relevant resolved feedback and older
+  consequential work. Use `devcoordinator2 call plan.overview`, `task.history`,
+  and `decision.tail`/`decision.search`; include relevant resolved feedback and older
   standing corrections rather than relying only on active tasks.
 - DevCoordinator2's database is the only completion ledger and decision
   history. Keep unfinished feedback in its task ledger and confirmed
   repeatable corrections in aspect-tagged decision records, linked to the
-  relevant feedback and preserved after fixes. Use `devcoordinator2 plan`,
-  `task`, and `decision`; never create or update Markdown ledger mirrors.
+  relevant feedback and preserved after fixes. Use the generic `devcoordinator2 call` interface with
+  `plan.*`, `task.*`, and `decision.*` operations; never create or update Markdown ledger mirrors.
   Historical files are reference material, not a fallback authority.
 - A preview deployment's `status: delivered` result records release metadata
   only. Delivery clocks require a qualified `release.deliver_evidence` receipt
@@ -121,8 +121,8 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 
 - Run product lint/tests directly from this repository.
 - Before complete skill validation, run the Rust workspace checks and build the
-  release `devcoordinator2`, `devcoordinator2-tooling`, and
-  `devcoordinator2-executor` binaries, including the tooling self-test fixture
+  release `devcoordinator2`, `devcoordinator2-tooling`,
+  `devcoordinator2-executor`, and `devcoordinator2-migrate-authority` binaries, including the tooling self-test fixture
   feature. The skill validator uses only the executor's `run-local`
   self-validation surface; it never self-hosts through the installed daemon.
 - Run `devcoordinator2-tooling skills validate run` for the six-skill, policy,

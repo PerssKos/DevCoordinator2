@@ -1,9 +1,7 @@
 use super::*;
 use crate::automation_test_support::Fixture;
-use crate::config::CodexUsageSource;
 use crate::repository::Registry;
 use serde_json::json;
-use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 const BEFORE: &str = "t20260903T120718Z-57067c";
@@ -20,50 +18,18 @@ fn measured_fixture() -> (Fixture, Record, u64) {
     let mut fixture = Fixture::new();
     let mut request = super::tests::record(&fixture);
     let home = fixture.repository.parent().unwrap().join("usage-source");
-    let (canonical, now) = crate::usage::tests::source_database(&home, 5);
-    let probe = home.join("identity-probe");
-    let identity = json!({"schemaVersion":1,"kind":"usageRepositoryIdentity","scope":{"type":"repository","id":canonical},"databaseSchemaVersion":5,"taxonomyVersion":1});
-    std::fs::write(&probe, format!("#!/bin/sh\nprintf '%s\\n' '{identity}'\n")).unwrap();
-    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let uid = rustix::process::getuid().as_raw();
-    let source = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
-    source.execute("INSERT INTO operations VALUES('result-op','model_request','agent-private',?1,'implementation','coding','model_active','agent_declared')", [(now-40_000) as i64]).unwrap();
-    source
-        .execute(
-            "INSERT INTO operation_events VALUES('result-op',1,?1,'completed')",
-            [(now - 30_000) as i64],
-        )
-        .unwrap();
-    source.execute_batch("INSERT INTO model_requests VALUES('result-request','result-op'); INSERT INTO effective_classification_events VALUES('result-op','implementation','coding','model_active','agent_declared');").unwrap();
-    source
-        .execute(
-            "INSERT INTO repository_attributions VALUES('result-op',?1)",
-            [&canonical],
-        )
-        .unwrap();
-    source.execute("INSERT INTO token_observations VALUES('total_tokens',60,'complete',?1,'result-request',NULL,?2,'provider_reported')", rusqlite::params![(now-30_000) as i64,canonical]).unwrap();
-    source
-        .execute(
-            "INSERT INTO coverage_events VALUES('result-op','complete',?1)",
-            [(now - 30_000) as i64],
-        )
-        .unwrap();
-    fixture
-        .database
-        .call(move |connection| {
-            connection.execute(
-                "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')",
-                rusqlite::params![uid, canonical],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    fixture.config.codex_usage_sources = vec![CodexUsageSource {
-        api_socket: None,
-        uid,
-        codex_home: home,
-        executable: probe,
-    }];
+    let now = 1_700_000_000_000u64;
+    let peer =
+        crate::usage_api_fixture::Peer::start(fixture._temporary.path(), &home, move |params| {
+            let tokens = if params["fromAt"].as_u64().unwrap_or(0) >= now - 49_999 {
+                60
+            } else {
+                100
+            };
+            crate::usage_api_fixture::response(params, now, tokens)
+        });
+    fixture.config.codex_usage_sources = vec![peer.source.clone()];
+    fixture.usage_peer = Some(peer);
     fixture.service = ReviewService::new(
         fixture.database.clone(),
         UsageService::with_clock(
@@ -124,6 +90,14 @@ fn measured_fixture() -> (Fixture, Record, u64) {
         (before.usage.totals.total_tokens, after.totals.total_tokens),
         (Some(100), Some(60))
     );
+    if after.coverage.has_gaps {
+        request
+            .record
+            .experiment
+            .baseline
+            .missing_measurements
+            .push("result_usage_partial_or_unavailable".into());
+    }
     if after.time.summed_agent_active.unknown_intervals > 0 {
         request
             .record
@@ -188,10 +162,9 @@ fn review_result_single_record_compares_real_windows_and_keeps_intentional_repea
             shown.comparisons[0].metrics[0].reduction_percent,
             Some(40.0)
         );
-        assert_eq!(
-            shown.comparisons[0].verified_improvement,
-            matches!(expected.experiment.disposition, Disposition::Retained)
-        );
+        // The API leaves wall/active timing unknown; a token reduction alone
+        // is not verified improvement.
+        assert!(!shown.comparisons[0].verified_improvement);
         assert!(
             shown
                 .evidence
@@ -387,7 +360,7 @@ fn review_result_delivery_receipts_require_actual_timely_qualification() {
         let encoded = serde_json::to_string(&receipt).unwrap();
         fixture.database.call(move |connection| {
             connection.execute_batch("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at) VALUES('release-result','project-alpha',1,'Result','preview','delivered','t','fixture','t');")?;
-            connection.execute("INSERT INTO release_evidence VALUES('delivery-result','release-result','project-alpha',?1)", [encoded])?;
+            connection.execute("INSERT INTO release_evidence VALUES('delivery-result','release-result','project-alpha',$1)", [encoded])?;
             Ok(())
         }).unwrap();
         request
@@ -418,7 +391,7 @@ fn review_result_legacy_receipt_needs_one_validated_append_not_history_rewriting
     let start = request.record.window_start_ms as i64;
     let end = request.record.window_end_ms as i64;
     fixture.database.call(move |connection| {
-        connection.execute("INSERT INTO review_records(record_id,revision,repository_id,window_start_ms,window_end_ms,record_json,actor,recorded_at_ms) VALUES('legacy',1,'project-alpha',?1,?2,?3,'fixture',?4)", rusqlite::params![start,end,encoded,now as i64])?;
+        connection.execute("INSERT INTO review_records(record_id,revision,repository_id,window_start_ms,window_end_ms,record_json,actor,recorded_at_ms) VALUES('legacy',1,'project-alpha',$1,$2,$3,'fixture',$4)", crate::database::params![start,end,encoded,now as i64])?;
         Ok(())
     }).unwrap();
     assert!(

@@ -335,6 +335,7 @@ impl World {
             "devcoordinator2",
             "devcoordinator2-tooling",
             "devcoordinator2-executor",
+            "devcoordinator2-migrate-authority",
         ]
         .iter()
         .map(|name| {

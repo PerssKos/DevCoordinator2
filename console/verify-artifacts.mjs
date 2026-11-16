@@ -92,6 +92,12 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   page.on('pageerror', (error) => errors.push(error.message));
   daemon.setScenario({ artifactFiles: true });
   await page.goto(`${baseUrl}#/tests?repository=native-repository`);
+  const scopedRuns = await page.evaluate(async () => {
+    const response = await fetch('/api/v3/test.list', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repository_id: 'native-repository', limit: 20 }) });
+    const reply = await response.json();
+    return { status: response.status, ok: reply.ok, runs: reply.data?.runs.map(({ run_id, repository_id, worktree_id }) => ({ run_id, repository_id, worktree_id })) };
+  });
+  assert.deepEqual(scopedRuns, { status: 200, ok: true, runs: [{ run_id: RUN, repository_id: 'native-repository', worktree_id: 'native-worktree' }] }, 'Artifact journey must use its exact scoped retained run');
   await page.waitForSelector('.test-result-summary');
   await page.locator('.test-result-summary').click();
   verify('retained files are discoverable without a formal web bundle', await page.locator('[data-test-artifacts]').count() === 1);

@@ -28,7 +28,7 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   await page.locator('.plan-context').waitFor();
   daemon.setEvidenceImage(await page.screenshot({ type: 'png' }), viewport.width, viewport.height);
   // Exercise the real paginated API consumer before inspecting the existing viewer.
-  const coverageRoute = '**/api/v2/test.evidence.get';
+  const coverageRoute = '**/api/v3/test.evidence.get';
   await page.route(coverageRoute, async route => {
     const original = new URL(route.request().url());
     const local = new URL(original); local.hostname = '127.0.0.1';
@@ -104,12 +104,12 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   verify('feedback can be saved without leaving full screen', (await (await saved).json()).ok === true && await fullButton.getAttribute('aria-pressed') === 'true');
   await page.locator('.evidence-thread').waitFor();
   verify('the saved feedback is shown inside full screen', await page.locator('.evidence-thread').isVisible());
-  await page.route('**/api/v2/test.evidence.feedback.reply', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'temporary', message: 'Temporary reply failure' } }) }));
+  await page.route('**/api/v3/test.evidence.feedback.reply', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'temporary', message: 'Temporary reply failure' } }) }));
   await page.locator('#evidence-feedback-reply textarea').fill('Retry this full-screen reply.');
   await page.locator('#evidence-feedback-reply button[type=submit]').click();
   await page.getByText('The request could not be completed. [temporary]: Temporary reply failure', { exact: true }).waitFor();
   verify('full-screen failures remain visible and keep the reply', await page.locator('.evidence-page #toasts').count() === 1 && await page.locator('#evidence-feedback-reply textarea').inputValue() === 'Retry this full-screen reply.');
-  await page.unroute('**/api/v2/test.evidence.feedback.reply');
+  await page.unroute('**/api/v3/test.evidence.feedback.reply');
   const replied = page.waitForResponse(response => response.url().endsWith('/test.evidence.feedback.reply'));
   await page.locator('#evidence-feedback-reply button[type=submit]').click();
   verify('a failed full-screen reply can be retried', (await (await replied).json()).ok === true);

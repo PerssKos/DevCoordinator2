@@ -27,17 +27,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         root.join("glossary-fixture.marker"),
         "isolated glossary acceptance fixture",
     )?;
-    let database = Database::open(root.join("authority.sqlite3"))?;
+    let database = Database::open(root.join("authority-postgres-fixture"))?;
     let health = std::env::args().nth(2).as_deref() == Some("health");
     database.transaction(|connection| {
         if connection.query_row("SELECT COUNT(*) FROM users", [], |row| row.get::<_, i64>(0))? > 0 { return Ok(()); }
         for (identity, name) in [("r1111111111111111", "Vocabulary project"), ("r2222222222222222", "Other project")] {
-            connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,?2,?3,'now',1000,'now')", rusqlite::params![identity, format!("/fixture/{identity}"), name])?;
+            connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,$2,$3,'now',1000,'now')", devcoordinator2_control::database::params![identity, format!("/fixture/{identity}"), name])?;
         }
         connection.execute("INSERT INTO worktrees VALUES('w1111111111111111','r1111111111111111','/fixture/project','now','now')", [])?;
         connection.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1111111111111111','r1111111111111111','w1111111111111111','fixture','permanent','fixture','{}','stopped','now',1000,'other','now')", [])?;
         for (identity, email, admin) in [("u1111111111111111", "owner@example.test", 1), ("u2222222222222222", "viewer@example.test", 0)] {
-            connection.execute("INSERT INTO users(user_id,email,administrator,created_at,created_by) VALUES(?1,?2,?3,'now','fixture')", rusqlite::params![identity, email, admin])?;
+            connection.execute("INSERT INTO users(user_id,email,administrator,created_at,created_by) VALUES($1,$2,$3,'now','fixture')", devcoordinator2_control::database::params![identity, email, admin])?;
         }
         connection.execute("INSERT INTO grants VALUES('u2222222222222222','d1111111111111111','viewer','now','fixture')", [])?;
         Ok(())
@@ -51,9 +51,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(root.join("legacy.txt"), record)?;
         let directory = root.clone();
         database.transaction(move |c| {
-            c.execute("INSERT OR IGNORE INTO sketch_batches(batch_id,repository_id,sketch_set,source_skill,generation_record_path,generation_record_size,generation_record_sha256,idempotency_key,created_at,created_by) VALUES('k0000000000000001','r1111111111111111','Legacy fixture','fixture',?1,?2,?3,'legacy-fixture','2026-09-01T00:00:00Z','fixture')",rusqlite::params![directory.join("legacy.txt").to_string_lossy(),record.len() as i64,Sha256::digest(record).iter().map(|b|format!("{b:02x}")).collect::<String>()])?;
-            c.execute("INSERT OR IGNORE INTO sketches(sketch_id,batch_id,repository_id,title,file_path,byte_size,sha256,mime,width,height,decision,decision_revision,created_at,created_by) VALUES('s0000000000000001','k0000000000000001','r1111111111111111','Historical fixture option',?1,?2,?3,'image/png',1,1,'keep',1,'2026-09-01T00:00:00Z','fixture')",rusqlite::params![directory.join("legacy.png").to_string_lossy(),image.len() as i64,Sha256::digest(&image).iter().map(|b|format!("{b:02x}")).collect::<String>()])?;
-            c.execute("INSERT INTO sketches_fts(sketch_id,repository_id,surface_id,searchable) SELECT 's0000000000000001','r1111111111111111','','Historical fixture option' WHERE NOT EXISTS(SELECT 1 FROM sketches_fts WHERE sketch_id='s0000000000000001')",[])?;
+            c.execute("INSERT INTO sketch_batches(batch_id,repository_id,sketch_set,source_skill,generation_record_path,generation_record_size,generation_record_sha256,idempotency_key,created_at,created_by) VALUES('k0000000000000001','r1111111111111111','Legacy fixture','fixture',$1,$2,$3,'legacy-fixture','2026-09-01T00:00:00Z','fixture') ON CONFLICT DO NOTHING",devcoordinator2_control::database::params![directory.join("legacy.txt").to_string_lossy(),record.len() as i64,Sha256::digest(record).iter().map(|b|format!("{b:02x}")).collect::<String>()])?;
+            c.execute("INSERT INTO sketches(sketch_id,batch_id,repository_id,title,file_path,byte_size,sha256,mime,width,height,decision,decision_revision,created_at,created_by) VALUES('s0000000000000001','k0000000000000001','r1111111111111111','Historical fixture option',$1,$2,$3,'image/png',1,1,'keep',1,'2026-09-01T00:00:00Z','fixture') ON CONFLICT DO NOTHING",devcoordinator2_control::database::params![directory.join("legacy.png").to_string_lossy(),image.len() as i64,Sha256::digest(&image).iter().map(|b|format!("{b:02x}")).collect::<String>()])?;
+            c.execute("UPDATE sketches SET searchable='Historical fixture option' WHERE sketch_id='s0000000000000001'",[])?;
             Ok(())
         })?;
     }
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("worktree/w1111111111111111/scratch","test_scratch","worktree","w1111111111111111","warning","test scratch exceeds 10 GiB"),
                 ("host/cpu","host_cpu","host","host","warning","CPU above 90% for five minutes"),
             ] {
-                c.execute("INSERT INTO alerts VALUES(?1,?2,?3,?4,?5,?6,'2026-09-23T17:01:00Z','2026-09-23T17:14:00Z')",rusqlite::params![key,kind,subject_kind,subject,severity,message])?;
+                c.execute("INSERT INTO alerts VALUES($1,$2,$3,$4,$5,$6,'2026-09-23T17:01:00Z','2026-09-23T17:14:00Z')",devcoordinator2_control::database::params![key,kind,subject_kind,subject,severity,message])?;
             }
             Ok(())
         })?;
@@ -133,15 +133,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             writeln!(
                 output,
                 "{}",
-                json!({"protocol":2,"id":request.id,"ok":true,"data":{}})
+                json!({"protocol":3,"id":request.id,"ok":true,"data":{}})
             )?;
             output.flush()?;
             continue;
         }
         let response = match plane.execute(&request.operation, request.params, &caller) {
-            Ok(data) => json!({"protocol":2,"id":request.id,"ok":true,"data":data}),
+            Ok(data) => json!({"protocol":3,"id":request.id,"ok":true,"data":data}),
             Err(error) => {
-                json!({"protocol":2,"id":request.id,"ok":false,"error":{"code":error.code,"message":error.message,"detail":""}})
+                json!({"protocol":3,"id":request.id,"ok":false,"error":{"code":error.code,"message":error.message,"detail":""}})
             }
         };
         writeln!(output, "{response}")?;

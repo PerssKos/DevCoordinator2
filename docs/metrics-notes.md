@@ -17,6 +17,11 @@ cadence and model.
   evidence or permanent planning history is stored here. The metric store is
   rebuildable and does not contain a second backup or migration of metric
   history.
+- Hourly expiry walks the existing time index in transactions of at most
+  256 observations. It skips recent runtime history and resumes by minute and
+  row ID, allowing queued authority requests between batches while preserving
+  the retention windows above. Interrupted passes retain committed progress
+  and the next pass resumes normal expiry.
 
 ## Series model (sketch)
 

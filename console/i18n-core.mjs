@@ -1,4 +1,21 @@
 // Shared by the static Console and the edge. No DOM, network, or Node dependencies.
+const formatters = new Map();
+export function intlFormatter(kind, locales, options = {}) {
+  const construct = () => new Intl[kind](locales, options);
+  if (locales !== undefined && typeof locales !== 'string' && (!Array.isArray(locales) || !locales.every(locale => typeof locale === 'string'))) return construct();
+  if (!options || ![Object.prototype, null].includes(Object.getPrototypeOf(options))) return construct();
+  const entries = Object.entries(Object.getOwnPropertyDescriptors(options));
+  if (entries.some(([, descriptor]) => !('value' in descriptor) || descriptor.value !== null && !['undefined', 'string', 'number', 'boolean'].includes(typeof descriptor.value))) return construct();
+  const key = JSON.stringify([kind, locales, entries.sort(([left], [right]) => left.localeCompare(right)).map(([name, { value }]) => [name, typeof value, typeof value === 'number' ? String(value) : value])]);
+  if (formatters.has(key)) return formatters.get(key);
+  const formatter = construct();
+  // Keep locale changes and different chart formats bounded, while reusing
+  // the expensive Intl objects across rows and repeated language bindings.
+  if (formatters.size >= 64) formatters.delete(formatters.keys().next().value);
+  formatters.set(key, formatter);
+  return formatter;
+}
+
 export function canonicalLocale(value) {
   try { return new Intl.Locale(String(value)).baseName; } catch { return null; }
 }
@@ -59,13 +76,13 @@ export function formatMessage(message, params = {}, locale = 'en') {
   let pattern = message;
   if (message && typeof message === 'object') {
     const count = Number(params[message.argument]);
-    const category = new Intl.PluralRules(locale, { type: message.type || 'cardinal' }).select(count);
+    const category = intlFormatter('PluralRules', locale, { type: message.type || 'cardinal' }).select(count);
     pattern = message.forms[`=${count}`] ?? message.forms[category] ?? message.forms.other;
   }
   if (typeof pattern !== 'string') throw new TypeError('Invalid message');
   return pattern.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (_match, name) => {
     if (!Object.hasOwn(params, name)) throw new TypeError(`Missing message argument: ${name}`);
-    return typeof params[name] === 'number' ? new Intl.NumberFormat(locale).format(params[name]) : String(params[name]);
+    return typeof params[name] === 'number' ? intlFormatter('NumberFormat', locale).format(params[name]) : String(params[name]);
   });
 }
 

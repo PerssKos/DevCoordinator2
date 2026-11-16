@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { acceptLanguages, browserLocales, canonicalLocale, createCatalog, formatMessage, intlLocales, localeCookie, matchLocale, recentLocales } from './i18n-core.mjs';
+import { acceptLanguages, browserLocales, canonicalLocale, createCatalog, formatMessage, intlLocales, intlFormatter, localeCookie, matchLocale, recentLocales } from './i18n-core.mjs';
 import { contaminationReason } from '../scripts/locales/audit-contamination.mjs';
 const manifest = JSON.parse(await readFile(new URL('./locales/manifest.json', import.meta.url)));
 const fixture = { ...manifest, locales: manifest.locales.map(entry => ({ ...entry, status: 'enabled' })) };
@@ -60,6 +60,15 @@ test('declared Intl fallbacks format unsupported languages without changing Engl
   const catalog=createCatalog(m,async file=>file==='en'?source:translated);
   await catalog.ensure('qaa',['shell']);
   assert.deepEqual(intlLocales('qaa',m),['qaa','uk','en']);
+  for (const locale of ['en', 'uk', 'fr', 'qaa', 'en']) {
+    const locales = intlLocales(locale, m);
+    for (const options of [{}, { style: 'percent', maximumFractionDigits: 1 }, { notation: 'compact', maximumFractionDigits: 0 }, { minimumFractionDigits: 2, maximumFractionDigits: 2 }]) {
+      assert.equal(intlFormatter('NumberFormat', locales, options).format(1234.56), new Intl.NumberFormat(locales, options).format(1234.56));
+    }
+  }
+  assert.equal(intlFormatter('NumberFormat', 'en', { maximumFractionDigits: null }).format(1.5), '2');
+  assert.throws(() => intlFormatter('NumberFormat', 'en', { maximumFractionDigits: NaN }), RangeError);
+  assert.equal(intlFormatter('NumberFormat', 'en', Object.create({ style: 'percent' })).format(0.5), '50%');
   assert.equal(catalog.message('qaa','shell.number',{value:1.5}),'Значення: 1,5');
   assert.equal(catalog.message('qaa','shell.missing',{count:2}),'2 items');
   assert.deepEqual(intlLocales('rm',manifest),['rm','en']);

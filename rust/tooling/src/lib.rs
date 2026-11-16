@@ -37,7 +37,18 @@ pub mod ui_audit_verify;
 pub mod ui_gate;
 
 pub fn export_contract(path: &Path, check: bool) -> Result<(), String> {
-    let document = devcoordinator2_api::contract_document();
+    write_generated_json(path, check, devcoordinator2_api::contract_document())
+}
+
+pub fn export_edge_operations(path: &Path, check: bool) -> Result<(), String> {
+    write_generated_json(path, check, devcoordinator2_api::edge_operation_metadata())
+}
+
+fn write_generated_json(
+    path: &Path,
+    check: bool,
+    document: serde_json::Value,
+) -> Result<(), String> {
     let mut rendered =
         serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?;
     rendered.push('\n');

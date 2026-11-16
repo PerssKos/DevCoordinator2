@@ -17,22 +17,10 @@ struct Snapshot {
 const LIFETIME: Duration = Duration::from_secs(300);
 const MAX_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
-const MAX_PAGE_BYTES: usize = 16 * 1024;
+const MAX_REVIEW_PAGE_BYTES: usize = 16 * 1024;
+const MAX_PERFORMANCE_PAGE_BYTES: usize = 64 * 1024;
 
 impl ReviewService {
-    pub(super) fn fast_performance_usage(
-        &self,
-        repository: &RepositoryRecord,
-        start: u64,
-        end: u64,
-        wait_for_refresh: bool,
-    ) -> Result<ReviewUsage, ProtocolError> {
-        Ok(review_usage_from_repository(
-            self.usage
-                .performance_snapshot(repository, start, end, wait_for_refresh)?,
-        ))
-    }
-
     pub(super) fn outcome_usage(
         &self,
         repository: &RepositoryRecord,
@@ -89,7 +77,7 @@ impl ReviewService {
                 .ok_or_else(|| {
                     invalid("Outcome cursor expired or changed scope; start a new first page")
                 })?;
-            return page(&snapshot.usage, id, offset, limit as usize);
+            return page(&snapshot.usage, id, offset, limit as usize, tokens_only);
         }
         let read = if tokens_only {
             UsageService::performance_window
@@ -120,6 +108,24 @@ impl ReviewService {
                     metric.unknown = metric.unknown.max(1);
                 }
             }
+            if params.workstream_id.is_none() && usage.outcomes.totals.activities.is_empty() {
+                // Repository activity rows are a measured repository summary.
+                // They can fill its missing chart aggregate, but cannot
+                // allocate effort to a named workstream or outcome.
+                for activity in &usage.activities {
+                    let entry = usage
+                        .outcomes
+                        .totals
+                        .activities
+                        .entry(activity.activity.clone())
+                        .or_default();
+                    entry.measured = entry
+                        .measured
+                        .checked_add(activity.total_tokens)
+                        .ok_or_else(|| invalid("Usage overflow"))?;
+                    entry.exact = None;
+                }
+            }
         }
         let ids = usage
             .outcomes
@@ -128,10 +134,10 @@ impl ReviewService {
             .map(|row| row.outcome_id.clone())
             .collect::<Vec<_>>();
         let repository_id = params.repository_id.clone();
-        let titles = self.database.call(move |connection| {
-            let mut query = connection.prepare("SELECT task_id,title,kind FROM tasks WHERE repository_id = ?1 AND task_id IN (SELECT value FROM json_each(?2))")?;
-            let ids = serde_json::to_string(&ids).map_err(|_| crate::database::DatabaseError::ResultType)?;
-            query.query_map(rusqlite::params![repository_id, ids], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, String>(1)?, row.get::<_, String>(2)?))))?
+        let titles = self.database.read(move |connection| {
+            let mut query = connection.prepare("SELECT task_id,title,kind FROM tasks WHERE repository_id = $1 AND task_id IN (SELECT value FROM jsonb_array_elements_text($2::jsonb))")?;
+            let ids = serde_json::to_string(&ids).map_err(|_| crate::database::DatabaseError::Domain(invalid("Cannot encode review outcome identities")))?;
+            query.query_map(crate::database::params![repository_id, ids], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, String>(1)?, row.get::<_, String>(2)?))))?
                 .collect::<Result<BTreeMap<_, _>, _>>().map_err(Into::into)
         }).map_err(database_error)?;
         for row in &mut usage.outcomes.rows {
@@ -184,7 +190,7 @@ impl ReviewService {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        let result = page(&usage, &id, 0, limit as usize)?;
+        let result = page(&usage, &id, 0, limit as usize, tokens_only)?;
         if result.outcomes.next_cursor.is_none() {
             return Ok(result);
         }
@@ -220,91 +226,18 @@ impl ReviewService {
     }
 }
 
-fn review_usage_from_repository(
-    report: devcoordinator2_api::results::UsageRepository,
-) -> ReviewUsage {
-    use devcoordinator2_api::outcomes::{
-        OutcomeEffort, OutcomeMeasurement, OutcomeReport, OutcomeRow,
-    };
-    let exact = report.coverage.state == devcoordinator2_api::results::CoverageState::Complete;
-    let measurement = |value: Option<u64>| OutcomeMeasurement {
-        measured: value.unwrap_or(0),
-        exact: value.filter(|_| exact),
-        unknown: u64::from(value.is_none() || !exact),
-    };
-    let total = measurement(report.totals.total_tokens);
-    let activities = report
-        .activities
-        .iter()
-        .map(|activity| {
-            (
-                activity.activity.clone(),
-                OutcomeMeasurement {
-                    measured: activity.total_tokens,
-                    exact: (exact && activity.total_tokens > 0).then_some(activity.total_tokens),
-                    unknown: u64::from(!exact),
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let rows = report
-        .outcomes
-        .into_iter()
-        .map(|row| OutcomeRow {
-            kind: None,
-            title: row.title,
-            outcome_id: row.outcome_id,
-            workstream_id: None,
-            effort: OutcomeEffort {
-                operations: row.operations,
-                provider_total_tokens: measurement(Some(row.total_tokens)),
-                cost: row.cost,
-                ..OutcomeEffort::default()
-            },
-        })
-        .collect::<Vec<_>>();
-    let outcome_count = rows.len();
-    let totals = OutcomeEffort {
-        activities,
-        operations: report.totals.operations,
-        provider_total_tokens: total,
-        cost: report.totals.cost.clone(),
-        ..OutcomeEffort::default()
-    };
-    let coverage = match report.coverage.state {
-        devcoordinator2_api::results::CoverageState::Complete => "complete",
-        devcoordinator2_api::results::CoverageState::Partial => "partial",
-        _ => "unavailable",
-    };
-    ReviewUsage {
-        coverage: report.coverage,
-        totals: report.totals,
-        activities: report.activities,
-        time: report.time,
-        tools: report.tools,
-        semantics: report.semantics,
-        outcomes: OutcomeReport {
-            kinds: BTreeMap::new(),
-            schema_version: 1,
-            coverage: coverage.into(),
-            totals: totals.clone(),
-            attributed: totals,
-            unattributed: OutcomeEffort::default(),
-            unattributed_reasons: BTreeMap::new(),
-            rows,
-            total_rows: outcome_count,
-            next_cursor: None,
-            basis: "Indexed repository usage snapshot; timing remains separate from provider token measurements.".into(),
-        },
-    }
-}
-
 fn page(
     usage: &ReviewUsage,
     id: &str,
     offset: usize,
     limit: usize,
+    performance: bool,
 ) -> Result<ReviewUsage, ProtocolError> {
+    let max_bytes = if performance {
+        MAX_PERFORMANCE_PAGE_BYTES
+    } else {
+        MAX_REVIEW_PAGE_BYTES
+    };
     let rows = &usage.outcomes.rows;
     if offset > rows.len() || offset > 0 && offset == rows.len() {
         return Err(invalid("Outcome cursor is outside the snapshot"));
@@ -317,10 +250,15 @@ fn page(
         let encoded_bytes = serde_json::to_vec(&result)
             .map_err(|_| invalid("Cannot encode usage"))?
             .len();
-        if encoded_bytes <= MAX_PAGE_BYTES {
+        if encoded_bytes <= max_bytes {
             return Ok(result);
         }
         if end <= offset + 1 {
+            if performance {
+                return Err(invalid(&format!(
+                    "Performance usage page exceeds the supported size ({encoded_bytes} bytes); narrow the window"
+                )));
+            }
             // A single review row can still exceed the packet ceiling when
             // the surrounding repository has a large provenance/tool matrix.
             // Preserve headline measurements and cost components, while
@@ -348,7 +286,7 @@ fn page(
             if serde_json::to_vec(&bounded)
                 .map_err(|_| invalid("Cannot encode usage"))?
                 .len()
-                <= MAX_PAGE_BYTES
+                <= max_bytes
             {
                 return Ok(bounded);
             }

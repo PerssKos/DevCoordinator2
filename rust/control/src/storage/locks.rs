@@ -4,7 +4,7 @@ use super::{
 };
 use crate::database::{Database, DatabaseError};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct ResourceGuard {
     database: Database,
@@ -14,7 +14,7 @@ impl Drop for ResourceGuard {
     fn drop(&mut self) {
         let job = self.job.clone();
         let _ = self.database.call(move |c| {
-            c.execute("DELETE FROM storage_resource_locks WHERE job_id=?1", [job])?;
+            c.execute("DELETE FROM storage_resource_locks WHERE job_id=$1", [job])?;
             Ok(())
         });
     }
@@ -35,6 +35,9 @@ impl StorageService {
             if matches!(record.locator, Locator::Mount { .. }) {
                 claims.insert("host-mount-configuration".into(), true);
             }
+            for ancestor in &record.ancestor_keys {
+                claims.entry(ancestor.clone()).or_insert(false);
+            }
             // Shared ancestor claims allow sibling cleanup while preventing a
             // parent tree and one of its descendants from being removed together
             // by independent jobs. Inode keys also coordinate bind aliases.
@@ -53,10 +56,11 @@ impl StorageService {
         let id = job.to_owned();
         self.database.transaction(move|c|{
             for (key,exclusive) in &claims {
-                let conflict=c.query_row("SELECT EXISTS(SELECT 1 FROM storage_resource_locks WHERE resource_key=?1 AND job_id<>?2 AND (exclusive=1 OR ?3=1))",rusqlite::params![key,id,*exclusive],|r|r.get::<_,bool>(0))?;
+                c.query_row("SELECT 1 FROM pg_advisory_xact_lock(hashtextextended($1,0))",[format!("devcoordinator2.storage-resource:{key}")],|r|r.get::<_,i32>(0))?;
+                let conflict=c.query_row("SELECT EXISTS(SELECT 1 FROM storage_resource_locks WHERE resource_key=$1 AND job_id<>$2 AND (exclusive=1 OR $3=1))",crate::database::params![key,id,*exclusive],|r|r.get::<_,bool>(0))?;
                 if conflict{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::Busy,"artifact_cleanup_in_progress")));}
             }
-            for (key,exclusive) in claims {c.execute("INSERT INTO storage_resource_locks VALUES(?1,?2,?3) ON CONFLICT(resource_key,job_id) DO UPDATE SET exclusive=excluded.exclusive",rusqlite::params![key,id,exclusive])?;}
+            for (key,exclusive) in claims {c.execute("INSERT INTO storage_resource_locks VALUES($1,$2,$3) ON CONFLICT(resource_key,job_id) DO UPDATE SET exclusive=excluded.exclusive",crate::database::params![key,id,exclusive])?;}
             Ok(())
         }).map_err(db_error)?;
         Ok(ResourceGuard {
@@ -67,14 +71,24 @@ impl StorageService {
 }
 
 pub(super) fn ensure_tree_editable(
-    c: &rusqlite::Connection,
+    c: &crate::database::Connection,
     resource: &str,
     ancestors: &[String],
     job: Option<&str>,
 ) -> Result<(), DatabaseError> {
+    for key in std::iter::once(resource)
+        .chain(ancestors.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>()
+    {
+        c.query_row(
+            "SELECT 1 FROM pg_advisory_xact_lock(hashtextextended($1,0))",
+            [format!("devcoordinator2.storage-resource:{key}")],
+            |row| row.get::<_, i32>(0),
+        )?;
+    }
     ensure_editable(c, resource, job)?;
     for ancestor in ancestors {
-        let busy=c.query_row("SELECT EXISTS(SELECT 1 FROM storage_resource_locks WHERE resource_key=?1 AND exclusive=1 AND (?2 IS NULL OR job_id<>?2))",rusqlite::params![ancestor,job],|r|r.get::<_,bool>(0))?;
+        let busy=c.query_row("SELECT EXISTS(SELECT 1 FROM storage_resource_locks WHERE resource_key=$1 AND exclusive=1 AND ($2::text IS NULL OR job_id<>$2))",crate::database::params![ancestor,job],|r|r.get::<_,bool>(0))?;
         if busy {
             return Err(DatabaseError::Domain(ProtocolError::new(
                 ErrorCode::Busy,
@@ -86,11 +100,16 @@ pub(super) fn ensure_tree_editable(
 }
 
 pub(super) fn ensure_editable(
-    c: &rusqlite::Connection,
+    c: &crate::database::Connection,
     resource: &str,
     job: Option<&str>,
 ) -> Result<(), DatabaseError> {
-    let busy=c.query_row("SELECT EXISTS(SELECT 1 FROM storage_resource_locks WHERE resource_key=?1 AND (?2 IS NULL OR job_id<>?2))",rusqlite::params![resource,job],|r|r.get::<_,bool>(0))?;
+    c.query_row(
+        "SELECT 1 FROM pg_advisory_xact_lock(hashtextextended($1,0))",
+        [format!("devcoordinator2.storage-resource:{resource}")],
+        |row| row.get::<_, i32>(0),
+    )?;
+    let busy=c.query_row("SELECT EXISTS(SELECT 1 FROM storage_resource_locks WHERE resource_key=$1 AND ($2::text IS NULL OR job_id<>$2))",crate::database::params![resource,job],|r|r.get::<_,bool>(0))?;
     if busy {
         return Err(DatabaseError::Domain(ProtocolError::new(
             ErrorCode::Busy,

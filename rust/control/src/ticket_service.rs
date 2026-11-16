@@ -3,9 +3,9 @@
 use std::io::Read;
 use std::time::Duration;
 
+use crate::database::{OptionalExtension, params};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use devcoordinator2_api::{ErrorCode, ProtocolError, tickets::*};
-use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
 use crate::database::{Database, DatabaseError};
@@ -50,7 +50,7 @@ impl TicketService {
         let setting = self.store.settings().map_err(storage_error)?;
         let previous_upstreams = self
             .database
-            .call(|db| {
+            .read(|db| {
                 let mut query =
                     db.prepare("SELECT upstream FROM ticket_peers ORDER BY upstream")?;
                 Ok(query
@@ -92,10 +92,10 @@ impl TicketService {
             let lookup = target.clone();
             let known = self
                 .database
-                .call(move |db| {
+                .read(move |db| {
                     Ok(db
                         .query_row(
-                            "SELECT 1 FROM ticket_peers WHERE upstream=?1",
+                            "SELECT 1 FROM ticket_peers WHERE upstream=$1",
                             [lookup],
                             |_| Ok(()),
                         )
@@ -365,7 +365,7 @@ impl TicketService {
                     .database
                     .call(move |db| {
                         Ok(db.execute(
-                            "DELETE FROM ticket_uploads WHERE upload_id=?1 AND owner=?2",
+                            "DELETE FROM ticket_uploads WHERE upload_id=$1 AND owner=$2",
                             params![upload_id, actor],
                         )? > 0)
                     })
@@ -406,11 +406,11 @@ impl TicketService {
         self.database
             .transaction(move |db| {
                 db.execute(
-                    "INSERT OR IGNORE INTO ticket_peers(upstream,credential) VALUES(?1,?2)",
+                    "INSERT INTO ticket_peers(upstream,credential) VALUES($1,$2) ON CONFLICT(upstream) DO NOTHING",
                     params![upstream, credential],
                 )?;
                 Ok(db.query_row(
-                    "SELECT credential FROM ticket_peers WHERE upstream=?1",
+                    "SELECT credential FROM ticket_peers WHERE upstream=$1",
                     [upstream],
                     |row| row.get(0),
                 )?)
@@ -449,15 +449,16 @@ impl TicketService {
         getrandom::fill(&mut random).map_err(|_| unavailable())?;
         let id = format!("upload-{}", hex(&random));
         self.database.transaction(move |db|{
-            db.execute("DELETE FROM ticket_uploads WHERE expires_at<?1",[now])?;
-            let previous:Option<(String,String,u32,String,u32)>=db.query_row("SELECT upload_id,name,byte_size,sha256,length(content) FROM ticket_uploads WHERE owner=?1 AND request_key=?2",params![owner,key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+            db.query_row("SELECT pg_advisory_xact_lock(hashtextextended('ticket-upload:'||$1,0))", [&owner], |_| Ok(()))?;
+            db.execute("DELETE FROM ticket_uploads WHERE expires_at<$1",[now])?;
+            let previous:Option<(String,String,u32,String,u32)>=db.query_row("SELECT upload_id,name,byte_size,sha256,length(content) FROM ticket_uploads WHERE owner=$1 AND request_key=$2",params![owner,key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
             if let Some((id,old_name,old_size,old_digest,offset))=previous {
                 if old_name!=name || old_size!=size || old_digest!=digest { return Err(invalid("attachment request key was reused for different content").into()); }
                 return Ok(Reply::Upload{upload_id:id,offset});
             }
-            let (count,total):(i64,i64)=db.query_row("SELECT COUNT(*),COALESCE(SUM(byte_size),0) FROM ticket_uploads WHERE owner=?1",[&owner],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            let (count,total):(i64,i64)=db.query_row("SELECT COUNT(*),COALESCE(SUM(byte_size)::bigint,0) FROM ticket_uploads WHERE owner=$1",[&owner],|r|Ok((r.get(0)?,r.get(1)?)))?;
             if count>=64 || total+i64::from(size)>MAX_PENDING_BYTES { return Err(invalid("too many pending attachments; remove unused uploads first").into()); }
-            db.execute("INSERT INTO ticket_uploads(upload_id,owner,request_key,name,byte_size,sha256,content,expires_at) VALUES(?1,?2,?3,?4,?5,?6,X'',?7)",params![id,owner,key,name,size,digest,now+86400])?;
+            db.execute("INSERT INTO ticket_uploads(upload_id,owner,request_key,name,byte_size,sha256,content,expires_at) VALUES($1,$2,$3,$4,$5,$6,''::bytea,$7)",params![id,owner,key,name,size,digest,now+86400])?;
             Ok(Reply::Upload{upload_id:id,offset:0})
         }).map_err(database_error)
     }
@@ -481,12 +482,12 @@ impl TicketService {
         let owner = owner.to_owned();
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         self.database.transaction(move |db|{
-            let (size,mut content):(u32,Vec<u8>)=db.query_row("SELECT byte_size,content FROM ticket_uploads WHERE upload_id=?1 AND owner=?2 AND expires_at>=?3",params![id,owner,now],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or_else(||invalid("attachment upload is unavailable"))?;
+            let (size,mut content):(u32,Vec<u8>)=db.query_row("SELECT byte_size,content FROM ticket_uploads WHERE upload_id=$1 AND owner=$2 AND expires_at>=$3 FOR UPDATE",params![id,owner,now],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or_else(||invalid("attachment upload is unavailable"))?;
             let end=offset as usize+bytes.len();
             if (offset as usize)<content.len() && content.get(offset as usize..end)==Some(bytes.as_slice()) { return Ok(Reply::Upload{upload_id:id,offset:content.len() as u32}); }
             if offset as usize!=content.len() || end>size as usize { return Err(invalid("attachment offset or length does not match").into()); }
             content.extend(bytes);
-            db.execute("UPDATE ticket_uploads SET content=?2 WHERE upload_id=?1",params![id,content])?;
+            db.execute("UPDATE ticket_uploads SET content=$2 WHERE upload_id=$1",params![id,content])?;
             Ok(Reply::Upload{upload_id:id,offset:end as u32})
         }).map_err(database_error)
     }
@@ -497,10 +498,10 @@ impl TicketService {
         }
         let owner = owner.to_owned();
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
-        self.database.call(move |db|{
+        self.database.read(move |db|{
             let mut files=Vec::new();let mut total=0;
             for id in ids {
-                let (name,size,digest,bytes):(String,u32,String,Vec<u8>)=db.query_row("SELECT name,byte_size,sha256,content FROM ticket_uploads WHERE upload_id=?1 AND owner=?2 AND expires_at>=?3",params![id,owner,now],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?.ok_or_else(||invalid("attachment upload is unavailable"))?;
+                let (name,size,digest,bytes):(String,u32,String,Vec<u8>)=db.query_row("SELECT name,byte_size,sha256,content FROM ticket_uploads WHERE upload_id=$1 AND owner=$2 AND expires_at>=$3",params![id,owner,now],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?.ok_or_else(||invalid("attachment upload is unavailable"))?;
                 total+=bytes.len();
                 if total>crate::tickets::MAX_MESSAGE_BYTES || bytes.len()!=size as usize || hex(Sha256::digest(&bytes).as_slice())!=digest { return Err(invalid("attachment is incomplete or does not match its digest").into()); }
                 files.push(FileInput{name,bytes});

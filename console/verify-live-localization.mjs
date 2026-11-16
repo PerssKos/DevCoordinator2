@@ -60,7 +60,7 @@ try {
   await page.keyboard.press('Escape'); check('Escape restores focus', await page.locator('#language-toggle').evaluate(node => node === document.activeElement));
   check('No page errors', pageErrors === 0);
   const response = await request('/');
-  const pingResponse = await request('/api/v2/ping', '{}'); const ping = JSON.parse(pingResponse.body);
+  const pingResponse = await request('/api/v3/ping', '{}'); const ping = JSON.parse(pingResponse.body);
   check('Native route returns HTML', response.status === 200 && response.type?.split(';')[0] === 'text/html');
   check('Running daemon source identified', pingResponse.status === 200 && ping.ok === true && /^[a-f0-9]{40}$/.test(ping.data?.source_commit || ''));
   const paths = execFileSync('git', ['ls-files', '-z', '--', 'console'], { cwd: root, timeout: 2000, maxBuffer: 65536 }).toString('utf8').split('\0').filter(file => file && !path.basename(file).startsWith('.') && /\.(html|css|js|mjs|svg|woff2|ttf|pfb|bcmap|wasm|png|ico|json|txt)$/i.test(file)).sort();

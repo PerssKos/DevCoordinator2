@@ -9,7 +9,7 @@ export function performanceFixture(operation, params, scenario = {}) {
   const end = params.window_end_ms || Date.UTC(2026, 8, 22); const start = params.window_start_ms ?? end - 86400000;
   const repo = params.repository_id || REPO;
   const makeReview = (id, revision, disposition = 'retained') => ({ reference: `${id}@${revision}`, record_id: id, revision, completed: disposition !== 'proposed', recorded_at_ms: end - revision * 1000,
-    record: { version: 1, repositoryId: repo, projectId: repo, workstreamId: null, windowStartMs: end - 86400000, windowEndMs: end - 3600000, outcomeId: 'p1111111111111101', experiment: {
+    record: { version: 1, repositoryId: repo, projectId: repo, workstreamId: scenario.performanceWorkstream ? 'fixture-workstream' : null, windowStartMs: end - 86400000, windowEndMs: end - 3600000, outcomeId: 'p1111111111111101', experiment: {
       hypothesis: 'Repeated usage reads delayed the same measured workload.', alternatives: ['Read in one batch.', 'Keep separate queries.'], chosenAction: disposition === 'unchanged' ? 'Keep the existing verification workflow.' : 'Read repository usage in one batch.', disposition,
       reason: 'The same workload used fewer tokens and passed the same quality checks.', baseline: { evidenceRefs: [], interpretation: 'The baseline measures the same workload.', missingMeasurements: [] }, evidenceRefs: [], resultEvidenceRefs: [], observations: [{ kind: 'intentional_validation', interpretation: 'Required validation remains part of both measurements.', evidenceRefs: [] }], comparison: { narrative: 'The same workload completed with fewer tokens.', inputChangeReason: null }, successCriteria: 'Reduce tokens with passing quality checks.', rollbackCondition: 'Revert if quality checks fail.', scopeRepoId: repo, preservesQuality: true,
     } } });
@@ -24,15 +24,32 @@ export function performanceFixture(operation, params, scenario = {}) {
       ['integration_testing', 2496000, 4],
       ['unknown', 160000, 1],
     ].map(([activity, tokens, operations]) => ({ activity, total_tokens: tokens * base, operations, cost: cost(tokens * base) }));
+    const unavailableCost = { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', processing_tier: 'standard', estimated_usd_micros: null };
+    if (scenario.performanceDense && !scenario.usageUnavailable) {
+      const names = ['coding', 'configuration', 'repository_analysis', 'diagnosis', 'work_planning', 'research', 'test_authoring', 'integration_testing'];
+      const phases = ['planning', 'implementation', 'testing', 'deployment', 'reporting'];
+      activityRows.splice(0, activityRows.length, ...Array.from({ length: 40 }, (_, index) => ({ phase: phases[index % 5], activity: names[Math.floor(index / 5)], total_tokens: total / 40, operations: null, cost: unavailableCost })));
+      const activities = {};
+      for (const row of activityRows) activities[row.activity] = { measured: (activities[row.activity]?.measured || 0) + row.total_tokens, exact: null, unknown: 0 };
+      const totalEffort = { ...effort(total), operations: 80, providerTotalTokens: { measured: total, exact: null, unknown: 0 }, activities, cost: unavailableCost };
+      return { coverage: { ...coverage, state: 'partial', has_gaps: true }, totals: { total_tokens: total, model_requests: 40, tool_calls: 40, operations: 80, cost: unavailableCost }, activities: activityRows, time: {}, tools: {}, semantics: {}, outcomes: { schemaVersion: 1, coverage: 'partial', totals: totalEffort, attributed: effort(0), unattributed: { ...totalEffort, activities: {} }, unattributedReasons: { outcome_not_declared: 80 }, rows: [], totalRows: 0, nextCursor: null, kinds: { unattributed: totalEffort.providerTotalTokens }, basis: 'Measured repository activity is available; outcome attribution and costs remain unavailable.' } };
+    }
     const totals = effort(total); totals.activities = Object.fromEntries(activityRows.map(row => [row.activity, metric(row.total_tokens)]));
-    return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: { mapping_unavailable: 1, query_budget_exhausted: 1 } } : coverage,
-      totals: { total_tokens: scenario.usageUnavailable ? null : total }, activities: scenario.empty || scenario.usageUnavailable ? [] : activityRows, time: {}, tools: {}, semantics: {},
+    return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: scenario.performanceRefreshPending ? { api_refresh_pending: 1 } : { mapping_unavailable: 1, query_budget_exhausted: 1 }, ...(scenario.performanceRefreshPending ? { snapshot: { refreshing: true, refresh_failed: false, updated_at_ms: null }, loading: scenario.performanceLoadingEstimate ? { state: 'reading', elapsed_ms: 1200, estimated_remaining_ms: 120000, estimate_samples: 4, estimate_basis: 'recent_comparable_source_reads' } : undefined } : {}) } : coverage,
+      totals: { total_tokens: scenario.usageUnavailable ? null : total, cost: cost(total) }, activities: scenario.empty || scenario.usageUnavailable ? [] : activityRows, time: {}, tools: {}, semantics: {},
       outcomes: { schemaVersion: 1, coverage: scenario.usageUnavailable ? 'unavailable' : 'complete', totals: scenario.usageUnavailable ? { ...effort(0), providerTotalTokens: { measured: 0, exact: null, unknown: 1 } } : totals, attributed: effort(6240000 * base), unattributed: effort(160000 * base), unattributedReasons: { outcome_not_declared: 1 }, rows: scenario.empty || scenario.usageUnavailable ? [] : next ? rows.slice(2) : rows.slice(0, 2), totalRows: scenario.empty || scenario.usageUnavailable ? 0 : 4, nextCursor: next || scenario.empty || scenario.usageUnavailable ? null : 'fixture:2', kinds: { improvement: metric(4000000 * base), user_feedback: metric(1600000 * base), goal: metric(640000 * base), unattributed: metric(160000 * base) }, basis: 'Provider total observations are counted once. Missing attribution remains explicit.' } };
   };
-  if (operation === 'performance.overview') { const total = params.totals_only ? 32000000 : 6400000; const u = usage(total, !!params.outcome_cursor); return { repository_id: repo, window_start_ms: start, window_end_ms: end, generated_at_ms: end, total_tokens: u.outcomes.totals.providerTotalTokens, totals: { total_tokens: total, input_tokens: total, cached_input_tokens: total * .1, output_tokens: total * .35, reasoning_tokens: total * .12, model_requests: 4, tool_calls: 2, operations: 4, cost: cost(total) }, cost: cost(total), coverage: u.coverage, usage: params.totals_only ? null : u }; }
+  if (operation === 'performance.overview') { const total = params.totals_only ? 32000000 : 6400000; const u = usage(total, !!params.outcome_cursor); const estimate = u.totals.cost || cost(total); return { repository_id: repo, window_start_ms: start, window_end_ms: end, generated_at_ms: end, total_tokens: u.outcomes.totals.providerTotalTokens, totals: { total_tokens: total, input_tokens: total, cached_input_tokens: total * .1, output_tokens: total * .35, reasoning_tokens: total * .12, model_requests: 4, tool_calls: 2, operations: 4, ...u.totals, cost: estimate }, cost: estimate, coverage: u.coverage, usage: params.totals_only ? null : u }; }
   if (operation === 'performance.reviews') return { total_reviews: scenario.empty ? 12 * 0 : 12, next_before: params.before || scenario.empty ? null : 20, records: scenario.empty ? [] : params.record_id ? [{ review: makeReview(params.record_id, params.before ? 1 : 2), revision_count: 2 }] : params.before ? [{ review: makeReview('review-older', 1, 'inconclusive'), revision_count: 1 }] : [{ review: makeReview('review-new', 2), revision_count: 2 }, { review: makeReview('review-unchanged', 1, 'unchanged'), revision_count: 1 }] };
   const [id, revision] = params.reference.split('@'); const r = makeReview(id, Number(revision), id.includes('older') ? 'inconclusive' : 'retained');
-  return { review: r, usage: usage(1000000, !!params.outcome_cursor), evidence: [{ source: { kind: 'decision', reference: 'QUALITY' }, title: 'Keep verification quality', body: 'Preserve the quality checks while reducing repeated reads.', available: true }, { source: { kind: 'outcome', reference: 'p1111111111111101' }, title: 'Faster usage queries', body: '', available: true }, { source: { kind: 'run', reference: 'w1/expired-run' }, title: 'Run evidence', body: '', available: false }], comparisons: id.includes('older') ? [] : [{ source: { kind: 'usage', reference: 'fixture' }, window_start_ms: end - 3600000, window_end_ms: end, verified_improvement: true, explanation: 'Comparable workload and passing quality evidence.', metrics: [{ metric: 'tokens', before: metric(1000000), after: metric(750000), reduction: 250000, reduction_percent: 25 }, { metric: 'active_agent_ms', before: metric(42000), after: metric(28000), reduction: 14000, reduction_percent: 100 / 3 }] }] };
+  const reviewUsage = usage(1000000, !!params.outcome_cursor);
+  if (scenario.performanceWorkstream) {
+    const repositoryUsage = usage(6400000, !!params.outcome_cursor);
+    reviewUsage.totals = repositoryUsage.totals;
+    reviewUsage.activities = repositoryUsage.activities;
+    if (!scenario.performanceWorkstreamCost) reviewUsage.outcomes.totals.cost = { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', processing_tier: 'standard', estimated_usd_micros: null };
+  }
+  return { review: r, usage: reviewUsage, evidence: [{ source: { kind: 'decision', reference: 'QUALITY' }, title: 'Keep verification quality', body: 'Preserve the quality checks while reducing repeated reads.', available: true }, { source: { kind: 'outcome', reference: 'p1111111111111101' }, title: 'Faster usage queries', body: '', available: true }, { source: { kind: 'run', reference: 'w1/expired-run' }, title: 'Run evidence', body: '', available: false }], comparisons: id.includes('older') ? [] : [{ source: { kind: 'usage', reference: 'fixture' }, window_start_ms: end - 3600000, window_end_ms: end, verified_improvement: true, explanation: 'Comparable workload and passing quality evidence.', metrics: [{ metric: 'tokens', before: metric(1000000), after: metric(750000), reduction: 250000, reduction_percent: 25 }, { metric: 'active_agent_ms', before: metric(42000), after: metric(28000), reduction: 14000, reduction_percent: 100 / 3 }] }] };
 }
 
 export async function verifyPerformance({ page, daemon, check, scenario, baseUrl, output, theme, viewport }) {
@@ -43,12 +60,98 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.goto(`${baseUrl}#/performance/${REPO}`);
   await page.locator('[data-performance-history] tbody tr').first().waitFor();
   await page.waitForFunction(() => document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'));
+  const topGeometry = await page.evaluate(() => {
+    const top = document.querySelector('.performance-top');
+    const heading = document.querySelector('.performance-heading');
+    const totals = document.querySelector('.performance-totals');
+    if (!top || !heading || !totals) return null;
+    const topStyle = getComputedStyle(top);
+    return { grid: topStyle.display === 'grid', headingTop: heading.getBoundingClientRect().top, totalsTop: totals.getBoundingClientRect().top };
+  });
+  verify('wide header and totals share the same top edge', !topGeometry?.grid || Math.abs(topGeometry.headingTop - topGeometry.totalsTop) <= 1);
+  verify('outcome token heading stays readable', await page.locator('.performance-outcome-table th').filter({ hasText: 'Total tokens' }).evaluate(element => {
+    if (!element.getClientRects().length) return true;
+    const probe = document.createElement('span');
+    probe.textContent = 'tokens';
+    probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(element).font}`;
+    document.body.append(probe);
+    const fits = element.clientWidth >= probe.getBoundingClientRect().width;
+    probe.remove();
+    return fits;
+  }));
+  const tokenBadge = page.locator('.performance-token-detail-button').first();
+  await tokenBadge.click();
+  const tokenPopover = tokenBadge.locator('..').locator('.performance-token-popover');
+  const tokenPopoverText = await tokenPopover.innerText();
+  verify('token detail popovers retain provider components', tokenPopoverText.includes('Cached input') && !/Cached input\s+—/.test(tokenPopoverText));
+  await tokenBadge.click();
+  daemon.setScenario({ ...scenario, delayMs: 1600, delayOperations: ['performance.overview'] });
+  await page.goto('about:blank');
+  const delayedTokenRequest = page.waitForRequest(request => request.url().endsWith('/performance.overview'));
+  await page.goto(`${baseUrl}#/performance/${REPO}`);
+  await delayedTokenRequest;
+  await page.waitForTimeout(1100);
+  verify('slow token reads show inline progress after one second', await page.locator('[data-performance-loading-progress]').isVisible() && (await page.locator('[data-performance-loading-progress]').innerText()).includes('Loading token usage'));
+  daemon.releaseDelayed();
+  await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4'), null, { timeout: 15000 });
+  verify('inline progress clears after token measurements complete', await page.locator('[data-performance-loading-progress]').isHidden());
+  daemon.setScenario({ ...scenario, performancePendingByWindow: true, performanceLoadingEstimate: true });
+  await page.goto('about:blank');
+  await page.goto(`${baseUrl}#/performance/${REPO}`);
+  await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
+  await page.waitForTimeout(1100);
+  verify('pending measurements show an evidence-based remaining-time estimate', await page.locator('[data-performance-loading-progress]').isVisible() && (await page.locator('[data-performance-loading-progress]').innerText()).includes('Estimated remaining: about 2 min'));
+  verify('pending measurements do not claim unavailable or empty data', (await page.locator('[data-performance-charts]').innerText()).includes('Loading token breakdowns') && (await page.locator('[data-performance-outcomes]').innerText()).includes('Loading outcomes') && (await page.locator('[data-performance-period-total]').innerText()).includes('Loading') && (await page.locator('[data-performance-lifetime]').innerText()).includes('Loading'));
+  const initialQueries = daemon.calls.filter(call => call.operation === 'performance.overview').map(call => call.params);
+  const initialWindow = initialQueries.find(params => !params.totals_only), initialLifetime = initialQueries.find(params => params.totals_only);
+  const routeWindow = new URLSearchParams(page.url().split('?')[1]);
+  verify('ordinary repository URL retains exact query anchors before completion', Number(routeWindow.get('from')) === initialWindow.window_start_ms && Number(routeWindow.get('to')) === initialWindow.window_end_ms && Number(routeWindow.get('recordedTo')) === initialLifetime.window_end_ms);
+  await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4') && document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'), null, { timeout: 15000 });
+  const reloadPeriod = page.waitForRequest(request => request.url().endsWith('/performance.overview') && !request.postDataJSON().totals_only);
+  const reloadLifetime = page.waitForRequest(request => request.url().endsWith('/performance.overview') && request.postDataJSON().totals_only);
+  await page.reload();
+  const afterPeriod = (await reloadPeriod).postDataJSON(), afterLifetime = (await reloadLifetime).postDataJSON();
+  verify('reload reuses the completed period and lifetime queries', afterPeriod.window_start_ms === initialWindow.window_start_ms && afterPeriod.window_end_ms === initialWindow.window_end_ms && afterLifetime.window_end_ms === initialLifetime.window_end_ms);
+  await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4') && document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'), null, { timeout: 15000 });
+  const refreshRequest = page.waitForRequest(request => request.url().endsWith('/performance.overview') && !request.postDataJSON().totals_only);
+  await page.locator('[data-performance-refresh]').click();
+  const refreshed = (await refreshRequest).postDataJSON();
+  verify('explicit refresh advances the selected relative window', refreshed.window_end_ms > afterPeriod.window_end_ms && refreshed.window_end_ms - refreshed.window_start_ms === 7 * 86400000);
+  daemon.setScenario({ ...scenario, performancePendingOnce: true });
+  await page.reload();
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
+  await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
+  await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4'), null, { timeout: 15000 });
+  await page.waitForFunction(() => document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'), null, { timeout: 15000 });
+  verify('pending overview refresh eventually paints measured tokens', (await page.locator('[data-performance-period-total]').innerText()).includes('6.4') && daemon.calls.filter(call => call.operation === 'performance.overview' && !call.params.totals_only).length >= 2);
+  verify('pending overview refresh replaces unavailable coverage and populates charts and outcomes', !(await page.locator('[data-performance-coverage]').innerText()).includes('unavailable') && await page.locator('.performance-distribution').count() === 2 && (await page.locator('[data-performance-outcomes]').innerText()).includes('Faster usage queries'));
+  verify('pending lifetime refresh paints all recorded tokens', (await page.locator('[data-performance-lifetime]').innerText()).includes('32') && daemon.calls.filter(call => call.operation === 'performance.overview' && call.params.totals_only).length >= 2);
+  await page.locator('[data-performance-select]').first().click();
+  await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
+  await page.locator('[data-performance-overview]').click();
+  await page.waitForFunction(() => document.querySelector('[data-performance-scope-title]')?.textContent.includes('Overview usage') && document.querySelector('main')?.style.minHeight === '');
+  verify('returning to a refreshed overview keeps its measured headline', (await page.locator('[data-performance-period-total]').innerText()).includes('6.4'));
+  daemon.setScenario({ ...scenario, performanceDense: true });
+  await page.locator('[data-performance-refresh]').click();
+  await page.locator('.performance-cost-matrix tbody tr').nth(39).waitFor();
+  verify('large activity matrix keeps every measured row and unavailable costs', await page.locator('.performance-cost-matrix tbody tr').count() === 40 && (await page.locator('[data-performance-period-cost]').innerText()) === '—');
+  verify('same activity in different phases is distinguishable', (await page.locator('.performance-cost-matrix').innerText()).includes('Coding · Planning') && (await page.locator('.performance-cost-matrix').innerText()).includes('Coding · Implementation'));
+  daemon.setScenario(scenario);
+  await page.reload();
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
+  await page.waitForFunction(() => document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'));
   verify('performance is a repository work view', await page.locator('#workspace-work-views a[aria-current]').innerText() === 'Performance');
   verify('overall and period totals are distinct', (await page.locator('[data-performance-lifetime]').innerText()).includes('32') && (await page.locator('[data-performance-period-total]').innerText()).includes('6.4'));
   await page.locator('[data-performance-period-total] .performance-token-detail-button').click();
   verify('period total opens measured token breakdown', await page.locator('[data-performance-period-total] .performance-token-popover').isVisible() && (await page.locator('[data-performance-period-total] .performance-token-popover').innerText()).includes('Cached input'));
   await page.locator('[data-performance-period-total] .performance-token-detail-button').click();
   verify('both grouping charts and outcome composition are visible', await page.locator('.performance-distribution').count() === 2 && await page.locator('.performance-outcome-table .performance-stack').count() === 3);
+  for (const chart of await page.locator('.performance-distribution').all()) {
+    const group = chart.locator('.performance-legend .performance-token-detail').first();
+    await group.locator('button').click();
+    verify('group details do not borrow repository token components', (await group.locator('dd').allInnerTexts()).every(value => value === '—'));
+    await group.locator('button').click();
+  }
   verify('cost matrix shows API-equivalent estimates', await page.locator('.performance-cost-matrix').count() === 1 && (await page.locator('.performance-cost-matrix').innerText()).includes('API-equivalent USD'));
   await page.locator('.performance-exact summary').first().click();
   verify('exact values can be read without color', (await page.locator('.performance-exact[open]').innerText()).includes('3,744,000'));
@@ -61,6 +164,35 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('selecting review changes only scoped usage', (await page.locator('[data-performance-scope-total]').innerText()).includes('1M') && (await page.locator('[data-performance-period-total]').innerText()).includes('6.4') && (await page.locator('[data-performance-lifetime]').innerText()).includes('32'));
   verify('comparison and rationale are present', (await page.locator('[data-performance-reader]').innerText()).includes('25.0%') && (await page.locator('[data-performance-reader]').innerText()).includes('Alternatives considered'));
   verify('review selection moves focus to its reader', await page.locator('[data-performance-reader]').evaluate(e => document.activeElement === e));
+  daemon.setScenario({ ...scenario, performanceReviewPendingOnce: true });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
+  verify('pending selected review keeps its decision and honest loading state', (await page.locator('[data-performance-reader]').innerText()).includes('Decision') && (await page.locator('[data-performance-charts]').innerText()).includes('Loading token breakdowns') && (await page.locator('[data-performance-outcomes]').innerText()).includes('Loading outcomes'));
+  await page.waitForFunction(() => document.querySelector('[data-performance-scope-total] .performance-token-detail-button')?.textContent.includes('1M'), null, { timeout: 15000 });
+  verify('selected review receives its completed measurements without reload', await page.locator('.performance-cost-matrix tbody tr').count() === 3 && daemon.calls.filter(call => call.operation === 'performance.review').length >= 2);
+  daemon.setScenario({ ...scenario, performanceWorkstream: true });
+  await page.reload();
+  await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
+  verify('workstream review keeps scoped totals without a repository activity table', (await page.locator('[data-performance-scope-total]').innerText()).includes('1M') && await page.locator('.performance-cost-matrix').count() === 0);
+  for (const selector of ['[data-performance-scope-total]', '.performance-distribution .performance-section-head strong', '.performance-outcome-table tfoot']) {
+    const detail = page.locator(selector).first().locator('.performance-token-detail');
+    await detail.locator('button').click();
+    verify('workstream totals keep unavailable components unknown', (await detail.locator('dd').allInnerTexts()).every(value => value === '—'));
+    await detail.locator('button').click();
+  }
+  await page.locator('[data-performance-outcomes-more] button').click();
+  await page.locator('.performance-outcome-table tbody tr').filter({ hasText: 'Verification coverage' }).waitFor();
+  verify('workstream outcome pagination preserves the scoped view', await page.locator('.performance-cost-matrix').count() === 0 && (await page.locator('.performance-outcome-table tfoot').innerText()).includes('1M'));
+  daemon.setScenario({ ...scenario, performanceWorkstream: true, performanceWorkstreamCost: true });
+  await page.reload();
+  await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
+  await page.locator('[data-performance-scope-total] button').click();
+  verify('available workstream component detail retains its own measured values', await page.locator('[data-performance-scope-total] dd').first().innerText() === '1,000,000');
+  await page.locator('[data-performance-scope-total] button').click();
+  daemon.setScenario(scenario);
+  await page.reload();
+  await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
+  verify('repository-wide review retains its activity table', await page.locator('.performance-cost-matrix tbody tr').count() === 3);
   await page.locator('[data-performance-revisions] summary').click();
   await page.locator('[data-performance-revision-more] button').click();
   await page.locator('[data-performance-revision-list] a').filter({ hasText: 'Revision 1' }).click();
@@ -77,6 +209,12 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.locator('[data-performance-range="30d"]').click();
   await page.waitForFunction(() => document.querySelector('[data-performance-range="30d"]')?.getAttribute('aria-pressed') === 'true');
   verify('range change returns to overview', !page.url().includes('review='));
+  const selectedTo = Number(new URLSearchParams(page.url().split('?')[1]).get('to'));
+  const selectedRefresh = page.waitForRequest(request => request.url().endsWith('/performance.overview') && !request.postDataJSON().totals_only);
+  await page.locator('[data-performance-refresh]').click();
+  const selectedParams = (await selectedRefresh).postDataJSON();
+  verify('refresh advances an explicitly routed relative range', selectedParams.window_end_ms > selectedTo && selectedParams.window_end_ms - selectedParams.window_start_ms === 30 * 86400000);
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
   await page.locator('[data-performance-custom-open]').click();
   await page.waitForFunction(() => document.activeElement?.matches('.performance-date-dialog input[name=from]'));
   verify('custom dates receive focus in the viewport', await page.locator('.performance-date-dialog input[name=from]').evaluate(e => document.activeElement===e && e.getBoundingClientRect().left >= 0));
@@ -90,6 +228,11 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await customResponse;
   await page.waitForFunction(() => location.hash.includes('range=custom'));
   verify('custom range uses UTC boundaries', daemon.calls.some(call => call.operation === 'performance.overview' && call.params.window_start_ms === Date.UTC(2026, 8, 10) && call.params.window_end_ms === Date.UTC(2026, 8, 13)));
+  const customRefresh = page.waitForRequest(request => request.url().endsWith('/performance.overview') && !request.postDataJSON().totals_only);
+  await page.locator('[data-performance-refresh]').click();
+  const customParams = (await customRefresh).postDataJSON();
+  verify('refresh keeps explicit custom boundaries', customParams.window_start_ms === Date.UTC(2026, 8, 10) && customParams.window_end_ms === Date.UTC(2026, 8, 13));
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
   await page.locator('[data-performance-select]').first().click(); await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
   await page.screenshot({ path: path.join(output, `performance-${theme}-${viewport.width}.png`), fullPage: true });
   if (viewport.width <= 600) verify('outcome names retain a readable column', (await page.locator('.performance-outcome-table tbody tr td:first-child').first().boundingBox()).width >= 160);
@@ -103,19 +246,24 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.locator('[data-performance-history] tbody tr').first().waitFor();
   verify('repository switch scopes the reads', daemon.calls.some(call => call.operation==='performance.reviews' && call.params.repository_id==='r2'));
   let failed=false;
-  await page.route('**/api/v2/performance.overview',route=>{const params=route.request().postDataJSON();if(!params.totals_only && !failed){failed=true;return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'unavailable',message:'Fixture measurements unavailable'}})});}return route.continue();});
+  await page.route('**/api/v3/performance.overview',route=>{const params=route.request().postDataJSON();if(!params.totals_only && !failed){failed=true;return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'unavailable',message:'Fixture measurements unavailable'}})});}return route.continue();});
   await page.locator('[data-performance-refresh]').click();
   await page.locator('[data-performance-charts] [role=alert]').waitFor();
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
   verify('measurement failure preserves review browsing', await page.locator('[data-performance-history] tbody tr').count()===2 && (await page.locator('[data-performance-outcomes]').innerText()).includes('could not be loaded'));
   await page.locator('[data-performance-charts] button').click();
   await page.locator('.performance-distribution').first().waitFor();
   verify('failed measurements can recover', await page.locator('.performance-distribution').count()===2);
-  await page.unroute('**/api/v2/performance.overview');
+  await page.unroute('**/api/v3/performance.overview');
   daemon.setScenario({...scenario,usageUnavailable:true});
   await page.locator('[data-performance-refresh]').click();
   await page.waitForFunction(()=>document.querySelector('[data-performance-charts]')?.textContent.includes('Token measurements are unavailable'));
   verify('query failures are not mislabeled as missing setup', (await page.locator('[data-performance-coverage]').innerText()).includes('Usage data unavailable'));
   verify('unavailable measurements do not become zero totals', await page.locator('[data-performance-period-total]').innerText()==='—' && await page.locator('[data-performance-history] tbody tr').count()===2);
+  daemon.setScenario({...scenario, usageUnavailable: true, performanceRefreshPending: true});
+  await page.locator('[data-performance-refresh]').click();
+  await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
+  verify('pending source reads remain loading while review browsing stays available', (await page.locator('[data-performance-coverage]').innerText()).includes('Loading usage') && await page.locator('[data-performance-history] tbody tr').count() === 2);
   daemon.setScenario({...scenario,empty:true});
   await page.locator('[data-performance-refresh]').click();
   await page.waitForFunction(()=>document.querySelector('[data-performance-history]')?.textContent.includes('No performance reviews'));

@@ -2,12 +2,13 @@
 //!
 //! The kernel peer remains the authority for local callers. A public identity
 //! is accepted only when the configured edge uid asserts it, and public roles
-//! are loaded from SQLite for every request so revocation is immediately
+//! are loaded from PostgreSQL for every request so revocation is immediately
 //! observable by the next request.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::params::{
     AcceptInvitation, AccessRole, EmailOnly, HealthHistory,
     InvitationGrant as InvitationGrantParam, InviteUser, RemoveGrant, SetGrant,
@@ -20,7 +21,6 @@ use devcoordinator2_api::results::{
 use devcoordinator2_api::{
     ClientContext, ClientKind, ErrorCode, ProtocolError, Role, Scope, operation,
 };
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{Duration, OffsetDateTime, format_description::FormatItem, macros::format_description};
@@ -151,7 +151,7 @@ pub struct RouteGrant {
 }
 
 /// Boundary implemented by the route-document owner. Access mutations commit
-/// in SQLite before publishing a complete replacement snapshot, matching the
+/// in PostgreSQL before publishing a complete replacement snapshot, matching the
 /// existing lost-reply/re-query semantics.
 pub trait RoutePublisher: Send + Sync {
     fn publish_access(&self, access: &RouteAccessSection) -> Result<(), ProtocolError>;
@@ -261,8 +261,19 @@ impl ResultFilter {
             }
             Self::RepositoryCollection { repository_ids } => {
                 let object = result_object(&mut result, "repository collection")?;
+                if object.contains_key("headers") && object.contains_key("repositories") {
+                    return Err(malformed_filtered_result(
+                        "repository collection",
+                        "multiple collection shapes",
+                    ));
+                }
+                let collection = if object.contains_key("headers") {
+                    "headers"
+                } else {
+                    "repositories"
+                };
                 retain_rows(
-                    object.get_mut("repositories"),
+                    object.get_mut(collection),
                     "repository_id",
                     repository_ids,
                     "repository collection",
@@ -273,7 +284,7 @@ impl ResultFilter {
     }
 }
 
-/// SQLite-backed public access service.
+/// PostgreSQL-backed public access service.
 #[derive(Clone)]
 pub struct Access {
     database: Database,
@@ -339,7 +350,7 @@ impl Access {
             .transaction(move |transaction| {
                 let user = transaction
                     .query_row(
-                        "SELECT user_id,administrator FROM users WHERE email=?1",
+                        "SELECT user_id,administrator FROM users WHERE email=$1",
                         [&lookup],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
                     )
@@ -354,7 +365,7 @@ impl Access {
                     });
                 };
                 let mut statement = transaction.prepare(
-                    "SELECT deployment_id,role FROM grants WHERE user_id=?1 \
+                    "SELECT deployment_id,role FROM grants WHERE user_id=$1 \
                      ORDER BY deployment_id",
                 )?;
                 let rows = statement.query_map([&user_id], |row| {
@@ -367,8 +378,8 @@ impl Access {
                 }
                 drop(statement);
                 transaction.execute(
-                    "UPDATE users SET last_seen_at=?1 WHERE user_id=?2",
-                    rusqlite::params![now, user_id],
+                    "UPDATE users SET last_seen_at=$1 WHERE user_id=$2",
+                    crate::database::params![now, user_id],
                 )?;
                 Ok(Principal {
                     local: false,
@@ -394,7 +405,7 @@ impl Access {
 
     pub fn list_users(&self) -> Result<UserList, ProtocolError> {
         self.database
-            .call(|connection| {
+            .read(|connection| {
                 let mut users_statement = connection.prepare(
                     "SELECT user_id,email,subject,display_name,administrator,created_at,\
                      created_by,last_seen_at FROM users ORDER BY email",
@@ -527,7 +538,7 @@ impl Access {
             .transaction(move |transaction| {
                 if transaction
                     .query_row(
-                        "SELECT 1 FROM users WHERE email=?1",
+                        "SELECT 1 FROM users WHERE email=$1",
                         [&stored_email],
                         |_| Ok(()),
                     )
@@ -539,11 +550,11 @@ impl Access {
                         format!("{stored_email} is already a user"),
                     ));
                 }
-                transaction.execute("DELETE FROM invitations WHERE email=?1", [&stored_email])?;
+                transaction.execute("DELETE FROM invitations WHERE email=$1", [&stored_email])?;
                 transaction.execute(
                     "INSERT INTO invitations(invitation_id,email,administrator,grants_json,\
-                     created_at,created_by,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    rusqlite::params![
+                     created_at,created_by,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+                    crate::database::params![
                         stored_invitation_id,
                         stored_email,
                         i64::from(administrator),
@@ -579,7 +590,7 @@ impl Access {
             .transaction(move |transaction| {
                 if let Some((existing_user_id, administrator)) = transaction
                     .query_row(
-                        "SELECT user_id,administrator FROM users WHERE email=?1",
+                        "SELECT user_id,administrator FROM users WHERE email=$1",
                         [&stored_email],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
                     )
@@ -595,7 +606,7 @@ impl Access {
                 let invitation = transaction
                     .query_row(
                         "SELECT administrator,grants_json,created_by,expires_at \
-                         FROM invitations WHERE email=?1",
+                         FROM invitations WHERE email=$1",
                         [&stored_email],
                         |row| {
                             Ok(StoredInvitation {
@@ -612,14 +623,14 @@ impl Access {
                 };
                 if invitation.expires_at.as_str() < now.as_str() {
                     transaction
-                        .execute("DELETE FROM invitations WHERE email=?1", [&stored_email])?;
+                        .execute("DELETE FROM invitations WHERE email=$1", [&stored_email])?;
                     return Ok(AcceptOutcome::Expired);
                 }
                 let grants = decode_invitation_grants(&invitation.grants_json)?;
                 transaction.execute(
                     "INSERT INTO users(user_id,email,subject,display_name,administrator,\
-                     created_at,created_by,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                    rusqlite::params![
+                     created_at,created_by,last_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+                    crate::database::params![
                         stored_user_id,
                         stored_email,
                         subject,
@@ -632,9 +643,9 @@ impl Access {
                 )?;
                 for grant in grants {
                     transaction.execute(
-                        "INSERT OR REPLACE INTO grants(user_id,deployment_id,role,granted_at,\
-                         granted_by) VALUES(?1,?2,?3,?4,?5)",
-                        rusqlite::params![
+                        "INSERT INTO grants(user_id,deployment_id,role,granted_at,\
+                         granted_by) VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id,deployment_id) DO UPDATE SET role=excluded.role,granted_at=excluded.granted_at,granted_by=excluded.granted_by",
+                        crate::database::params![
                             stored_user_id,
                             grant.deployment_id,
                             role_name(&grant.role),
@@ -643,7 +654,7 @@ impl Access {
                         ],
                     )?;
                 }
-                transaction.execute("DELETE FROM invitations WHERE email=?1", [&stored_email])?;
+                transaction.execute("DELETE FROM invitations WHERE email=$1", [&stored_email])?;
                 Ok(AcceptOutcome::Accepted(AcceptedInvitation {
                     email: stored_email,
                     user_id: stored_user_id,
@@ -682,17 +693,17 @@ impl Access {
             .transaction(move |transaction| {
                 let user_id = transaction
                     .query_row(
-                        "SELECT user_id FROM users WHERE email=?1",
+                        "SELECT user_id FROM users WHERE email=$1",
                         [&stored_email],
                         |row| row.get::<_, String>(0),
                     )
                     .optional()?;
                 if let Some(user_id) = &user_id {
-                    transaction.execute("DELETE FROM grants WHERE user_id=?1", [user_id])?;
-                    transaction.execute("DELETE FROM users WHERE user_id=?1", [user_id])?;
+                    transaction.execute("DELETE FROM grants WHERE user_id=$1", [user_id])?;
+                    transaction.execute("DELETE FROM users WHERE user_id=$1", [user_id])?;
                 }
                 let invitations = transaction
-                    .execute("DELETE FROM invitations WHERE email=?1", [&stored_email])?;
+                    .execute("DELETE FROM invitations WHERE email=$1", [&stored_email])?;
                 if user_id.is_none() && invitations == 0 {
                     return Err(domain_error(
                         ErrorCode::UserNotFound,
@@ -725,7 +736,7 @@ impl Access {
             .transaction(move |transaction| {
                 let user_id = transaction
                     .query_row(
-                        "SELECT user_id FROM users WHERE email=?1",
+                        "SELECT user_id FROM users WHERE email=$1",
                         [&stored_email],
                         |row| row.get::<_, String>(0),
                     )
@@ -734,9 +745,9 @@ impl Access {
                         domain_error(ErrorCode::UserNotFound, format!("no user {stored_email}"))
                     })?;
                 let deployment_exists = transaction.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM deployments WHERE deployment_id=?1) OR \
+                    "SELECT EXISTS(SELECT 1 FROM deployments WHERE deployment_id=$1) OR \
                      EXISTS(SELECT 1 FROM observed_deployments \
-                            WHERE observed_deployment_id=?1)",
+                            WHERE observed_deployment_id=$1)",
                     [&stored_deployment_id],
                     |row| row.get::<_, i64>(0),
                 )? != 0;
@@ -747,9 +758,9 @@ impl Access {
                     ));
                 }
                 transaction.execute(
-                    "INSERT OR REPLACE INTO grants(user_id,deployment_id,role,granted_at,\
-                     granted_by) VALUES(?1,?2,?3,?4,?5)",
-                    rusqlite::params![
+                    "INSERT INTO grants(user_id,deployment_id,role,granted_at,\
+                     granted_by) VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id,deployment_id) DO UPDATE SET role=excluded.role,granted_at=excluded.granted_at,granted_by=excluded.granted_by",
+                    crate::database::params![
                         user_id,
                         stored_deployment_id,
                         stored_role,
@@ -783,7 +794,7 @@ impl Access {
             .transaction(move |transaction| {
                 let user_id = transaction
                     .query_row(
-                        "SELECT user_id FROM users WHERE email=?1",
+                        "SELECT user_id FROM users WHERE email=$1",
                         [&stored_email],
                         |row| row.get::<_, String>(0),
                     )
@@ -792,8 +803,8 @@ impl Access {
                         domain_error(ErrorCode::UserNotFound, format!("no user {stored_email}"))
                     })?;
                 Ok(transaction.execute(
-                    "DELETE FROM grants WHERE user_id=?1 AND deployment_id=?2",
-                    rusqlite::params![user_id, stored_deployment_id],
+                    "DELETE FROM grants WHERE user_id=$1 AND deployment_id=$2",
+                    crate::database::params![user_id, stored_deployment_id],
                 )? != 0)
             })
             .map_err(database_or_domain)?;
@@ -807,7 +818,7 @@ impl Access {
 
     pub fn access_section(&self) -> Result<RouteAccessSection, ProtocolError> {
         self.database
-            .call(|connection| {
+            .read(|connection| {
                 let mut owners_statement = connection
                     .prepare("SELECT email FROM users WHERE administrator=1 ORDER BY email")?;
                 let owners = owners_statement
@@ -1035,14 +1046,14 @@ impl Access {
             .transaction(move |transaction| {
                 for (email, user_id) in owners {
                     if transaction
-                        .query_row("SELECT 1 FROM users WHERE email=?1", [&email], |_| Ok(()))
+                        .query_row("SELECT 1 FROM users WHERE email=$1", [&email], |_| Ok(()))
                         .optional()?
                         .is_none()
                     {
                         transaction.execute(
                             "INSERT INTO users(user_id,email,administrator,created_at,created_by) \
-                             VALUES(?1,?2,1,?3,'instance-configuration')",
-                            rusqlite::params![user_id, email, now],
+                             VALUES($1,$2,1,$3,'instance-configuration')",
+                            crate::database::params![user_id, email, now],
                         )?;
                     }
                 }
@@ -1061,7 +1072,7 @@ impl Access {
             return Ok(BTreeSet::new());
         }
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut repositories = BTreeSet::new();
                 let mut managed =
                     connection.prepare("SELECT deployment_id,repository_id FROM deployments")?;
@@ -1103,10 +1114,10 @@ impl Access {
                     .unwrap_or_default()
                     .to_owned();
                 self.database
-                    .call(move |connection| {
+                    .read(move |connection| {
                         connection
                             .query_row(
-                                "SELECT repository_id FROM tasks WHERE task_id=?1",
+                                "SELECT repository_id FROM tasks WHERE task_id=$1",
                                 [&task_id],
                                 |row| row.get(0),
                             )
@@ -1147,10 +1158,10 @@ impl Access {
 
     fn repository_for_exact_path(&self, path: String) -> Result<Option<String>, ProtocolError> {
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let repository = connection
                     .query_row(
-                        "SELECT repository_id FROM repositories WHERE root_path=?1",
+                        "SELECT repository_id FROM repositories WHERE root_path=$1",
                         [&path],
                         |row| row.get::<_, String>(0),
                     )
@@ -1160,7 +1171,7 @@ impl Access {
                 }
                 connection
                     .query_row(
-                        "SELECT repository_id FROM worktrees WHERE worktree_path=?1",
+                        "SELECT repository_id FROM worktrees WHERE worktree_path=$1",
                         [&path],
                         |row| row.get::<_, String>(0),
                     )
@@ -1179,18 +1190,18 @@ impl Access {
         let subject_id = history.subject_id;
         let unit_prefix = Arc::clone(&self.unit_prefix);
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let repository = match history.subject_kind {
                     MetricSubjectKind::Repository => connection
                         .query_row(
-                            "SELECT repository_id FROM repositories WHERE repository_id=?1",
+                            "SELECT repository_id FROM repositories WHERE repository_id=$1",
                             [&subject_id],
                             |row| row.get(0),
                         )
                         .optional()?,
                     MetricSubjectKind::Worktree => connection
                         .query_row(
-                            "SELECT repository_id FROM worktrees WHERE worktree_id=?1",
+                            "SELECT repository_id FROM worktrees WHERE worktree_id=$1",
                             [&subject_id],
                             |row| row.get(0),
                         )
@@ -1209,10 +1220,10 @@ impl Access {
                         .query_row(
                             "SELECT d.repository_id FROM components c JOIN deployments d \
                              ON d.deployment_id=c.deployment_id \
-                             WHERE c.binding_kind='container' AND c.binding_identity=?1 \
+                             WHERE c.binding_kind='container' AND c.binding_identity=$1 \
                              UNION ALL \
                              SELECT repository_id FROM observed_containers \
-                             WHERE container_id=?1 LIMIT 1",
+                             WHERE container_id=$1 LIMIT 1",
                             [&subject_id],
                             |row| row.get(0),
                         )
@@ -1225,7 +1236,7 @@ impl Access {
                         if let Some(worktree_id) = worktree_id {
                             connection
                                 .query_row(
-                                    "SELECT repository_id FROM worktrees WHERE worktree_id=?1",
+                                    "SELECT repository_id FROM worktrees WHERE worktree_id=$1",
                                     [worktree_id],
                                     |row| row.get(0),
                                 )
@@ -1277,15 +1288,15 @@ fn deployment_ids_at_least(principal: &Principal, required: &AccessRole) -> BTre
 }
 
 fn repository_for_deployment(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
     deployment_id: &str,
 ) -> Result<Option<String>, DatabaseError> {
     connection
         .query_row(
-            "SELECT repository_id FROM deployments WHERE deployment_id=?1 \
+            "SELECT repository_id FROM deployments WHERE deployment_id=$1 \
              UNION ALL \
              SELECT repository_id FROM observed_deployments \
-             WHERE observed_deployment_id=?1 LIMIT 1",
+             WHERE observed_deployment_id=$1 LIMIT 1",
             [deployment_id],
             |row| row.get(0),
         )
@@ -2069,6 +2080,27 @@ mod tests {
             plan["repositories"],
             serde_json::json!([{"repository_id":"r1"}])
         );
+        let headers = world
+            .access
+            .authorize(
+                "plan.overview",
+                &serde_json::json!({"headers_only":true}),
+                &viewer,
+            )
+            .expect("plan header picker")
+            .apply_result(
+                serde_json::json!({"headers":[{"repository_id":"r1"},{"repository_id":"r2"}]}),
+            )
+            .expect("header filter");
+        assert_eq!(
+            headers["headers"],
+            serde_json::json!([{"repository_id":"r1"}])
+        );
+        assert_permission_denied(world.access.authorize(
+            "plan.overview",
+            &serde_json::json!({"repository_id":"r2","limit":1}),
+            &viewer,
+        ));
         world
             .access
             .authorize(
@@ -2268,7 +2300,7 @@ mod tests {
         );
         let invitations: i64 = world
             .database
-            .call(|connection| {
+            .read(|connection| {
                 Ok(connection.query_row(
                     "SELECT count(*) FROM invitations WHERE email='expired@example.test'",
                     [],

@@ -1,4 +1,4 @@
-// DevCoordinator2 Console: a static app over the edge's /api/v2/<operation> bridge.
+// DevCoordinator2 Console: a static app over the edge's /api/v3/<operation> bridge.
 // Every control calls the real API and re-reads state to prove the change.
 'use strict';
 
@@ -266,10 +266,10 @@ class ApiError extends Error {
   }
 }
 let viewAbort = null; // render() aborts the previous view's pending reads so a slow stale load can never overwrite the current view
-async function api(operation, params = {}, abortable = true) {
+async function apiPage(operation, params = {}, abortable = true) {
   let res;
   try {
-    res = await fetch(`/api/v2/${operation}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params), signal: abortable ? viewAbort?.signal : undefined });
+    res = await fetch(`/api/v3/${operation}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params), signal: abortable ? viewAbort?.signal : undefined });
   } catch (error) {
     if (error.name === 'AbortError') throw new ApiError('stale', 'superseded by navigation');
     throw new ApiError('network', `edge unreachable: ${error.message}`);
@@ -277,50 +277,68 @@ async function api(operation, params = {}, abortable = true) {
   if (res.status === 401) { location.href = `/auth/login?rt=${encodeURIComponent(location.pathname + location.hash)}`; throw new ApiError('unauthenticated', 'sign in'); }
   const body = await res.json().catch(() => ({ ok: false, error: { code: 'bad_response', message: `HTTP ${res.status}` } }));
   if (!body.ok) throw new ApiError(body.error?.code || 'error', body.error?.message || 'request failed');
-  if (operation === 'test.list' && !params.after_worktree_id && !params.limit) {
-    const result = body.data;
-    const seen = new Set();
-    while (result.next_worktree_id) {
-      const cursor = result.next_worktree_id;
-      if (seen.has(cursor)) throw new ApiError('bad_response', 'Test list pagination did not advance');
-      seen.add(cursor);
-      const page = await api(operation, { ...params, after_worktree_id: cursor }, abortable);
-      result.runs.push(...page.runs);
-      result.next_worktree_id = page.next_worktree_id;
-    }
-  }
   return body.data;
 }
-async function planOverview(repositoryId) {
-  // Assemble one revision before rendering so page boundaries cannot orphan
-  // tasks or mix the old hierarchy with edits made during the read.
+// Follow explicit server cursors. Each transport response stays bounded, and
+// navigation aborts the entire traversal instead of allowing stale pages to render.
+async function api(operation, params = {}, abortable = true) {
   for (let attempt = 0; ; attempt++) {
-    try {
-      const result = await api('plan.overview', { repository_id: repositoryId });
-      let previousOffset = 0;
-      while (result.next_offset != null) {
-        const offset = result.next_offset;
-        if (!Number.isSafeInteger(offset) || offset <= previousOffset || !result.revision) {
-          throw new ApiError('bad_response', 'Plan pagination did not advance');
-        }
-        const page = await api('plan.overview', {
-          repository_id: repositoryId, offset, expected_revision: result.revision,
-        });
-        if (page.repository_id !== result.repository_id || page.revision !== result.revision) {
-          throw new ApiError('cursor_stale', 'Plan changed during loading');
-        }
-        for (const field of ['releases', 'tasks', 'elaboration_requests', 'preview_requested']) {
-          result[field].push(...page[field]);
-        }
-        previousOffset = offset;
-        result.next_offset = page.next_offset;
-      }
-      return result;
-    } catch (error) {
-      if (error.code !== 'cursor_stale' || attempt >= 1) throw error;
+    try { return await apiTraversal(operation, params, abortable); }
+    catch (error) {
+      if (operation !== 'plan.overview' || error.code !== 'cursor_stale' || params.expected_revision || attempt >= 1) throw error;
     }
   }
 }
+async function apiTraversal(operation, params = {}, abortable = true) {
+  const result = await apiPage(operation, params, abortable);
+  if (params.limit || params.after_worktree_id || params.after_repository_id || params.after_sequence || params.after_release_sequence) return result;
+  const seen = new Set();
+  const advance = cursor => {
+    if (seen.has(cursor)) throw new ApiError('bad_response', 'Pagination did not advance');
+    seen.add(cursor);
+  };
+  if (operation === 'test.list') {
+    while (result.next_worktree_id) {
+      const cursor = result.next_worktree_id; advance(cursor);
+      const page = await apiPage(operation, { ...params, after_worktree_id: cursor }, abortable);
+      result.runs.push(...page.runs); result.next_worktree_id = page.next_worktree_id;
+    }
+  } else if (operation === 'repository.list' || (operation === 'plan.overview' && (result.repositories || result.headers))) {
+    const collection = result.headers ? 'headers' : 'repositories';
+    while (result.next_repository_id) {
+      const cursor = result.next_repository_id; advance(cursor);
+      const page = await apiPage(operation, { ...params, after_repository_id: cursor }, abortable);
+      result[collection].push(...page[collection]); result.next_repository_id = page.next_repository_id;
+    }
+    if (operation === 'repository.list') {
+      for (const repository of result.repositories) {
+        seen.clear();
+        while (repository.next_worktree_id) {
+          const cursor = repository.next_worktree_id; advance(cursor);
+          const page = await apiPage(operation, { ...params, repository_id: repository.repository_id, after_worktree_id: cursor }, abortable);
+          const next = page.repositories.find(row => row.repository_id === repository.repository_id);
+          if (!next) throw new ApiError('bad_response', 'Repository disappeared during pagination');
+          repository.worktrees.push(...next.worktrees); repository.next_worktree_id = next.next_worktree_id;
+        }
+      }
+    }
+  } else if (operation === 'plan.overview' && result.tasks) {
+    let tasksAfter = result.next_sequence || Math.max(0, ...result.tasks.map(task => task.seq));
+    let releasesAfter = result.next_release_sequence || Math.max(0, ...result.releases.map(release => release.seq));
+    while (result.next_sequence || result.next_release_sequence) {
+      advance(`${tasksAfter}:${releasesAfter}`);
+      const page = await apiPage(operation, { ...params, after_sequence: tasksAfter, after_release_sequence: releasesAfter, expected_revision: result.revision }, abortable);
+      if (page.repository_id !== result.repository_id || page.revision !== result.revision) throw new ApiError('cursor_stale', 'Plan changed during loading');
+      for (const field of ['tasks', 'releases', 'elaboration_requests', 'preview_requested']) result[field].push(...page[field]);
+      result.next_sequence = page.next_sequence; result.next_release_sequence = page.next_release_sequence;
+      tasksAfter = page.next_sequence || Math.max(tasksAfter, ...page.tasks.map(task => task.seq));
+      releasesAfter = page.next_release_sequence || Math.max(releasesAfter, ...page.releases.map(release => release.seq));
+    }
+    result.tasks_truncated = false;
+  }
+  return result;
+}
+
 async function metricHistory(kind, id, metric, rangeKey) {
   const r = RANGES[rangeKey] || RANGES['24h'];
   return api('health.history', { subject_kind: kind, subject_id: id, metric, minutes: r.minutes, points: r.points });
@@ -2594,10 +2612,13 @@ function bindTestPopovers() {
 const viewTests = guard(async (runId = null, settings = null) => {
   if (runId) return viewTestEvidence(runId);
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
-  const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
+  const repository = workspace.active ? { name: workspace.current()?.name,
+    get ids() { return [...new Set([workspace.repositoryId, ...(workspace.current()?.records.map((record) => record.repository_id) || [])].filter(Boolean))]; },
+    get complete() { return workspace.catalogueComplete; }, subscribe: workspace.subscribe } : null;
+  const listParams = (repository?.ids.length ? repository.ids : [null]).map((id) => ({ ...(id ? { repository_id: id } : {}), limit: 20 }));
+  const [initialPage, capacity, retention] = await Promise.all([apiPage('test.list', listParams[0]), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
   await window.DevCoordinatorTests.render({
-    main, runs, capacity, retention, api, esc, badge, durationMs, bytes, signal: viewAbort.signal,
-    repository: workspace.active ? { name: workspace.current()?.name, ids: workspace.current()?.records.map((record) => record.repository_id) || [] } : null,
+    main, initialPage, listParams, capacity, retention, api, apiPage, esc, badge, durationMs, bytes, signal: viewAbort.signal, repository,
     openLogs: (run, opener) => openTestLogsDialog(run, retention, opener),
     openFiles: (run, opener, initialFile) => window.DevCoordinatorArtifacts.open(run, opener, { api, esc, bytes, signal: viewAbort.signal, highlight: highlightLogText, initialFile }),
     openCapacity: openTestCapacityDialog, openRetention: openTestLogRetentionDialog,
@@ -3340,7 +3361,7 @@ function coverageHint(coverage) {
   const titleId = `${hintId}-title`;
   const state = coverageKind(coverage);
   const summary = coverageText(coverage);
-  return `<div class="usage-coverage-line"><span class="usage-coverage-indicator ${state}" title="${esc(summary)}" aria-hidden="true"></span><button type="button" class="usage-coverage-hint-toggle" aria-label="${esc(summary)}" aria-haspopup="dialog" aria-expanded="false" aria-controls="${hintId}" data-usage-coverage-hint-toggle data-i18n-attrs='{"aria-label":"usage.explain_codex_usage_data_completeness_63247d"}'>${planIcon('info-circle')}</button><div class="usage-coverage-popover" id="${hintId}" role="dialog" aria-labelledby="${titleId}" tabindex="-1" data-ui-allow-overlap="Open information hint intentionally overlays dashboard content" hidden><strong id="${titleId}" data-ui-continuation-anchor><span data-i18n="usage.about_codex_environments_4a2e3e">About Codex environments</span></strong><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(coverage))}</p></div></div>`;
+  return `<div class="usage-coverage-line"><span class="usage-coverage-indicator ${state}" title="${esc(summary)}" aria-hidden="true"></span><button type="button" class="usage-coverage-hint-toggle" aria-label="${esc(summary)}" aria-haspopup="dialog" aria-expanded="false" aria-controls="${hintId}" data-usage-coverage-hint-toggle data-i18n-attrs='{"aria-label":"usage.explain_codex_usage_data_completeness_63247d"}'>${planIcon('info-circle')}</button><div class="usage-coverage-popover" id="${hintId}" role="dialog" aria-labelledby="${titleId}" tabindex="-1" data-ui-allow-overlap="Open information hint intentionally overlays dashboard content" data-ui-contextual-overlay="Open usage explanation overlays dashboard content while its dialog is focused" hidden><strong id="${titleId}" data-ui-continuation-anchor><span data-i18n="usage.about_codex_environments_4a2e3e">About Codex environments</span></strong><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(coverage))}</p></div></div>`;
 }
 
 function bindCoverageHint(root = main) {
@@ -3616,7 +3637,7 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   const [data, projectList, repositoryList] = await Promise.all([
     api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...usageWorktreeRequest(repositoryId), ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
     workspace.active ? {} : api('plan.overview', {}),
-    api('repository.list', {}),
+    api('repository.list', { repository_id: repositoryId }),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repositoryId, display_name: data.display_name,
@@ -4084,11 +4105,18 @@ const viewAgentSettings = guard(async () => {
 function openAgentRolesDialog(roles, revision) { document.getElementById('agent-roles-dialog')?.remove(); const dialog = document.createElement('dialog'); dialog.id = 'agent-roles-dialog'; dialog.className = 'agent-roles-dialog'; dialog.innerHTML = `<div class="dialog-head"><h2>${agentText('roles_title')}</h2><button class="dialog-close" type="button" aria-label="${agentText('close')}">×</button></div><form class="dialog-form"><div class="agent-role-editor">${roles.map((role) => `<div class="agent-role-editor-row"><span>${esc(role.role_id)}</span><input name="title:${esc(role.role_id)}" value="${esc(role.title)}" maxlength="200"><label class="agent-retired"><input type="checkbox" name="retired:${esc(role.role_id)}"${role.retired ? ' checked' : ''}> ${agentText('retired')}</label></div>`).join('')}</div><fieldset class="agent-new-role"><legend>${agentText('add_role')}</legend><input name="new_role_id" placeholder="${agentText('role_id_placeholder')}" maxlength="80"><input name="new_role_title" placeholder="${agentText('role_title_placeholder')}" maxlength="200"></fieldset><div class="dialog-actions"><button class="btn" type="button" data-agent-role-cancel>${agentText('cancel')}</button><button class="btn btn-primary" type="submit">${agentText('save_roles')}</button></div></form></dialog>`; document.body.appendChild(dialog); dialog.showModal(); const close = () => { dialog.close(); dialog.remove(); }; $('.dialog-close', dialog).addEventListener('click', close); $('[data-agent-role-cancel]', dialog).addEventListener('click', close); $('form', dialog).addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.target); const result = roles.map((role, index) => ({ role_id: role.role_id, title: form.get(`title:${role.role_id}`), position: index, retired: form.get(`retired:${role.role_id}`) === 'on' })); const newId = String(form.get('new_role_id') || '').trim(); const newTitle = String(form.get('new_role_title') || '').trim(); if (newId || newTitle) result.push({ role_id: newId, title: newTitle, position: result.length, retired: false }); await act($('button[type=submit]', dialog), 'agent.roles.save', { expected_revision: revision, roles: result }, () => { close(); render(); }); }); requestAnimationFrame(() => $('input', dialog)?.focus()); }
 
 // --- Plan (completion ledger, releases, previews) ------------------------
-function locN(n) { return Number(n).toLocaleString(window.DevCoordinatorI18n.locale); }
+function locN(n) { return window.DevCoordinatorI18n.number(Number(n)); }
 function loc(n) { return n == null ? '' : window.DevCoordinatorI18n.t('plan.estimatedLines', {count:n, value:locN(n)}); }
+const planEstimateCache = new WeakMap();
 function planEstimateText(row) {
-  if (!row.isParent) return loc(row.task.estimated_loc) || window.DevCoordinatorI18n.t('plan.not_estimated_dbbcf5');
-  return [row.subtreeLoc ? loc(row.subtreeLoc) : '', row.unsizedCount ? window.DevCoordinatorI18n.t('plan.unestimatedCount', {count:row.unsizedCount}) : ''].filter(Boolean).join(' + ');
+  const locale = window.DevCoordinatorI18n.locale;
+  const cached = planEstimateCache.get(row);
+  if (cached && cached.locale === locale && cached.parent === row.isParent && cached.estimate === row.task.estimated_loc && cached.subtree === row.subtreeLoc && cached.unsized === row.unsizedCount) return cached.text;
+  const text = !row.isParent
+    ? loc(row.task.estimated_loc) || window.DevCoordinatorI18n.t('plan.not_estimated_dbbcf5')
+    : [row.subtreeLoc ? loc(row.subtreeLoc) : '', row.unsizedCount ? window.DevCoordinatorI18n.t('plan.unestimatedCount', {count:row.unsizedCount}) : ''].filter(Boolean).join(' + ');
+  planEstimateCache.set(row, { locale, parent: row.isParent, estimate: row.task.estimated_loc, subtree: row.subtreeLoc, unsized: row.unsizedCount, text });
+  return text;
 }
 function planDoneText(progress) {
   return window.DevCoordinatorI18n.t('plan.doneSummary', {done:locN(progress.done), total:locN(progress.total), percent:window.DevCoordinatorI18n.percent(progress.percent / 100, {maximumFractionDigits:0})});
@@ -4250,7 +4278,7 @@ function planSelectionTray(selectedRow, releaseById, admin) {
   </section>`;
 }
 
-const viewPlan = guard(async (repoId) => {
+const viewPlan = guard(async (repoId, prefetchedModel) => {
   const requestedTaskId = state.planRequestedTaskId;
   state.planRequestedTaskId = null;
   const repositoryChanged = state.planRepositoryId !== repoId;
@@ -4271,7 +4299,7 @@ const viewPlan = guard(async (repoId) => {
   }
   main.innerHTML = `<div class="plan-loading">${pageHeading('Plan', '#/plan')}${skeleton(6)}</div>`;
   const [model, projectList] = await Promise.all([
-    planOverview(repoId),
+    prefetchedModel || api('plan.overview', { repository_id: repoId }),
     workspace.active ? {} : api('plan.overview', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
@@ -4365,7 +4393,7 @@ const viewPlan = guard(async (repoId) => {
       : '<span class="plan-drag-spacer" aria-hidden="true"></span>';
     const metaLoc = () => planEstimateText(row);
     const common = `role="button" tabindex="0" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}" aria-label="${esc(window.DevCoordinatorI18n.t('plan.selectTask', {title:task.title}))}" data-i18n-attrs='{"aria-label":"plan.selectTask"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'`;
-    const hover = `data-hover-task="${esc(task.task_id)}" data-hover-title="${esc(task.title)}" data-hover-status="${esc(task.status)}" data-hover-loc="${esc(metaLoc())}" data-hover-progress="${esc(row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(progress))}" data-hover-elaboration="${task.elaboration_needed ? 'true' : 'false'}"`;
+    const hover = `data-hover-task="${esc(task.task_id)}" data-hover-title="${esc(task.title)}" data-hover-status="${esc(task.status)}" data-hover-elaboration="${task.elaboration_needed ? 'true' : 'false'}"`;
     const sizedBar = row.width ? (row.isParent
       ? `<div class="gbar parent${selected ? ' selected' : ''}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" ${common}><span class="gdone" style="width:${progress.percent}%"></span></div>`
       : `<div class="gbar ${esc(task.status)}${selected ? ' selected' : ''}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" ${common} ${hover}>
@@ -4849,13 +4877,9 @@ function bindPlanWorkspace(root, model, layout) {
 
   root.querySelectorAll('[data-hover-task]').forEach((bar) => {
     const row = layout.rows.find(row => row.task.task_id === bar.dataset.hoverTask);
-    if (row) {
-      window.DevCoordinatorI18n.bind(bar, () => planEstimateText(row), 'data-hover-loc');
-      window.DevCoordinatorI18n.bind(bar, () => row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(planRowProgress(row)), 'data-hover-progress');
-    }
     const show = () => {
-      if (!tooltip) return;
-      tooltip.innerHTML = `<strong>${esc(bar.dataset.hoverTitle)}</strong>${planBadge(bar.dataset.hoverStatus)}${bar.dataset.hoverElaboration === 'true' ? badge('elaboration needed', 'warn') : ''}<span>${window.DevCoordinatorI18n.computedMarkup(() => bar.dataset.hoverLoc)}</span><span>${window.DevCoordinatorI18n.computedMarkup(() => bar.dataset.hoverProgress)}</span>`;
+      if (!tooltip || !row) return;
+      tooltip.innerHTML = `<strong>${esc(bar.dataset.hoverTitle)}</strong>${planBadge(bar.dataset.hoverStatus)}${bar.dataset.hoverElaboration === 'true' ? badge('elaboration needed', 'warn') : ''}<span>${window.DevCoordinatorI18n.computedMarkup(() => planEstimateText(row))}</span><span>${window.DevCoordinatorI18n.computedMarkup(() => row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(planRowProgress(row)))}</span>`;
       tooltip.hidden = false;
       requestAnimationFrame(() => {
         const anchor = bar.getBoundingClientRect(); const box = tooltip.getBoundingClientRect();
@@ -5075,7 +5099,7 @@ const viewDecisions = guard(async (repoId) => {
 const languageReady = import("./i18n.mjs").then(({ i18n }) => i18n.ready);
 let renderRequest = 0;
 const performancePage = window.DevCoordinatorPerformance.create({ api, esc, compactNumber, durationMs, coverageText, identity: () => state.who });
-const workspace = window.DevCoordinatorWorkspace.create({ api, esc, identity: () => state.who });
+const workspace = window.DevCoordinatorWorkspace.create({ api, apiPage, esc, identity: () => state.who });
 window.addEventListener('resize', () => {
   const composer = $('#evidence-composer', main);
   if (!composer || composer.hidden) return;
@@ -5142,7 +5166,7 @@ async function render() {
   }
   if (view === 'deployments') return arg ? viewDeployment(arg) : viewDeployments();
   if (view === 'plan' && new URLSearchParams(location.hash.split('?')[1] || '').has('task')) state.planRequestedTaskId = new URLSearchParams(location.hash.split('?')[1]).get('task');
-  if (view === 'plan') return arg ? viewPlan(arg) : viewPlanPicker('plan');
+  if (view === 'plan') return arg ? viewPlan(arg, route.planModel) : viewPlanPicker('plan');
   if (view === 'progress') return arg ? viewProgress(arg) : viewProgressRepositories();
   if (view === 'performance') return performancePage.render(main, arg, signal);
   if (view === 'usage') return arg ? viewCodexUsage(arg) : viewCodexUsageRepositories();

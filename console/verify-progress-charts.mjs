@@ -14,7 +14,7 @@ export async function verifyProgressCharts({ page, daemon, check, scenario, base
     for (const period of ['hour', 'day', 'week']) {
       const prefix = `Progress ${viewport.width} ${period}`;
       daemon.calls.length = 0;
-      const response = page.waitForResponse(response => response.url().endsWith('/api/v2/progress.repository') && response.request().postDataJSON()?.period === period);
+      const response = page.waitForResponse(response => response.url().endsWith('/api/v3/progress.repository') && response.request().postDataJSON()?.period === period);
       await page.click(`[data-progress-period="${period}"]`);
       await settle(period);
       const data = (await (await response).json()).data;

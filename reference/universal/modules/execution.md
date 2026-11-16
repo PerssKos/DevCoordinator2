@@ -154,8 +154,8 @@ the terminal-result check.
    completion-wait procedure above to the required availability transition.
    Use a confirmed availability event source or the provider's named blocking
    wait. For Coordinator `tests_draining`, inspect `test.admission.status`,
-   then use `test.admission.wait` (CLI `test admission-wait --deadline-at ...`)
-   with a real deadline if admission is still closed. A provider wait does
+   then use `test.admission.wait` (CLI `call test.admission.wait --params-file FILE`)
+   with a real `deadline_at` if admission is still closed. A provider wait does
    not require a separate runtime event integration. If the service cannot
    accept the wait, use its existing external availability watcher when
    supported; do not invent a source or repeatedly submit refused tests.

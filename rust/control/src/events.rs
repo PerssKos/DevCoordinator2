@@ -14,7 +14,7 @@ use devcoordinator2_api::{ErrorCode, ProtocolError};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::oneshot;
 
-use crate::database::{Database, DatabaseError};
+use crate::database::{Database, DatabaseError, OptionalExtension};
 
 const MAX_FILTERS: usize = 32;
 const MAX_BATCH: usize = 100;
@@ -233,7 +233,7 @@ impl EventService {
 
 fn history_head(database: &Database) -> Result<u64, ProtocolError> {
     database
-        .call(|connection| {
+        .read(|connection| {
             let head = connection.query_row(
                 "SELECT COALESCE(MAX(cursor),0) FROM owned_events",
                 [],
@@ -532,10 +532,13 @@ fn append_event(database: &Database, event: NewEvent) -> Result<PublishReceipt, 
     let dedupe_key = event.dedupe_key;
     database
         .transaction(move |transaction| {
-            let changed = transaction.execute(
+            // Cursor order must follow commit order so a reader never skips a
+            // lower cursor that another publisher has not committed yet.
+            transaction.execute_batch("LOCK TABLE owned_events IN SHARE ROW EXCLUSIVE MODE")?;
+            let inserted = transaction.query_row(
                 "INSERT INTO owned_events(occurred_at,category,kind,repository_id,deployment_id,payload_json,dedupe_key) \
-                 VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(dedupe_key) DO NOTHING",
-                rusqlite::params![
+                 VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(dedupe_key) DO NOTHING RETURNING cursor",
+                crate::database::params![
                     occurred_at,
                     category,
                     kind,
@@ -544,10 +547,18 @@ fn append_event(database: &Database, event: NewEvent) -> Result<PublishReceipt, 
                     payload,
                     dedupe_key
                 ],
-            )?;
-            let cursor = if changed == 0 {
+                |row| row.get::<_, i64>(0),
+            ).optional()?;
+            let cursor = if let Some(cursor) = inserted {
+                u64::try_from(cursor).map_err(|_| {
+                    DatabaseError::Domain(ProtocolError::new(
+                        ErrorCode::InternalError,
+                        "owned event cursor is invalid",
+                    ))
+                })?
+            } else {
                 let stored = transaction.query_row(
-                    "SELECT cursor FROM owned_events WHERE dedupe_key=?1",
+                    "SELECT cursor FROM owned_events WHERE dedupe_key=$1",
                     [dedupe_key.as_deref()],
                     |row| row.get::<_, i64>(0),
                 )?;
@@ -557,22 +568,15 @@ fn append_event(database: &Database, event: NewEvent) -> Result<PublishReceipt, 
                         "stored owned event cursor is invalid",
                     ))
                 })?
-            } else {
-                u64::try_from(transaction.last_insert_rowid()).map_err(|_| {
-                    DatabaseError::Domain(ProtocolError::new(
-                        ErrorCode::InternalError,
-                        "owned event cursor is invalid",
-                    ))
-                })?
             };
             transaction.execute(
                 "DELETE FROM owned_events WHERE cursor < COALESCE(\
-                   (SELECT cursor FROM owned_events ORDER BY cursor DESC LIMIT 1 OFFSET ?1), 0)",
+                   (SELECT cursor FROM owned_events ORDER BY cursor DESC LIMIT 1 OFFSET $1), 0)",
                 [i64::try_from(MAX_RETAINED_EVENTS - 1).expect("retention fits i64")],
             )?;
             Ok(PublishReceipt {
                 cursor,
-                duplicate: changed == 0,
+                duplicate: inserted.is_none(),
             })
         })
         .map_err(database_error)
@@ -588,7 +592,7 @@ fn load_events(
         .transpose()
         .map_err(|_| ProtocolError::new(ErrorCode::ParamsInvalid, "event cursor is too large"))?;
     database
-        .call(move |connection| {
+        .read(move |connection| {
             let (floor, head) = connection.query_row(
                 "SELECT COALESCE(MIN(cursor),0),COALESCE(MAX(cursor),0) FROM owned_events",
                 [],
@@ -638,10 +642,13 @@ fn load_events(
             }
             let mut statement = connection.prepare(
                 "SELECT cursor,occurred_at,category,kind,repository_id,deployment_id,payload_json \
-                 FROM owned_events WHERE cursor>?1 ORDER BY cursor LIMIT ?2",
+                 FROM owned_events WHERE cursor>$1 ORDER BY cursor LIMIT $2",
             )?;
             let rows = statement.query_map(
-                rusqlite::params![database_cursor, i64::try_from(MAX_RETAINED_EVENTS).unwrap()],
+                crate::database::params![
+                    database_cursor,
+                    i64::try_from(MAX_RETAINED_EVENTS).unwrap()
+                ],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
@@ -1200,7 +1207,7 @@ mod tests {
         }
         let retained: usize = restarted
             .database
-            .call(|connection| {
+            .read(|connection| {
                 let count =
                     connection.query_row("SELECT COUNT(*) FROM owned_events", [], |row| {
                         row.get::<_, i64>(0)

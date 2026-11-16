@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-21 (trusted local agent access to authenticated deployments)
+Last reviewed: 2026-11-15 (local owner approved PostgreSQL migration with data retention)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -63,6 +63,21 @@ access changes.
   renewal continuity, not authority to add domains or broaden application access.
 
 ### Established runtime assumptions
+
+- The owner approved replacing the Coordinator authority SQLite database with
+  one dedicated local PostgreSQL cluster and a breaking v3 protocol
+  (DC2-POSTGRES-V3-20261105; local approval author-update-20261115-postgresql-approved). PostgreSQL is managed by the reviewed root installer
+  and runs as a dedicated non-root service identity. It listens only on a private
+  Unix socket. Database roles and credentials remain private; public and thin
+  clients retain the existing daemon authorization boundary.
+- The same decision authorizes one full, verified cutover preserving all
+  authority IDs, histories, records and immutable attachment bytes. JSON records
+  may be normalized to JSONB; signed payloads retain their exact bytes. The
+  local owner's November 15 approval requires retaining the frozen SQLite
+  source and recovery copies after migration. Any retirement requires a separate
+  owner decision; migration acceptance alone does not authorize deletion. Before new live writes are
+  admitted, a failed cutover may restore SQLite; after admission, recovery must
+  preserve PostgreSQL writes and never restore a stale SQLite snapshot.
 
 - One owner controls all trusted local Unix accounts and coding agents.
   Local accounts are attribution and execution identities, not mutually
@@ -227,14 +242,30 @@ access changes.
 
 ## Codex usage analytics boundary
 
+- The owner's usage-v2 repair request and November 10, 2026 instruction to
+  merge, push and deploy replace the retired usage SQLite/CLI source path.
+  Fresh sources require a versioned successful handshake with the configured
+  same-owner local app-server and a consistent immutable snapshot. Unsupported
+  legacy sources remain explicit gaps; they are not opened or migrated.
+- The same request authorizes retaining explicit, content-free operation work
+  declarations in the existing Coordinator authority: native project, thread,
+  turn, operation, workstream, outcome and experiment reference. These records
+  bind an authorized caller's operation to its declared work; they are not a
+  copy of usage observations and never allocate repository totals to tasks.
+  Producer queries may receive bounded declarations for exact operation joins.
+  Undeclared, conflicting or mismatched context remains unattributed.
+  This does not authorize prompts, tool arguments, private paths, credentials,
+  arbitrary output or a second accounting database. Existing audience,
+  peer-identity and confidentiality rules below continue to apply.
+
 - The authorized API consumer uses only the explicitly configured same-owner
   local CodexMulti app-server socket. It verifies the socket owner, kernel peer
   UID and returned Codex home before requesting content-free summaries. It adds
   no network collector, listener or credentials. The approved source-policy,
   operator/administrator audience, identity exclusion and single accounting
   truth assumptions below also apply to these responses. Socket preference is
-  optional and preserves the read-only SQLite fallback
-  (DC2-USAGE-API-CONSUMER-20260929).
+  optional in the historical contract (DC2-USAGE-API-CONSUMER-20260929);
+  the usage-v2 repair above requires the API and retires that fallback.
 
 - The owner explicitly authorizes the root daemon to read the content-free
   usage databases of every same-owner Unix account listed in a private,
@@ -250,9 +281,9 @@ access changes.
   identifiers, or per-user values. Missing, incompatible, or unmapped
   collectors are disclosed as partial coverage rather than zero usage.
 - Each Codex usage database remains the only writable accounting truth.
-  DevCoordinator opens it read-only and stores only the privacy-preserving
-  link between its registered repository and that collector's repository key
-  (DC2-2026-08-29-CODEX-USAGE-SOURCE).
+  DevCoordinator consumes it read-only and stores the privacy-preserving
+  repository link (DC2-2026-08-29-CODEX-USAGE-SOURCE), plus the explicit
+  Coordinator work declarations authorized above.
 - The owner approved daemon-owned display caching on 2026-09-04. Rebuildable
   display projections may be retained in daemon memory under the same access
   and privacy boundary; collector databases remain read-only accounting truth.

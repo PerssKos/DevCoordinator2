@@ -1,5 +1,4 @@
 use super::*;
-use devcoordinator2_control::database::Database;
 use devcoordinator2_control::deployment_state::{
     DeploymentStore, ObservedContainerInput, ObservedDeploymentInput,
 };
@@ -11,6 +10,12 @@ use devcoordinator2_control::deployment_state::{
 const ORDERING_SCAN_BUDGET: Duration = Duration::from_secs(300);
 
 fn start_fixture_engine(world: &mut World) -> Result<String, String> {
+    let runtime = tempfile::Builder::new()
+        .prefix("dc2-builder-")
+        .tempdir_in("/tmp")
+        .map_err(|error| error.to_string())?;
+    let exec_root = runtime.path().join("exec");
+    world.builder_runtime = Some(runtime);
     let socket = world.base.join("builder.sock");
     let config = world.base.join("builder.json");
     write_private_json(&config, &json!({}))?;
@@ -48,7 +53,7 @@ fn start_fixture_engine(world: &mut World) -> Result<String, String> {
             "--data-root",
             world.base.join("builder-data").to_str().unwrap(),
             "--exec-root",
-            world.base.join("builder-exec").to_str().unwrap(),
+            exec_root.to_str().unwrap(),
             "--pidfile",
             world.base.join("builder.pid").to_str().unwrap(),
             "--containerd-namespace",
@@ -342,6 +347,9 @@ fn unavailable_engine_observations(world: &mut World, host: &str) -> Result<(), 
             "fixture storage jobs did not settle before outage"
         );
     }
+    let diagnostic_start = fs::metadata(world.base.join("daemon.log"))
+        .map_err(|error| error.to_string())?
+        .len() as usize;
     run_status(
         "systemctl",
         &[
@@ -365,6 +373,17 @@ fn unavailable_engine_observations(world: &mut World, host: &str) -> Result<(), 
     ensure!(
         blocked["deletable"] == false && blocked["verified_at_ms"].is_null(),
         "a failed observation left a previously safe network eligible"
+    );
+    let diagnostics = fs::read(world.base.join("daemon.log")).map_err(|error| error.to_string())?;
+    let diagnostics = String::from_utf8_lossy(
+        diagnostics
+            .get(diagnostic_start..)
+            .ok_or("fixture diagnostic log shrank")?,
+    );
+    ensure!(
+        diagnostics.contains("native Docker container snapshot failed")
+            && diagnostics.contains("command_failed"),
+        "failed Docker observation omitted its normalized failure category"
     );
     start_fixture_engine(world)?;
     let scan = world.call(
@@ -497,8 +516,7 @@ fn unused_image_ownership(
                 "reserved",
             )
             .map_err(|e| e.to_string())?;
-            let database =
-                Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+            let database = world.authority()?;
             let store = DeploymentStore::new(database.clone());
             let target = devcoordinator2_control::deployment_state::RegisteredDeploymentTarget {
                 repository_id: repository.into(),
@@ -675,6 +693,12 @@ pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result
         "manual evidence plan remained blocked: {}",
         bounded_json(&plan)
     );
+    // Another run may be half-published or damaged after this exact plan was
+    // prepared. Its metadata must neither block nor join the selected cleanup.
+    let sibling = world
+        .repo
+        .join(".devcoordinator/test/logs/runs/malformed-cleanup-sibling");
+    fs::create_dir(&sibling).map_err(|error| error.to_string())?;
     let job = mcp(
         world,
         "storage_cleanup_start",
@@ -700,6 +724,11 @@ pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result
         !after["removed_at_ms"].is_null(),
         "evidence receipt did not persist"
     );
+    ensure!(
+        sibling.is_dir(),
+        "cleanup removed an unselected evidence run"
+    );
+    fs::remove_dir(&sibling).map_err(|error| error.to_string())?;
     let tail = world.log_tail(run_id, "main", "stdout");
     ensure!(
         tail.is_err()
@@ -1237,8 +1266,7 @@ pub(super) fn legacy_docker_consumers(world: &mut World) -> Result<(), String> {
         ids.push(id);
     }
     world.stop_daemon(false)?;
-    let database =
-        Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+    let database = world.authority()?;
     let store = DeploymentStore::new(database.clone());
     let deployment = "d1234567890abcdef";
     store
@@ -1592,15 +1620,22 @@ fn unused_volume_ownership(world: &mut World, repo: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn cli(world: &World, args: &[&str]) -> Result<Value, String> {
+fn cli(world: &World, operation: &str, params: Value) -> Result<Value, String> {
     let socket = format!("DEVCOORDINATOR2_SOCKET={}", world.socket.display());
     let program = world
         .harness
         .daemon
         .to_str()
         .ok_or("candidate path is not UTF-8")?;
-    let mut all = vec![socket.as_str(), program];
-    all.extend_from_slice(args);
+    let encoded = serde_json::to_string(&params).map_err(|e| e.to_string())?;
+    let all = vec![
+        socket.as_str(),
+        program,
+        "call",
+        operation,
+        "--params",
+        encoded.as_str(),
+    ];
     let text = command_stdout_as(
         world.harness.caller_uid,
         world.harness.caller_gid,
@@ -1629,6 +1664,10 @@ fn mcp(world: &World, name: &str, arguments: Value) -> Result<Value, String> {
 
 fn mcp_result(world: &World, name: &str, arguments: Value) -> Result<Value, String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let operation = devcoordinator2_api::mcp_tool(name)
+        .ok_or("unknown acceptance operation alias")?
+        .operation
+        .name;
     tokio::runtime::Runtime::new().map_err(|e|e.to_string())?.block_on(async {
         tokio::time::timeout(Duration::from_secs(30),async {
             let mut child=tokio::process::Command::new("/usr/bin/setpriv")
@@ -1643,7 +1682,7 @@ fn mcp_result(world: &World, name: &str, arguments: Value) -> Result<Value, Stri
             let initialized:Value=serde_json::from_str(&lines.next_line().await.map_err(|e|e.to_string())?.ok_or("MCP initialization closed")?).map_err(|e|e.to_string())?;
             ensure!(initialized["id"]==1 && initialized.get("error").is_none(),"MCP initialization failed");
             input.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.map_err(|e|e.to_string())?;
-            let request=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+            let request=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"call_operation","arguments":{"operation":operation,"params":arguments}}});
             input.write_all(format!("{request}\n").as_bytes()).await.map_err(|e|e.to_string())?;
             loop {
                 let line=lines.next_line().await.map_err(|e|e.to_string())?.ok_or("MCP tool call closed")?;
@@ -1896,8 +1935,7 @@ fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Resu
     // A sequence advance keeps an older in-flight scan from replacing this
     // controlled observation; the normal API still derives all safety facts.
     let age = |verified: Option<u64>| -> Result<(), String> {
-        let database =
-            Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+        let database = world.authority()?;
         let id = row["artifact_id"]
             .as_str()
             .ok_or("freshness artifact missing")?
@@ -1905,7 +1943,7 @@ fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Resu
         database.transaction(move|c| {
             c.execute("UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1",[])?;
             let sequence:i64=c.query_row("SELECT revision FROM storage_scan_state WHERE singleton=1",[],|r|r.get(0))?;
-            c.execute("UPDATE storage_artifacts SET record_json=json_set(record_json,'$.artifact.verified_at_ms',?1,'$.update_sequence',?2) WHERE artifact_id=?3",rusqlite::params![verified.map(|v|v as i64),sequence,id])?;
+            c.execute("UPDATE storage_artifacts SET record_json=jsonb_set(jsonb_set(record_json,'{artifact,verified_at_ms}',coalesce(to_jsonb($1::bigint),'null'::jsonb)),'{update_sequence}',to_jsonb($2::bigint)) WHERE artifact_id=$3",devcoordinator2_control::database::params![verified.map(|v|v as i64),sequence,id])?;
             Ok(())
         }).map_err(|e|e.to_string())?;
         database.close().map_err(|e| e.to_string())
@@ -1964,9 +2002,18 @@ fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Resu
 }
 
 pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String> {
+    // This scenario owns filesystem fixtures and creates no Docker consumers.
+    // Observe a real private engine so unrelated host-container churn cannot
+    // invalidate its cleanup prerequisites. Mount-consumer and engine-outage
+    // coverage remain separate acceptance scenarios with their own fixtures.
+    start_fixture_engine(world)?;
     world.write_config("schema = 2\n")?;
     world.write_owned("source.txt", "authoritative fixture source\n")?;
-    world.write_owned(".gitignore", "backups/\n")?;
+    world.write_owned("package.json", "{\"name\":\"storage-fixture\"}\n")?;
+    world.write_owned(
+        ".gitignore",
+        "backups/\nnode_modules/\n.serena/\n.devcoordinator/\n.devcoordinator.toml\n",
+    )?;
     world.git(&["add", "."])?;
     world.git(&[
         "-c",
@@ -2011,7 +2058,13 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         world.harness.caller_uid,
         world.harness.caller_gid,
     )?;
-    for name in ["clean-worktree", "dirty-worktree", "unique-worktree"] {
+    for name in [
+        "clean-worktree",
+        "dirty-worktree",
+        "unique-worktree",
+        "cache-worktree",
+        "metadata-worktree",
+    ] {
         let path = worktrees.join(name);
         fs::create_dir(&path).map_err(|e| e.to_string())?;
         chown_path(&path, world.harness.caller_uid, world.harness.caller_gid)?;
@@ -2027,6 +2080,96 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         }
         trees.push(path);
     }
+    let cache_path = trees[3].join("node_modules");
+    fs::create_dir_all(&cache_path).map_err(|e| e.to_string())?;
+    fs::write(cache_path.join(".package-lock.json"), "{}\n").map_err(|e| e.to_string())?;
+    chown_path(
+        &cache_path,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    chown_path(
+        &cache_path.join(".package-lock.json"),
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    let dirty_cache_path = trees[1].join(".serena");
+    fs::create_dir_all(&dirty_cache_path).map_err(|e| e.to_string())?;
+    fs::write(dirty_cache_path.join("settings.json"), "{}\n").map_err(|e| e.to_string())?;
+    chown_path(
+        &dirty_cache_path,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    chown_path(
+        &dirty_cache_path.join("settings.json"),
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    let metadata_root = trees[4].join(".devcoordinator");
+    let current_root = metadata_root.join("test/current");
+    fs::create_dir_all(&current_root).map_err(|e| e.to_string())?;
+    chown_path(
+        &metadata_root,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    chown_path(
+        &metadata_root.join("test"),
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    chown_path(
+        &current_root,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    let metadata = [
+        (".devcoordinator.toml", "schema = 2\n"),
+        (".devcoordinator/test/current/check-plan.json", "{}\n"),
+        (".devcoordinator/test/current/check-report.json", "{}\n"),
+        (
+            ".devcoordinator/test/current/container-lifecycle.json",
+            "{}\n",
+        ),
+        (".devcoordinator/test/current/env", "fixture=1\n"),
+        (
+            ".devcoordinator/test/current/summary.json",
+            "{\"status\":\"completed\"}\n",
+        ),
+        (".devcoordinator/test/history.json", "[]\n"),
+        (".devcoordinator/test/evidence.json", "{}\n"),
+    ];
+    for (relative, body) in metadata {
+        let path = trees[4].join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&path, body).map_err(|e| e.to_string())?;
+        chown_path(&path, world.harness.caller_uid, world.harness.caller_gid)?;
+    }
+    let logs_root = metadata_root.join("test/logs");
+    let runs_root = logs_root.join("runs");
+    fs::create_dir_all(&runs_root).map_err(|e| e.to_string())?;
+    for path in [&logs_root, &runs_root] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o711)).map_err(|e| e.to_string())?;
+        chown_path(path, 0, 0)?;
+    }
+    for name in ["protected-child", "leased-child"] {
+        let path = trees[0].join(name);
+        fs::create_dir(&path).map_err(|e| e.to_string())?;
+        chown_path(&path, world.harness.caller_uid, world.harness.caller_gid)?;
+    }
+    data(&world.call(
+        "storage.roots.set",
+        json!({
+            "repository_id":repo,
+            "expected_revision":0,
+            "label":"Nested worktree fixtures",
+            "path":trees[0],
+            "kind":"unknown"
+        }),
+    )?)?;
     fs::write(trees[1].join("source.txt"), "valuable uncommitted changes")
         .map_err(|e| e.to_string())?;
     fs::write(trees[2].join("source.txt"), "valuable unique commit").map_err(|e| e.to_string())?;
@@ -2076,6 +2219,8 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
     let clean = row("clean-worktree")?;
     let dirty = row("dirty-worktree")?;
     let unique = row("unique-worktree")?;
+    let ignored = row("metadata-worktree")?;
+    let cache = row("node_modules")?;
     ensure!(
         dirty["deletable"] == false && unique["deletable"] == false,
         "valuable worktree was labelled safe"
@@ -2089,6 +2234,213 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         reason_codes(&unique).contains(&json!("unique_worktree_commits")),
         "unique commit reason missing"
     );
+    ensure!(
+        !reason_codes(&cache).contains(&json!("git_baseline_unverified")),
+        "linked-worktree cache used the canonical Git root"
+    );
+    let dirty_intent = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":dirty["artifact_id"],"expected_revision":dirty["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Preserve the dirty worktree blockers while recording intent"}),
+    )?;
+    ensure!(
+        dirty_intent["deletable"] == json!(false)
+            && reason_codes(&dirty_intent).contains(&json!("dirty_worktree")),
+        "bounded dirty worktree registration did not preserve blockers: {}",
+        bounded_json(&dirty_intent)
+    );
+    let ignored_intent = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":ignored["artifact_id"],"expected_revision":ignored["revision"],"repository_id":repo,"effect":"source_worktree","reviewed_ignored_files":metadata.iter().map(|(path,body)| json!({"path":path,"sha256":sha256_hex(body.as_bytes())})).collect::<Vec<_>>(),"reason":"Review exact generated worktree metadata before recording intent"}),
+    )?;
+    ensure!(
+        ignored_intent["deletable"] == json!(false)
+            && (reason_codes(&ignored_intent).contains(&json!("unreviewed_ignored_files"))
+                || reason_codes(&ignored_intent).contains(&json!("ignored_files_unverified"))),
+        "bounded ignored worktree registration did not preserve blockers: {}",
+        bounded_json(&ignored_intent)
+    );
+    let history_path = trees[4].join(".devcoordinator/test/history.json");
+    fs::write(&history_path, "[\"changed\"]\n").map_err(|e| e.to_string())?;
+    let changed_inventory = scanned(world, &repo, "changed-reviewed-metadata")?;
+    let changed_worktree = changed_inventory["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "metadata-worktree"))
+        .cloned()
+        .ok_or("changed metadata worktree missing")?;
+    ensure!(
+        reason_codes(&changed_worktree).contains(&json!("ignored_review_file_changed"))
+            || reason_codes(&changed_worktree).contains(&json!("unreviewed_ignored_files")),
+        "changed reviewed metadata was accepted: {}",
+        bounded_json(&changed_worktree)
+    );
+    fs::write(&history_path, "[]\n").map_err(|e| e.to_string())?;
+    let refreshed = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":changed_worktree["artifact_id"],"expected_revision":changed_worktree["revision"],"repository_id":repo,"effect":"source_worktree","reviewed_ignored_files":metadata.iter().map(|(path,body)| json!({"path":path,"sha256":sha256_hex(body.as_bytes())})).collect::<Vec<_>>(),"reason":"Refresh changed metadata review"}),
+    )?;
+    ensure!(
+        refreshed["deletable"] == json!(false)
+            && reason_codes(&refreshed).contains(&json!("ignored_review_pending")),
+        "changed metadata review was not invalidated before rescanning: {}",
+        bounded_json(&refreshed)
+    );
+    let database = world.authority()?;
+    let logs = devcoordinator2_control::test_logs::TestLogService::new(
+        database.clone(),
+        devcoordinator2_control::repository::Registry::new(database),
+    );
+    let mut retention_cursor = None;
+    for _ in 0..64 {
+        let step = logs
+            .run_maintenance_step(retention_cursor, 32, Duration::from_secs(2))
+            .map_err(|error| error.message)?;
+        retention_cursor = step.next_worktree_id;
+        if step.complete {
+            break;
+        }
+    }
+    let inventory = scanned(world, &repo, "reviewed-metadata-after-retention")?;
+    let rows = inventory["artifacts"]
+        .as_array()
+        .ok_or("reviewed metadata inventory missing")?;
+    let reviewed_worktree = rows
+        .iter()
+        .find(|row| row["name"] == "metadata-worktree")
+        .cloned()
+        .ok_or("reviewed worktree missing after retention")?;
+    ensure!(
+        !reason_codes(&reviewed_worktree).contains(&json!("unreviewed_ignored_files"))
+            && !reason_codes(&reviewed_worktree).contains(&json!("ignored_files_unverified")),
+        "exact reviewed metadata remained blocked after supported retention: {}",
+        bounded_json(&reviewed_worktree)
+    );
+    let reviewed_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[reviewed_worktree["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        reviewed_plan["ready"] == json!(true),
+        "reviewed metadata worktree cleanup plan was not ready: {}",
+        bounded_json(&reviewed_plan)
+    );
+    let reviewed_job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":reviewed_plan["plan_id"],"idempotency_key":"remove-reviewed-metadata-worktree"}),
+    )?;
+    let reviewed_result = wait_job(
+        world,
+        reviewed_job["job_id"]
+            .as_str()
+            .ok_or("reviewed cleanup job missing")?,
+    )?;
+    ensure!(
+        reviewed_result["state"] == "completed" && !trees[4].exists(),
+        "reviewed metadata worktree cleanup failed: {}",
+        bounded_json(&reviewed_result)
+    );
+    let cache_intent = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":cache["artifact_id"],"expected_revision":cache["revision"],"repository_id":repo,"effect":"rebuildable","reason":"Validated linked-worktree dependency cache"}),
+    )?;
+    ensure!(
+        cache_intent["deletable"] == json!(true),
+        "linked-worktree cache registration remained blocked: {}",
+        bounded_json(&cache_intent)
+    );
+    let cache_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[cache["artifact_id"]]}),
+    )?;
+    ensure!(
+        cache_plan["ready"] == json!(true),
+        "linked-worktree cache cleanup plan was not ready: {}",
+        bounded_json(&cache_plan)
+    );
+    let cache_job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":cache_plan["plan_id"],"idempotency_key":"remove-linked-worktree-cache"}),
+    )?;
+    let cache_result = wait_job(
+        world,
+        cache_job["job_id"]
+            .as_str()
+            .ok_or("cache cleanup job missing")?,
+    )?;
+    ensure!(
+        cache_result["state"] == "completed"
+            && !cache_path.exists()
+            && trees[3].join("package.json").is_file(),
+        "linked-worktree cache cleanup did not preserve tracked source: {}",
+        bounded_json(&cache_result)
+    );
+    let protected_child = row("protected-child")?;
+    let leased_child = row("leased-child")?;
+    let protected = mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":protected_child["artifact_id"],"expected_revision":protected_child["revision"],"protected":true}),
+    )?;
+    let refused = world.call(
+        "storage.register",
+        json!({"artifact_id":clean["artifact_id"],"expected_revision":clean["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Protected nested fixture must remain blocked"}),
+    )?;
+    ensure!(
+        error_code(&refused) == Some("storage_blocked")
+            && refused["error"]["message"] == "protected_shared_data",
+        "protected nested worktree registration was accepted: {}",
+        bounded_json(&refused)
+    );
+    let protected_revision = protected["revision"]
+        .as_u64()
+        .ok_or("protected child revision missing")?;
+    data(&world.call(
+        "storage.protection.set",
+        json!({"artifact_id":protected_child["artifact_id"],"expected_revision":protected_revision,"protected":false}),
+    )?)?;
+    let lease = mcp(
+        world,
+        "storage_lease_set",
+        json!({"artifact_ids":[leased_child["artifact_id"]],"duration_seconds":3600}),
+    )?;
+    let refused = world.call(
+        "storage.register",
+        json!({"artifact_id":clean["artifact_id"],"expected_revision":clean["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Leased nested fixture must remain blocked"}),
+    )?;
+    ensure!(
+        error_code(&refused) == Some("storage_blocked")
+            && refused["error"]["message"] == "active_lease",
+        "leased nested worktree registration was accepted: {}",
+        bounded_json(&refused)
+    );
+    data(&world.call(
+        "storage.lease.release",
+        json!({"lease_id":lease["lease_id"]}),
+    )?)?;
+    for child in [&protected_child, &leased_child] {
+        let current = mcp(
+            world,
+            "storage_artifact_get",
+            json!({"artifact_id":child["artifact_id"]}),
+        )?;
+        let registered_child = mcp(
+            world,
+            "storage_register",
+            json!({"artifact_id":child["artifact_id"],"expected_revision":current["revision"],"repository_id":repo,"effect":"rebuildable","reason":"Nested fixture is disposable after safety release"}),
+        )?;
+        ensure!(
+            registered_child["deletable"] == json!(true),
+            "nested fixture remained blocked after safety release: {}",
+            bounded_json(&registered_child)
+        );
+    }
     let registered = mcp(
         world,
         "storage_register",
@@ -2099,6 +2451,52 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         "clean retired worktree remained blocked: {}",
         bounded_json(&registered)
     );
+    let renewed = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":clean["artifact_id"],"expected_revision":registered["revision"],"repository_id":repo,"effect":"source_worktree","reason":"Renew existing source-worktree disposal intent"}),
+    )?;
+    ensure!(
+        renewed["deletable"] == json!(true),
+        "existing cleanup-owned source-worktree intent was not bounded: {}",
+        bounded_json(&renewed)
+    );
+    fs::write(trees[0].join("source.txt"), "dirty after intent\n").map_err(|e| e.to_string())?;
+    let guarded_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[clean["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    let guarded_job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":guarded_plan["plan_id"],"idempotency_key":"reject-changed-worktree-after-intent"}),
+    )?;
+    let guarded_result = wait_job(
+        world,
+        guarded_job["job_id"]
+            .as_str()
+            .ok_or("guarded cleanup job missing")?,
+    )?;
+    ensure!(
+        matches!(guarded_result["state"].as_str(), Some("failed" | "partial")) && trees[0].exists(),
+        "final worktree validation did not reject dirty data after intent: {}",
+        bounded_json(&guarded_result)
+    );
+    fs::write(
+        trees[0].join("source.txt"),
+        "authoritative fixture source\n",
+    )
+    .map_err(|e| e.to_string())?;
+    let inventory = scanned(world, &repo, "worktree-clean-after-intent-rejection")?;
+    let rows = inventory["artifacts"]
+        .as_array()
+        .ok_or("restored storage inventory missing")?;
+    let clean = rows
+        .iter()
+        .find(|row| row["name"] == "clean-worktree")
+        .cloned()
+        .ok_or("restored clean worktree missing")?;
     let old = row("old")?;
     let recent = row("recent")?;
     let latest = row("latest")?;
@@ -2159,6 +2557,454 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         fs::read_to_string(world.repo.join("source.txt")).map_err(|e| e.to_string())?
             == "authoritative fixture source\n",
         "cleanup changed the source repository"
+    );
+    native_backup_retirement(world, &repo)?;
+    Ok(())
+}
+
+fn require_ready_cleanup_plan(plan: &Value, step: &str) -> Result<(), String> {
+    let blockers = plan["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|item| item["blockers"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .filter(|code| {
+            !code.is_empty()
+                && code.len() <= 64
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        })
+        .take(16)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
+    ensure!(
+        plan["ready"] == true,
+        "cleanup prerequisite failed before {}: blockers=[{}]",
+        step,
+        blockers
+    );
+    Ok(())
+}
+
+#[test]
+fn cleanup_readiness_diagnostic_omits_non_code_content() {
+    let blocked = json!({"ready":false,"items":[{"name":"PRIVATE_NAME",
+        "blockers":["docker_observation_incomplete","PRIVATE_VALUE","private path/value"]}]});
+    assert_eq!(
+        require_ready_cleanup_plan(&blocked, "backup mutation").unwrap_err(),
+        "cleanup prerequisite failed before backup mutation: blockers=[docker_observation_incomplete]"
+    );
+    assert!(
+        require_ready_cleanup_plan(&json!({"ready":true,"items":[]}), "backup mutation").is_ok()
+    );
+}
+
+fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String> {
+    let cutover = world.state.join("cutover");
+    fs::create_dir(&cutover).map_err(|e| e.to_string())?;
+    fs::set_permissions(&cutover, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    // Historical snapshots stay SQLite fixtures; the current authority is
+    // native PostgreSQL and is never opened through the legacy adapter.
+    let authority = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    authority
+        .execute_batch(include_str!(
+            "../../../../persistence/tests/fixtures/sqlite-schema-34/schema.sql"
+        ))
+        .map_err(|e| e.to_string())?;
+    authority
+        .execute(
+            "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','34')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    let (root_path,name,registered,uid,last_seen):(String,String,String,i64,String)=world.authority_connection()?.query_row("SELECT root_path,display_name,registered_at,registered_by_uid,last_seen_at FROM repositories WHERE repository_id=$1",[repo],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).map_err(|e|e.to_string())?;
+    authority.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params![repo,root_path,name,registered,uid,last_seen]).map_err(|e|e.to_string())?;
+    let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+    let generations = [
+        ("native-pinned", "rolled_back"),
+        ("native-active", "recovered"),
+        ("native-old", "committed"),
+        ("native-recent", "committed"),
+        ("native-latest", "committed"),
+        ("native-prepared", "prepared"),
+        ("native-rolling-back", "rolling_back"),
+        ("native-invalid", "committed"),
+        ("native-extra", "committed"),
+        ("native-nested", "committed"),
+        ("native-link", "committed"),
+        ("native-pending", "committed"),
+    ];
+    for (index, (name, status)) in generations.iter().enumerate() {
+        let generation = cutover.join(name);
+        fs::create_dir(&generation).map_err(|e| e.to_string())?;
+        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+        // Keep native-old as a historical schema-2 snapshot to exercise the
+        // original retirement checks; the latest generations use real pg_dump.
+        let postgres = matches!(*name, "native-recent" | "native-latest");
+        let backup = generation.join(if postgres {
+            "authority-before.pgdump"
+        } else {
+            "authority-before.sqlite3"
+        });
+        if postgres {
+            world
+                .authority()?
+                .backup(backup.clone())
+                .map_err(|e| e.to_string())?;
+        } else {
+            authority
+                .backup(rusqlite::MAIN_DB, &backup, None)
+                .map_err(|e| e.to_string())?;
+        }
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+        write_private_json(
+            &generation.join("installation-snapshot.json"),
+            &json!({"schema":if postgres {3} else {2},"status":status,"transaction_dir":generation,
+                "entries":[],"backup_sha256":if *name == "native-invalid" {"0".repeat(64)} else {sha256_hex(&fs::read(&backup).map_err(|e|e.to_string())?)},
+                "candidate_commit":"0".repeat(40)}),
+        )?;
+        File::open(generation.join("installation-snapshot.json"))
+            .and_then(|file| {
+                file.set_times(fs::FileTimes::new().set_modified(
+                    std::time::UNIX_EPOCH
+                        + Duration::from_millis(now - 20_000 + index as u64 * 1000),
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    drop(authority);
+    write_private_json(
+        &cutover.join("native-pending/retirement-pending.json"),
+        &json!({"status":"awaiting_acceptance"}),
+    )?;
+    fs::write(cutover.join("native-extra/.env"), "PRIVATE_EXTRA_FILE")
+        .map_err(|e| e.to_string())?;
+    fs::create_dir(cutover.join("native-nested/sessions")).map_err(|e| e.to_string())?;
+    fs::write(
+        cutover.join("native-nested/sessions/chat.jsonl"),
+        "PRIVATE_CHAT_HISTORY",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::remove_file(cutover.join("native-link/authority-before.sqlite3"))
+        .map_err(|e| e.to_string())?;
+    std::os::unix::fs::symlink(
+        cutover.join("native-recent/authority-before.pgdump"),
+        cutover.join("native-link/authority-before.sqlite3"),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::create_dir(cutover.join("generic-disguise")).map_err(|e| e.to_string())?;
+    fs::write(cutover.join("generic-disguise/backup-manifest.json"), "{}")
+        .map_err(|e| e.to_string())?;
+    for suffix in ["-wal", "-shm"] {
+        fs::write(
+            cutover.join(format!("native-old/authority-before.sqlite3{suffix}")),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for (path, kind) in [
+        (world.state.clone(), "backup"),
+        (world.state.join("deployments"), "backup"),
+        (cutover.join("native-old"), "backup"),
+        (cutover.clone(), "dependency_cache"),
+    ] {
+        let denied = world.call(
+            "storage.roots.set",
+            json!({"repository_id":repo,
+            "expected_revision":0,"label":"Must remain protected","path":path,"kind":kind}),
+        )?;
+        ensure!(
+            denied["ok"] == false && denied["error"]["message"] == "protected_system_data",
+            "native backup exception admitted authority state or another root kind"
+        );
+    }
+    data(&world.call("storage.roots.set", json!({"repository_id":repo,
+        "expected_revision":0,"label":"Native recovery generations","path":cutover,"kind":"backup"}))?)?;
+
+    // An open file is real current use, even for a finalized old snapshot.
+    let active = File::open(cutover.join("native-active/authority-before.sqlite3"))
+        .map_err(|e| e.to_string())?;
+    let inventory = scanned(world, repo, "native-backup-inventory")?;
+    let rows = inventory["artifacts"]
+        .as_array()
+        .ok_or("native inventory missing")?;
+    let row = |name: &str| {
+        rows.iter()
+            .find(|r| r["name"] == name)
+            .cloned()
+            .ok_or_else(|| format!("native backup {name} missing"))
+    };
+    let old = row("native-old")?;
+    let in_use = row("native-active")?;
+    ensure!(
+        in_use["deletable"] == false
+            && in_use["reasons"]
+                .as_array()
+                .is_some_and(|v| v.contains(&json!("active_process"))),
+        "open native backup protection was not verified: {}",
+        bounded_json(&in_use)
+    );
+    for name in [
+        "native-prepared",
+        "native-rolling-back",
+        "native-invalid",
+        "native-extra",
+        "native-nested",
+        "native-link",
+        "native-pending",
+        "generic-disguise",
+    ] {
+        ensure!(
+            row(name)?["deletable"] == false,
+            "unverified native generation was removable: {name}"
+        );
+    }
+    for name in ["native-recent", "native-latest"] {
+        ensure!(
+            row(name)?["reasons"]
+                .as_array()
+                .is_some_and(|v| v.contains(&json!("required_recovery"))),
+            "incomplete or damaged snapshots displaced a verified recovery generation"
+        );
+    }
+    let pin = mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":row("native-pinned")?["artifact_id"],
+        "expected_revision":row("native-pinned")?["revision"],"protected":true}),
+    )?;
+    let protected_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[pin["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        protected_plan["ready"] == false,
+        "native recovery pin was bypassed"
+    );
+    drop(active);
+
+    let expect_blocked =
+        |world: &World, plan: &Value, key: &str, code: &str| -> Result<(), String> {
+            require_ready_cleanup_plan(plan, key)?;
+            let job = mcp(
+                world,
+                "storage_cleanup_start",
+                json!({"plan_id":plan["plan_id"],"idempotency_key":key}),
+            )?;
+            let result = wait_job(
+                world,
+                job["job_id"]
+                    .as_str()
+                    .ok_or("blocked cleanup job missing")?,
+            )?;
+            ensure!(
+                result["state"] == "failed"
+                    && result["receipts"][0]["status"] == "blocked"
+                    && result["receipts"][0]["code"] == code,
+                "changed native backup was not blocked before removal: {}",
+                bounded_json(&result)
+            );
+            Ok(())
+        };
+
+    // Changing the root must not make the original child inode eligible.
+    let displaced = world.state.join("cutover-displaced");
+    let replaced = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    require_ready_cleanup_plan(&replaced, "native-root-replaced")?;
+    fs::rename(&cutover, &displaced).map_err(|e| e.to_string())?;
+    fs::create_dir(&cutover).map_err(|e| e.to_string())?;
+    fs::rename(displaced.join("native-old"), cutover.join("native-old"))
+        .map_err(|e| e.to_string())?;
+    expect_blocked(
+        world,
+        &replaced,
+        "native-root-replaced",
+        "configured_root_identity_changed",
+    )?;
+    ensure!(
+        cutover
+            .join("native-old/authority-before.sqlite3")
+            .is_file(),
+        "changed root was mutated"
+    );
+    fs::rename(cutover.join("native-old"), displaced.join("native-old"))
+        .map_err(|e| e.to_string())?;
+    fs::remove_dir(&cutover).map_err(|e| e.to_string())?;
+    std::os::unix::fs::symlink(&displaced, &cutover).map_err(|e| e.to_string())?;
+    let alias = world.call(
+        "storage.roots.set",
+        json!({"root_id":"native-alias", "repository_id":repo,
+        "expected_revision":0,"label":"Forbidden native alias","path":cutover,"kind":"backup"}),
+    )?;
+    ensure!(alias["ok"] == false, "symlinked native root was registered");
+    fs::remove_file(&cutover).map_err(|e| e.to_string())?;
+    fs::rename(&displaced, &cutover).map_err(|e| e.to_string())?;
+    scanned(world, repo, "native-root-restored")?;
+
+    let generation = cutover.join("native-old");
+    let displaced_generation = cutover.join("native-old-displaced");
+    let replaced = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    require_ready_cleanup_plan(&replaced, "native-generation-replaced")?;
+    fs::rename(&generation, &displaced_generation).map_err(|e| e.to_string())?;
+    fs::create_dir(&generation).map_err(|e| e.to_string())?;
+    expect_blocked(
+        world,
+        &replaced,
+        "native-generation-replaced",
+        "identity_changed",
+    )?;
+    fs::remove_dir(&generation).map_err(|e| e.to_string())?;
+    fs::rename(&displaced_generation, &generation).map_err(|e| e.to_string())?;
+
+    scanned(world, repo, "native-generation-restored")?;
+    let changed = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    require_ready_cleanup_plan(&changed, "native-contents-changed")?;
+    fs::write(generation.join(".env"), "PRIVATE_ADDED_AFTER_PLAN").map_err(|e| e.to_string())?;
+    expect_blocked(
+        world,
+        &changed,
+        "native-contents-changed",
+        "native_backup_contents_changed",
+    )?;
+    ensure!(
+        generation.join("authority-before.sqlite3").is_file(),
+        "unexpected content allowed partial native removal"
+    );
+    fs::remove_file(generation.join(".env")).map_err(|e| e.to_string())?;
+
+    scanned(world, repo, "native-contents-restored")?;
+    let changed = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    require_ready_cleanup_plan(&changed, "native-backup-bytes-changed")?;
+    let backup_path = generation.join("authority-before.sqlite3");
+    let header_path = generation.join("installation-snapshot.json");
+    let backup_bytes = fs::read(&backup_path).map_err(|e| e.to_string())?;
+    let header_bytes = fs::read(&header_path).map_err(|e| e.to_string())?;
+    let header_time = fs::metadata(&header_path)
+        .and_then(|m| m.modified())
+        .map_err(|e| e.to_string())?;
+    let changed_backup = rusqlite::Connection::open(&backup_path).map_err(|e| e.to_string())?;
+    changed_backup
+        .execute("CREATE TABLE retirement_changed_fixture(value INTEGER)", [])
+        .map_err(|e| e.to_string())?;
+    drop(changed_backup);
+    let mut header: Value = serde_json::from_slice(&header_bytes).map_err(|e| e.to_string())?;
+    header["backup_sha256"] = json!(sha256_hex(
+        &fs::read(&backup_path).map_err(|e| e.to_string())?
+    ));
+    write_private_json(&header_path, &header)?;
+    expect_blocked(
+        world,
+        &changed,
+        "native-backup-bytes-changed",
+        "backup_changed",
+    )?;
+    fs::write(&backup_path, &backup_bytes).map_err(|e| e.to_string())?;
+    fs::write(&header_path, &header_bytes).map_err(|e| e.to_string())?;
+    File::open(&header_path)
+        .and_then(|file| file.set_times(fs::FileTimes::new().set_modified(header_time)))
+        .map_err(|e| e.to_string())?;
+
+    scanned(world, repo, "native-backup-bytes-restored")?;
+    let floor = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    require_ready_cleanup_plan(&floor, "native-retention-floor-changed")?;
+    let retained = cutover.join("native-latest/authority-before.pgdump");
+    let retained_bytes = fs::read(&retained).map_err(|e| e.to_string())?;
+    fs::write(&retained, b"damaged after planning").map_err(|e| e.to_string())?;
+    expect_blocked(
+        world,
+        &floor,
+        "native-retention-floor-changed",
+        "required_recovery",
+    )?;
+    fs::write(&retained, &retained_bytes).map_err(|e| e.to_string())?;
+
+    let refreshed = scanned(world, repo, "native-backup-before-cleanup")?;
+    let active = refreshed["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["name"] == "native-active"))
+        .ok_or("released native backup missing")?;
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[old["artifact_id"], active["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        plan["ready"] == true,
+        "native backup plan failed: {}",
+        bounded_json(&plan)
+    );
+    let job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"native-retirement"}),
+    )?;
+    let result = wait_job(
+        world,
+        job["job_id"].as_str().ok_or("native cleanup job missing")?,
+    )?;
+    ensure!(
+        result["state"] == "completed",
+        "native backup removal failed: {}",
+        bounded_json(&result)
+    );
+    ensure!(
+        !generation.exists() && !cutover.join("native-active").exists(),
+        "obsolete native generations remained"
+    );
+    for (name, _) in generations {
+        if name != "native-old" && name != "native-active" {
+            ensure!(
+                cutover.join(name).is_dir(),
+                "native cleanup removed a retained generation: {name}"
+            );
+        }
+    }
+    ensure!(
+        fs::read(cutover.join("native-extra/.env")).map_err(|e| e.to_string())?
+            == b"PRIVATE_EXTRA_FILE"
+            && fs::read(cutover.join("native-nested/sessions/chat.jsonl"))
+                .map_err(|e| e.to_string())?
+                == b"PRIVATE_CHAT_HISTORY",
+        "native retirement changed credential or chat files"
+    );
+    data(&world.call("repository.list", json!({}))?)?;
+    ensure!(
+        world
+            .authority_connection()?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id=$1)",
+                [repo],
+                |row| row.get::<_, bool>(0)
+            )
+            .map_err(|e| e.to_string())?,
+        "native retirement removed authority state"
     );
     Ok(())
 }
@@ -2283,14 +3129,8 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     let began = Instant::now();
     let started = cli(
         world,
-        &[
-            "storage",
-            "scan",
-            "--repository-id",
-            &repo,
-            "--idempotency-key",
-            "storage-initial",
-        ],
+        "storage.scan",
+        json!({"repository_id":repo,"idempotency_key":"storage-initial"}),
     )?;
     world
         .measurements
@@ -2396,15 +3236,8 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     let plan_id = plan["plan_id"].as_str().ok_or("plan id missing")?;
     let started = cli(
         world,
-        &[
-            "storage",
-            "cleanup",
-            "start",
-            "--plan-id",
-            plan_id,
-            "--idempotency-key",
-            "remove-cache",
-        ],
+        "storage.cleanup.start",
+        json!({"plan_id":plan_id,"idempotency_key":"remove-cache"}),
     )?;
     let job_id = data(&started)?["job_id"]
         .as_str()
@@ -2427,15 +3260,8 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     );
     let retried = cli(
         world,
-        &[
-            "storage",
-            "cleanup",
-            "start",
-            "--plan-id",
-            plan_id,
-            "--idempotency-key",
-            "remove-cache",
-        ],
+        "storage.cleanup.start",
+        json!({"plan_id":plan_id,"idempotency_key":"remove-cache"}),
     )?;
     ensure!(
         data(&retried)?["job_id"] == job_id,
@@ -2798,12 +3624,11 @@ fn caller_observation_safety(world: &World, repository: &str) -> Result<(), Stri
             data(&ready)?["ready"] == true,
             "negative owner baseline not ready"
         );
-        let db =
-            Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+        let db = world.authority()?;
         let read = |id: String| -> Result<String, String> {
             db.call(move |c| {
                 c.query_row(
-                    "SELECT record_json FROM storage_artifacts WHERE artifact_id=?1",
+                    "SELECT record_json FROM storage_artifacts WHERE artifact_id=$1",
                     [id],
                     |r| r.get(0),
                 )
@@ -2815,7 +3640,7 @@ fn caller_observation_safety(world: &World, repository: &str) -> Result<(), Stri
             db.transaction(move |c| {
                 c.execute("UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1", [])?;
                 let sequence:i64=c.query_row("SELECT revision FROM storage_scan_state WHERE singleton=1",[],|r|r.get(0))?;
-                let changed=c.execute("UPDATE storage_artifacts SET record_json=json_set(?1,'$.update_sequence',?2) WHERE artifact_id=?3",rusqlite::params![value,sequence,id])?;
+                let changed=c.execute("UPDATE storage_artifacts SET record_json=jsonb_set($1::jsonb,'{update_sequence}',to_jsonb($2::bigint)) WHERE artifact_id=$3",devcoordinator2_control::database::params![value,sequence,id])?;
                 if changed != 1 { return Err(devcoordinator2_control::database::DatabaseError::Domain(devcoordinator2_api::ProtocolError::new(devcoordinator2_api::ErrorCode::StorageBlocked,"fixture_record_missing"))); }
                 Ok(())
             }).map_err(|e|e.to_string())
@@ -3340,23 +4165,26 @@ fn queued_origin_survives_restart(
         if local {
             // Model legacy and invalid private formats for this isolated pending
             // request only. Preserve its UID, digest, actor, plan and state.
-            let db =
-                Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+            let db = world.authority()?;
             let id = job_id.clone();
             let expression = match origin {
-                "typed-nonmanual" => "json_set(request_json,'$.local_manual',json('false'))",
-                "legacy" => "json_extract(request_json,'$.parameters')",
-                "unknown-version" => "json_set(request_json,'$.storage_request_version','2')",
-                "malformed-origin" => "json_set(request_json,'$.local_manual','true')",
-                "null-parameters" => "json_set(request_json,'$.parameters',NULL)",
-                "wrong-parameter-type" => "json_set(request_json,'$.parameters.plan_id',1)",
+                "typed-nonmanual" => "jsonb_set(request_json,'{local_manual}','false'::jsonb)",
+                "legacy" => "request_json->'parameters'",
+                "unknown-version" => {
+                    "jsonb_set(request_json,'{storage_request_version}','\"2\"'::jsonb)"
+                }
+                "malformed-origin" => "jsonb_set(request_json,'{local_manual}','\"true\"'::jsonb)",
+                "null-parameters" => "jsonb_set(request_json,'{parameters}','null'::jsonb)",
+                "wrong-parameter-type" => {
+                    "jsonb_set(request_json,'{parameters,plan_id}','1'::jsonb)"
+                }
                 "mismatched-plan" => {
-                    "json_set(request_json,'$.parameters.plan_id','different-plan')"
+                    "jsonb_set(request_json,'{parameters,plan_id}','\"different-plan\"'::jsonb)"
                 }
                 _ => unreachable!(),
             };
             let changed = db.call(move |c| {
-                c.execute(&format!("UPDATE storage_jobs SET request_json={expression} WHERE job_id=?1 AND json_extract(request_json,'$.storage_request_version')='1'"), [id]).map_err(devcoordinator2_control::database::DatabaseError::from)
+                c.execute(&format!("UPDATE storage_jobs SET request_json={expression} WHERE job_id=$1 AND request_json->>'storage_request_version'='1'"), [id]).map_err(devcoordinator2_control::database::DatabaseError::from)
             }).map_err(|e|e.to_string())?;
             ensure!(
                 changed == 1,
@@ -3626,13 +4454,8 @@ fn generated_output_safety(world: &World, repo: &str) -> Result<(), String> {
     scanned(world, repo, "generated-inactive")?;
     let request = cli(
         world,
-        &[
-            "storage",
-            "cleanup",
-            "plan",
-            "--artifact-id",
-            build["artifact_id"].as_str().ok_or("build id missing")?,
-        ],
+        "storage.cleanup.plan",
+        json!({"artifact_ids":[build["artifact_id"].as_str().ok_or("build id missing")?]}),
     )?;
     let plan = data(&request)?;
     ensure!(
@@ -3641,15 +4464,8 @@ fn generated_output_safety(world: &World, repo: &str) -> Result<(), String> {
     );
     let started = cli(
         world,
-        &[
-            "storage",
-            "cleanup",
-            "start",
-            "--plan-id",
-            plan["plan_id"].as_str().ok_or("build plan missing")?,
-            "--idempotency-key",
-            "remove-compiled-output",
-        ],
+        "storage.cleanup.start",
+        json!({"plan_id":plan["plan_id"].as_str().ok_or("build plan missing")?,"idempotency_key":"remove-compiled-output"}),
     )?;
     let done = wait_job(
         world,

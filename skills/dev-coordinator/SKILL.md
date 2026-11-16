@@ -6,31 +6,37 @@ description: Coordinate host-visible local development tests, including browser/
 # DevCoordinator2
 
 Use the installed `devcoordinator2` client from the intended Git worktree.
-The client and MCP server share one typed JSON contract; prefer their current
-`--help` output over remembered command shapes.
+The CLI, MCP server, daemon and edge share the generated protocol-v3 operation
+catalog. Discover names with `operations`, inspect one input with `schema`, then
+use `call <operation> --params JSON` or `--params-file /absolute/params.json`.
+Parameters files and stdin (`--params-file -`) are limited to 64 KiB. The old
+domain command tree is removed. MCP discovery exposes `operations`,
+`operation_schema`, and `call_operation`; pass the same operation name and JSON
+parameters. Follow returned cursors to inspect every page; a first page is not
+a complete ledger.
 
 ```bash
 devcoordinator2 --help
-devcoordinator2 test --help
-devcoordinator2 deployment --help
-devcoordinator2 health --help
+devcoordinator2 operations --prefix test.
+devcoordinator2 schema test.start
+devcoordinator2 call test.start --params '{"path":"/absolute/repository","test":"checks"}'
 ```
 
 ## Choose the product-owned surface
 
-- Use `test start|retry|status|stop|event|list|capacity` for repository tests.
-- Use `test log catalog|tail|search|range|failure-context|retention` for
+- Use `test.start`, `test.retry`, `test.status`, `test.stop`, `test.list` and `test.capacity.*` for repository tests.
+- Use `test.log.catalog`, `test.log.tail`, `test.log.search`, `test.log.range`, `test.log.failure_context` and `test.log.retention.*` for
   progressive test-log discovery, bounded retrieval, and retention settings.
-- Use `test evidence show|image|feedback` for retained formal-UI journey cells,
+- Use `test.evidence.get`, `test.evidence.image` and `test.evidence.feedback.create` for retained formal-UI journey cells,
   integrity-checked screenshot chunks, and screenshot-anchored Plan feedback.
-- Use `test artifact catalog|file|materialize` for declared hash-bound evidence
+- Use `test.artifact.catalog`, `test.artifact.file` and the local `materialize` helper for declared hash-bound evidence
   trees. Catalogue first; materialization writes only a new caller-owned local
   destination and rechecks every file/tree hash.
-- Use the typed MCP operations `design_sketch_publish`, `design_sketch_list`,
-  `design_sketch_search`, `design_sketch_story`, `design_sketch_resolve`,
-  `design_sketch_get`, `design_sketch_image`, `design_sketch_record`,
-  `design_sketch_decision`, `design_sketch_activate`, and
-  `design_sketch_description` to retain and review project sketches. A
+- Use `call_operation` with `design.sketch.publish`, `design.sketch.list`,
+  `design.sketch.search`, `design.sketch.story`, `design.sketch.resolve`,
+  `design.sketch.get`, `design.sketch.image`, `design.sketch.record`,
+  `design.sketch.decision`, `design.sketch.activate`, and
+  `design.sketch.description` to retain and review project sketches. A
   generating skill must publish each image with an agent-authored manifest for
   one surface/window, state, theme, and viewport. A batch may contain many
   options, but each option is a distinct immutable file; preserve rejected
@@ -61,23 +67,23 @@ devcoordinator2 health --help
   registration is available only when the owner has enabled the separate
   public space. Never place hub tokens, callback secrets, or bearer keys in
   prompts, repository files, ordinary results, or logs.
-- Use `deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove`
+- Use `deployment.list`, `deployment.preflight`, `deployment.apply`, `deployment.status`, `deployment.start`, `deployment.stop`, `deployment.restart`, `deployment.rollback`, `deployment.logs` and `deployment.remove`
   for declared permanent or preview deployments.
-- Run `deployment preflight` before retrying a failed Docker or PostgreSQL
+- Run `deployment.preflight` before retrying a failed Docker or PostgreSQL
   deployment. A `docker_network_unavailable` blocker identifies a missing
   host bridge or veth and includes the recovery boundary: repair Docker
   networking through the authorized host maintenance path, then rerun
   preflight. Do not retry `apply`, `start`, or `restart` while that blocker is
   present; the Coordinator has already prevented a runtime mutation. After
-  repair, inspect `deployment status` and `health containers` before checking
+  repair, inspect `deployment.status` and `health.containers` before checking
   readiness so the recovered database endpoint and its dependent services are
   both verified.
-- Use `storage inventory|show|scan|protect|policy|roots|cleanup|job|history|lease`
+- Use the `storage.*` operations
   for tracked artifacts and exact-target cleanup. For legacy observed resources,
-  use `storage legacy-register`; do not recreate their deployment to delete them.
+  use `storage.legacy.register`; do not recreate their deployment to delete them.
   Read [the storage contract](../../docs/storage.md) for that journey and its
   shared CLI, MCP and Console operations.
-- Use `config show|authorize|revoke|reload` for exact declared Compose
+- Use `config.get`, `config.env.set` and `config.reload` for exact declared Compose
   environment-file grants in the existing private policy. Apply recorded
   standing owner authority for trusted local development configuration: when
   applicable, resolve a missing grant without another per-file conversational
@@ -93,12 +99,12 @@ devcoordinator2 health --help
   readiness. Apply changed source to rerun finite setup. Ordinary restart only
   controls existing services and never proves a new migration ran; compare
   actual receipt generation/execution time, not its later observation time.
-- Use `health summary|repositories|containers` for host and ownership
+- Use `health.summary`, `health.repositories` and `health.containers` for host and ownership
   observation. Treat `unmanaged` as unknown; never infer ownership from a
   name, image, port, or path.
-- Use `health incidents --view all` or `health_incidents` to inspect current
+- Use `health.incidents` with `{"view":"all"}` or `health.incidents` to inspect current
   observations and recorded responses. An automatic alert is not an owner
-  escalation. Record `health incident update` / `health_incident_update` with
+  escalation. Record `health.incident.update` / `health.incident.update` with
   the returned occurrence ID and expected revision: `handling` while owning
   recovery, `suppressed` for a deliberate non-report decision, and category
   `development` for expected testing or development conditions. Do not infer
@@ -108,24 +114,24 @@ devcoordinator2 health --help
   missing response evidence as proof of inaction. Dismissal is stored for the
   exact occurrence; it is not service recovery or suppression of later
   recurrences. Re-read after writes; a failed save is never success.
-- Use `event wait` (or MCP `event_wait`) when a client must block for several
+- Use `event.wait` (or MCP `event.wait`) when a client must block for several
   owned state changes or heartbeat deadlines in one request. Keep and advance
   the returned monotonic cursor, treat `cursor_stale` as a required state
   refresh, and let disconnect/cancellation remove the subscription. Returned
   events and `heartbeat_due` entries are observations only; the client decides
   what they mean. Never infer agents, tasks, conversations, turns, or wake-up
   behavior from this interface.
-- Use `plan overview`, `task create|update|history`,
-  `release create|request|deliver|deliver-evidence|evidence|evidence-show`,
-  and `decision record|tail|search|summarize` for the authoritative planning
+- Use `plan.overview`, `task.create`, `task.update` and `task.history`,
+  `release.create`, `release.request`, `release.deliver`, `release.deliver_evidence` and `release.evidence`,
+  and `decision.record`, `decision.tail`, `decision.search` and `decision.summarize` for the authoritative planning
   ledger and decision history (below).
-- Use `bug report|list|close` for the independent open-bug registry
+- Use `bug.report`, `bug.list` and `bug.close` for the independent open-bug registry
   (coordinator defects only; product work items are ledger tasks).
-- Use `glossary list|resolve|get|save|configure|inherit|history|check|impact`
+- Use the `glossary.*` operations
   for shared and project terminology, never application messages.
 - Use `devcoordinator2 mcp` only as the configured STDIO MCP server.
 
-Read the exact subcommand help before destructive or uncommon administration.
+Read the exact operation schema before destructive or uncommon administration.
 Require the typed result to prove the requested state; a submitted command is
 not success. On a typed failure, follow its stated recovery and exact identity.
 Do not bypass it with direct Docker, database, process, port, or systemd
@@ -142,7 +148,7 @@ the inventory's concrete safety reasons. “Safe to delete” requires verified
 ownership and no current use; age or a stopped container alone is insufficient.
 Current deployments, including stopped deployments, remain protected. For a
 verified legacy group, bind the existing disposal authorization through
-`storage legacy-register`, then inspect the complete cleanup plan, including
+`storage.legacy.register`, then inspect the complete cleanup plan, including
 dependent consumers and any permanent data. Existing authorization does not
 need another chat confirmation. Unknown ownership, changed identities, or
 missing observations remain blocked; never bypass a refusal with direct
@@ -153,7 +159,7 @@ them when the work ends. Automatic policy defaults are three inactive days for
 build outputs and caches and fourteen for other disposable resources; unknown
 activity starts an observation period. Retained test evidence uses its existing
 retention service and protection records. After starting cleanup, follow its
-operation ID through `event wait` and `storage job status`, retain the per-item
+operation ID through `event.wait` and `storage.job.status`, retain the per-item
 receipt, and verify the original surface. A partial or cancelled job does not
 prove that all selected data was removed. Reclaimed-space measurements and
 unmeasured items are separate from the inventory's estimated data size.
@@ -181,7 +187,7 @@ private credential files.
 ### Route browser checks before launching them
 
 For repositories managed by DevCoordinator, invoke browser/UI and integration
-verification through `test start`, including repository scripts that internally
+verification through `test.start`, including repository scripts that internally
 start Vite, bind a loopback socket, launch a browser, or create test services.
 Choose by the command's effects, not whether it is named `node`, `npm`,
 Playwright, or an apparently self-contained journey script. Do not first run
@@ -217,8 +223,8 @@ or host/tool refusal is binding: diagnose its exact result rather than retrying
 through another route. Report a blocker only after identifying the failed or
 unavailable governed operation and the remaining prerequisite.
 
-Before a consequential run, read the current `test --help`, inspect the named
-schema-2 declaration in `.devcoordinator.toml`, and query `test list`. Schema 1,
+Before a consequential run, read the current `devcoordinator2 schema test.start`, inspect the named
+schema-2 declaration in `.devcoordinator.toml`, and query `test.list`. Schema 1,
 legacy translation, and fallback are unsupported. Do not start a duplicate for
 a worktree that already has the intended run.
 
@@ -238,7 +244,7 @@ cleanup. A check/case `timeout_seconds` is a failure ceiling that produces
 the outer containment watchdog.
 
 Compose independent checks for one worktree inside one schema-2 graph and
-start that graph once. Separate concurrent `test start` calls for the same
+start that graph once. Separate concurrent `test.start` calls for the same
 worktree invoke latest-start-wins, not parallel execution. When a start returns
 `superseded_run_id`, report that exact prior run as cancelled by replacement;
 never describe the replaced run as still running. Independent journeys belong
@@ -247,12 +253,12 @@ in separate checks of that one graph, with only real dependencies between them.
 Submit every dependency-ready leaf immediately. DevCoordinator's host-wide
 adaptive scheduler owns capacity admission; repositories must not encode host
 capacity as fake dependency chains or add their own fixed worker budget. Use
-`test capacity show|set|clear` when the owner asks to inspect, cap, or restore
+`test.capacity.get` and `test.capacity.set` (JSON `cap:null` restores Auto) when the owner asks to inspect, cap, or restore
 Auto admission. A lower cap delays new grants and never kills active work.
 
 The process is owned by its systemd unit, not by the agent that started or
-observes it. If an observer exits, query `test status` or `test list`, inspect
-`test log catalog`, and read one bounded case/stream tail before deciding the
+observes it. If an observer exits, query `test.status` or `test.list`, inspect
+`test.log.catalog`, and read one bounded case/stream tail before deciding the
 workload is stale. A `running` summary plus a live unit/output growth is active
 work; do not cancel, restart, or submit a duplicate merely because the original
 agent disappeared.
@@ -280,14 +286,14 @@ executor-supplied private evidence directory. A single default-output verifier
 uses the leaf root; explicit-output and concurrent formal batches use unique
 immutable `formal-runs/<bundle>/` children in that same leaf. They are retained
 and pruned with the exact check/case logs. Catalogue the privacy-safe journey
-metadata with `test evidence show`; request image chunks only for an exact
+metadata with `test.evidence.get`; request image chunks only for an exact
 returned image identity. Never infer or expose its filesystem path. The Console
 is the normal owner-review surface: saved annotations are immutable overlays
 and each top-level suggestion is an ordinary Plan `user_feedback` task, so
 agents must treat its replies and reopened state as current completion-ledger
 context.
 
-`test start --check <name>` and `test retry --run-id <run> --check <name>` are
+`test.start` with selected checks and `test.retry` with the original run identity and selected checks are
 diagnostic shortcuts with proof `selected` and `retry`, respectively. Retry
 only after the originating complete run finishes
 and only while its source, configuration, prerequisites, and declared artifact
@@ -317,15 +323,15 @@ not an instruction to select the first one.
   a material scope, data, or publication choice.
 
 For a `tests_draining` response, inspect `test.admission.status`; continue
-independent work or use `test.admission.wait --deadline-at ...`. For a
+independent work or use `test.admission.wait` with `deadline_at`. For a
 `worktree_busy` response, attach to or inspect the named run, wait with
-`test wait`, or pass `--mode replace` only when replacing unfinished work is
-intentional. A normal `test start` attaches to an equivalent active run.
+`test.wait`, or pass JSON `"mode":"replace"` only when replacing unfinished work is
+intentional. A normal `test.start` attaches to an equivalent active run.
 
-For deployment status with `readiness.source_state=changed_since_apply`, the
+For deployment.status with `readiness.source_state=changed_since_apply`, the
 preview is still usable for inspection but does not represent the latest
-source. Use `deployment apply` to publish the current source, or continue
-independent work. Use `deployment wait --state ready|source-current|...`
+source. Use `deployment.apply` to publish the current source, or continue
+independent work. Use `deployment.wait` with its typed `state` field
 when a bounded transition is required. Treat `pending_apply` as a compatibility
 alias for the richer source state.
 
@@ -339,7 +345,7 @@ the expected user result, and its required evidence.
 
 For every incomplete product row, search the Coordinator ledger and create or
 reopen the matching open outcome before continuing. Keep honest unavailable or
-sign-in states open. Use `completion check` against the retained inventory
+sign-in states open. Use `completion.check` against the retained inventory
 before delivery: it rejects missing, closed, stale or cross-repository outcome
 references, and rejects enabled controls without rendered downstream evidence.
 Use `preliminary` for a runnable increment with open rows; use `complete` only
@@ -354,7 +360,7 @@ is no file fallback.
 
 After diagnosis establishes a durable missing or regressed outcome within
 the intended task, check whether an equivalent concrete task already exists
-before using `task_create` (kind `stub` or `improvement`). Execution attempts
+before using `task.create` (kind `stub` or `improvement`). Execution attempts
 stay in governed run history; failures and suggestions do not automatically
 create tasks, and passing runs do not automatically complete work. An
 analysis-only request does not authorize task mutations.
@@ -362,7 +368,7 @@ analysis-only request does not authorize task mutations.
 When implementation deliberately omits in-scope functionality, that omission
 already establishes an unfinished outcome. Record it when decided:
 
-1. Inspect `plan_overview` and relevant `task_history` records, including the
+1. Inspect `plan.overview` and relevant `task.history` records, including the
    originating requirements, feedback, and applicable standing corrections.
 2. Find an equivalent concrete outcome. Reuse or reopen it when appropriate;
    a thematic umbrella match alone does not prevent creating the omission
@@ -371,7 +377,7 @@ already establishes an unfinished outcome. Record it when decided:
    `estimated_loc` and `parent_task_id` fields: only a fitting existing
    umbrella with a recorded estimate above 100 lines qualifies. Otherwise,
    keep the omission standalone; clear a previous parent when needed
-   (`devcoordinator2 task update <task_id> --root`). Preserve existing task IDs and
+   (`devcoordinator2 call task.update --params '{"task_id":"<task_id>","parent_task_id":null}'`). Preserve existing task IDs and
    history when refining or moving a matching record. Apply this procedure
    to authorized omissions without a retrospective backlog rewrite.
 4. Put the missing behavior and acceptance criteria in `title`/`outcome`,
@@ -401,16 +407,16 @@ already establishes an unfinished outcome. Record it when decided:
   an explanation. Explain a technical concept through that user need before
   naming it; put optional implementation detail in `technical_note` after
   the user-facing account.
-- Check `plan_overview` before starting a task. Continuously deliver
+- Check `plan.overview` before starting a task. Continuously deliver
   coherent runnable increments to an established authorized non-production
   surface after focused checks, not only when `preview_requested` is set.
   Honor an explicit preview request promptly. Apply the declared deployment
   from current work (dirty is expected), then qualify the result before
   recording it against a delivery clock. The qualified workflow is:
-  `release deliver-evidence` with a retained run artifact and a compact
+  `release.deliver_evidence` with a retained run artifact and a compact
   verification document, read the returned receipt and require
   `qualified: true`, then retain that receipt ID with the
-  matching Coordinator outcome and set the next generic delivery alarm. `release deliver` records deployment
+  matching Coordinator outcome and set the next generic delivery alarm. `release.deliver` records deployment
   metadata only; its `status: delivered` result is not a qualified delivery
   receipt and its release ID is not an `evidence_ref`. The verification
   document must be the bounded request JSON expected by
@@ -443,32 +449,32 @@ already establishes an unfinished outcome. Record it when decided:
   checked timestamp, access URL, `web_route_passed`, and the exact deployment
   ID, generation, HTTP status, and HTML content type. The returned
   `delivery-*` receipt ID, rather than the release ID, is the value used for
-  `release evidence` and `record_delivery`.
+  `release.evidence` and `record_delivery`.
 - Treat every non-empty `elaboration_requests` list in a planning, task,
   release, or decision result as an owner request that must not be silently
-  skipped. Read each named task with `task_history`, rewrite its title and/or
+  skipped. Read each named task with `task.history`, rewrite its title and/or
   outcome in short everyday language that explains the user-visible result,
-  and set `elaboration_needed: false` in that same `task_update`. The daemon
+  and set `elaboration_needed: false` in that same `task.update`. The daemon
   rejects clearing the request without changed owner-facing wording. Keep the
   request open when you cannot yet make the wording genuinely clearer, and do
   not claim the related work complete while its request remains outstanding.
 - An interim answer or elaboration update does not complete the active
   outcome. Preserve its agreed scope and pending operations, then resume
-  authorized work or a bounded event wait in the same active work cycle.
+  authorized work or a bounded event.wait in the same active work cycle.
   Honor explicit pause, cancellation, or replacement and real required
   decisions; leave unfinished outcomes open and state the actual stopping
   condition.
-- Record consequential product choices with `decision_record`
+- Record consequential product choices with `decision.record`
   (aspect-tagged, management-facing body; `supersedes` when replacing one).
-  Load context with `decision_tail`; `decision_search` before retrying an
+  Load context with `decision.tail`; `decision.search` before retrying an
   approach that may already have been tried and rejected. When any decision
   read reports `summary_due`, write and store the rolling summary via
-  `decision_summarize` before continuing. This append-only maintenance write
+  `decision.summarize` before continuing. This append-only maintenance write
   is direct: do not ask the user for another approval.
 
 ## Project terminology
 
-Before UI wording work, use `glossary resolve --path /absolute/project` to
+Before UI wording work, use `glossary.resolve` with a `path` parameter to
 read relevant concepts, language equivalents, guidance, inheritance and exact
 scope/shared revisions. Use query/language filters for bounded context and
 follow `next_offset`; preserve `expected_revision` when continuing a snapshot.
@@ -479,7 +485,7 @@ project's existing database, JSON, text or framework resources. A glossary
 supplies meanings and approved terms, not a universal catalogue or translation
 pipeline. Write natural sentences and declare legitimate grammatical variants.
 
-Use `glossary get` and `history` to inspect a concept and its provenance.
+Use `glossary.get` and `history` to inspect a concept and its provenance.
 `save` requires the current expected scope revision. `configure` explicitly
 adopts a shared baseline or updates glossary guidance; inherited required
 concepts and guidelines cannot be silently weakened. A permitted project
@@ -489,7 +495,7 @@ conflict is resolved. Missing concepts and language-review gaps remain explicit.
 
 The Console's Glossary is the human editing and navigation surface for the
 same service. Reading the glossary is not proof of UI compliance. Use the
-project's own rendered checks/review and, where useful, `glossary check` for
+project's own rendered checks/review and, where useful, `glossary.check` for
 explicit `{concept_id, language, term}` usages. That checker validates declared
 forms; it does not certify arbitrary prose, translation quality or user content.
 

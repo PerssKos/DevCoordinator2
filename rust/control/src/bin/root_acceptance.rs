@@ -81,6 +81,8 @@ struct Harness {
     work_root: PathBuf,
     caller_uid: u32,
     caller_gid: u32,
+    postgres_uid: u32,
+    postgres_gid: u32,
     compose_subnet: Option<Ipv4Addr>,
     port_range: String,
 }
@@ -92,6 +94,9 @@ struct World {
     socket: PathBuf,
     state: PathBuf,
     policy: PathBuf,
+    postgres: Option<devcoordinator2_control::persistence::fixture::FixtureCluster>,
+    postgres_config: devcoordinator2_control::database::DatabaseConfig,
+    database_config: PathBuf,
     sandboxed: bool,
     unit_prefix: String,
     daemon: Option<Child>,
@@ -99,6 +104,7 @@ struct World {
     cleanup_volumes: Vec<String>,
     cleanup_storage_mount_units: Vec<String>,
     cleanup_fixture_units: Vec<String>,
+    builder_runtime: Option<tempfile::TempDir>,
     isolated_docker_network: Option<String>,
     measurements: std::collections::BTreeMap<String, u128>,
 }
@@ -150,10 +156,18 @@ macro_rules! ensure {
     };
 }
 
+#[path = "root_acceptance/database_lifecycle.rs"]
+mod database_lifecycle;
+#[path = "root_acceptance/deployment_diagnostics.rs"]
+mod deployment_diagnostics;
 #[path = "root_acceptance/host_admission.rs"]
 mod host_admission;
+#[path = "root_acceptance/request_responsiveness.rs"]
+mod request_responsiveness;
 #[path = "root_acceptance/storage.rs"]
 mod storage_cases;
+#[path = "root_acceptance/storage_upstream.rs"]
+mod storage_upstream_cases;
 
 impl World {
     fn new(harness: &Harness, name: &str) -> Result<Self, String> {
@@ -203,6 +217,27 @@ impl World {
             std::process::id(),
             &sha256_hex(name.as_bytes())[..8]
         );
+        let postgres_root = base.join("authority-postgres");
+        fs::create_dir(&postgres_root).map_err(|error| error.to_string())?;
+        // This new marker-bound parent belongs to the harness. PostgreSQL's
+        // non-root identity needs traversal even when the launcher uses 0077;
+        // the fixture retains private ownership/modes on its own children.
+        fs::set_permissions(&postgres_root, fs::Permissions::from_mode(0o711))
+            .map_err(|error| error.to_string())?;
+        let postgres = devcoordinator2_control::persistence::fixture::FixtureCluster::start_in(
+            &postgres_root,
+            harness.postgres_uid,
+            harness.postgres_gid,
+        )
+        .map_err(|e| e.to_string())?;
+        let postgres_config = postgres
+            .create_database("authority")
+            .map_err(|e| e.to_string())?;
+        let database_config = base.join("authority-postgres.json");
+        write_private_json(
+            &database_config,
+            &json!({"schema":1,"connection":postgres_config.url,"data_directory":postgres_config.data_directory}),
+        )?;
         let world = Self {
             harness: harness.clone(),
             base,
@@ -210,6 +245,9 @@ impl World {
             socket,
             state,
             policy: allowlist,
+            postgres: Some(postgres),
+            postgres_config,
+            database_config,
             sandboxed: false,
             unit_prefix,
             daemon: None,
@@ -217,6 +255,7 @@ impl World {
             cleanup_volumes: Vec::new(),
             cleanup_storage_mount_units: Vec::new(),
             cleanup_fixture_units: Vec::new(),
+            builder_runtime: None,
             isolated_docker_network: None,
             measurements: std::collections::BTreeMap::new(),
         };
@@ -263,6 +302,7 @@ impl World {
             .env("RUST_BACKTRACE", "1")
             .env("DEVCOORDINATOR2_SOCKET", &self.socket)
             .env("DEVCOORDINATOR2_STATE_DIR", &self.state)
+            .env("DEVCOORDINATOR2_DATABASE_CONFIG", &self.database_config)
             .env("DEVCOORDINATOR2_BUGS_DIR", self.base.join("bugs"))
             .env("DEVCOORDINATOR2_UNIT_PREFIX", &self.unit_prefix)
             .env("DEVCOORDINATOR2_SLICE", "devcoordinator2-tests.slice")
@@ -334,6 +374,19 @@ impl World {
             }
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn authority(&self) -> Result<devcoordinator2_control::database::Database, String> {
+        devcoordinator2_control::database::Database::connect(&self.postgres_config)
+            .map_err(|e| e.to_string())
+    }
+    fn authority_connection(
+        &self,
+    ) -> Result<devcoordinator2_control::database::Connection, String> {
+        self.authority()?
+            .persistence()
+            .acquire(devcoordinator2_control::database::Lane::Write)
+            .map_err(|e| e.to_string())
     }
 
     fn sandbox_command(&self, daemon: &Command) -> Result<Command, String> {
@@ -487,12 +540,28 @@ impl World {
     }
 
     fn wait_status(&self, terminal: &[&str], timeout: Duration) -> Result<Value, String> {
-        self.wait_status_for(&self.repo, terminal, timeout)
+        self.wait_status_for(&self.repo, None, terminal, timeout)
+    }
+
+    fn start_fresh(&self, params: Value, previous_run_id: Option<&str>) -> Result<Value, String> {
+        wait_for_fresh_test_start(previous_run_id, Duration::from_secs(10), || {
+            data(&self.call("test.start", params.clone())?).cloned()
+        })
+    }
+
+    fn wait_run_status(
+        &self,
+        started: &Value,
+        terminal: &[&str],
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        self.wait_status_for(&self.repo, Some(test_run_id(started)?), terminal, timeout)
     }
 
     fn wait_status_for(
         &self,
         path: &Path,
+        run_id: Option<&str>,
         terminal: &[&str],
         timeout: Duration,
     ) -> Result<Value, String> {
@@ -500,6 +569,9 @@ impl World {
         loop {
             let response = self.call("test.status", json!({"path": path}))?;
             let last = data(&response)?.clone();
+            if let Some(run_id) = run_id {
+                ensure_test_run(&last, run_id)?;
+            }
             if last
                 .get("status")
                 .and_then(Value::as_str)
@@ -599,6 +671,11 @@ impl World {
         if let Err(error) = self.stop_daemon(false) {
             failures.push(error);
         }
+        if (preserve_files || !failures.is_empty())
+            && let Err(error) = self.preserve_failed_authority()
+        {
+            failures.push(error);
+        }
         if let Some(child) = self.route_consumer.as_mut() {
             let stopped = stop_owned_child(child);
             match stopped {
@@ -636,10 +713,10 @@ impl World {
             self.unit_prefix
         )) {
             Ok(ids) if !ids.is_empty() => {
-                let mut arguments = vec!["rm", "-f", "-v"];
-                arguments.extend(ids.iter().map(String::as_str));
-                if let Err(error) = cleanup_status("docker", &arguments) {
-                    failures.push(error);
+                for id in ids {
+                    if let Err(error) = remove_fixture_container(&self.unit_prefix, &id) {
+                        failures.push(error);
+                    }
                 }
             }
             Ok(_) => {}
@@ -697,8 +774,19 @@ impl World {
                 }
             }
         }
-        if failures.is_empty()
-            && !preserve_files
+        if !failures.is_empty()
+            && !self.base.join("failed-authority.pgdump").exists()
+            && let Err(error) = self.preserve_failed_authority()
+        {
+            failures.push(error);
+        }
+        if let Some(postgres) = self.postgres.take()
+            && let Err(error) = postgres.stop()
+        {
+            failures.push(error.to_string());
+        }
+        if !preserve_files
+            && failures.is_empty()
             && self.base.join(OWNERSHIP_MARKER).is_file()
             && let Err(error) = fs::remove_dir_all(&self.base)
         {
@@ -711,6 +799,14 @@ impl World {
         }
     }
 
+    fn preserve_failed_authority(&self) -> Result<(), String> {
+        // PostgreSQL fixture teardown removes its cluster. Retain a private
+        // logical snapshot so a failed journey keeps its diagnostic state.
+        self.authority()?
+            .backup(self.base.join("failed-authority.pgdump"))
+            .map_err(|_| "could not retain failed fixture authority snapshot".to_owned())
+    }
+
     fn cleanup_compose(&self) -> Result<(), String> {
         // Compose does not inherit the transient-run instance label. Bind its
         // cleanup to this marker, fixture database and exact working directory.
@@ -719,16 +815,12 @@ impl World {
             "Compose fixture ownership marker is missing"
         );
         let mut projects = BTreeSet::new();
-        let database = self.state.join("authority.sqlite3");
-        if database.is_file() {
-            let connection = rusqlite::Connection::open_with_flags(
-                database,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )
-            .map_err(|error| error.to_string())?;
+        if self.postgres.is_some() {
+            let database = self.authority()?;
+            let rows=database.read(|connection| {
             let mut query = connection
                 .prepare("SELECT deployment_id,name,binding_identity FROM components WHERE binding_kind='compose'")
-                .map_err(|error| error.to_string())?;
+                ?;
             let rows = query
                 .query_map([], |row| {
                     Ok((
@@ -737,9 +829,11 @@ impl World {
                         row.get::<_, String>(2)?,
                     ))
                 })
-                .map_err(|error| error.to_string())?;
+                ?.collect::<devcoordinator2_control::database::Result<Vec<_>>>()?;
+            Ok(rows)
+            }).map_err(|e|e.to_string())?;
             for row in rows {
-                let (deployment, component, project) = row.map_err(|error| error.to_string())?;
+                let (deployment, component, project) = row;
                 ensure!(
                     project
                         == devcoordinator2_control::docker::compose_project(
@@ -927,7 +1021,7 @@ impl Drop for World {
 fn request(operation: &str, params: Value, kind: &str, identity: Option<&str>) -> Value {
     let id = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     json!({
-        "protocol": 2,
+        "protocol": devcoordinator2_api::PROTOCOL_VERSION,
         "id": format!("root-{id:08x}"),
         "operation": operation,
         "params": params,
@@ -940,7 +1034,7 @@ fn request(operation: &str, params: Value, kind: &str, identity: Option<&str>) -
 }
 
 fn data(response: &Value) -> Result<&Value, String> {
-    if response.get("protocol") != Some(&json!(2)) {
+    if response.get("protocol") != Some(&json!(devcoordinator2_api::PROTOCOL_VERSION)) {
         return Err(format!(
             "invalid response protocol: {}",
             bounded_json(response)
@@ -984,11 +1078,12 @@ fn request_over_socket_with_timeout(
     stream
         .write_all(&payload)
         .map_err(|error| error.to_string())?;
-    if !request
+    let passive_wait = request
         .get("operation")
         .and_then(Value::as_str)
-        .is_some_and(devcoordinator2_api::is_deferred_wait)
-    {
+        .and_then(devcoordinator2_api::operation)
+        .is_some_and(|definition| definition.passive_wait());
+    if !passive_wait {
         stream
             .shutdown(std::net::Shutdown::Write)
             .map_err(|error| error.to_string())?;
@@ -1142,6 +1237,58 @@ fn wait_for_value(
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn test_run_id(value: &Value) -> Result<&str, String> {
+    value["run_id"]
+        .as_str()
+        .filter(|run_id| !run_id.is_empty())
+        .ok_or_else(|| "test response omitted run_id".to_owned())
+}
+
+fn ensure_test_run(value: &Value, expected: &str) -> Result<(), String> {
+    let actual = test_run_id(value)?;
+    ensure!(
+        actual == expected,
+        format!("test status belongs to {actual}, expected admitted run {expected}")
+    );
+    Ok(())
+}
+
+fn wait_for_fresh_test_start(
+    previous_run_id: Option<&str>,
+    timeout: Duration,
+    mut start: impl FnMut() -> Result<Value, String>,
+) -> Result<Value, String> {
+    wait_for_value("a distinct admitted test run", timeout, || {
+        let started = start()?;
+        let run_id = test_run_id(&started)?;
+        ensure!(
+            started["status"] == "running",
+            "test start did not report running"
+        );
+        ensure!(
+            started["superseded_run_id"].is_null(),
+            "fresh test start unexpectedly superseded a run"
+        );
+        let attached = started["attached"]
+            .as_bool()
+            .ok_or("test start omitted attached state")?;
+        if attached {
+            ensure!(
+                previous_run_id == Some(run_id),
+                format!("fresh test start attached to unexpected run {run_id}")
+            );
+            // Terminal evidence is published before the supervisor retires
+            // its handle. Attaching here does not admit another execution.
+            return Ok(None);
+        }
+        ensure!(
+            previous_run_id != Some(run_id),
+            "fresh test start reused the previous run identity"
+        );
+        Ok(Some(started))
+    })
 }
 
 fn run_status(program: &str, arguments: &[&str]) -> Result<(), String> {
@@ -1311,6 +1458,71 @@ fn docker_ids(key: &str, value: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+fn remove_fixture_container(instance: &str, value: &str) -> Result<(), String> {
+    use devcoordinator2_control::docker::{
+        DockerCli, DockerControl, DockerInvocation, DockerOutput, ExactContainerId,
+    };
+
+    let container = ExactContainerId::parse(value.to_owned()).map_err(|e| e.to_string())?;
+    let docker = DockerCli::default();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let invoke = |arguments: &[&str]| -> Result<DockerOutput, String> {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| format!("fixture container {container} removal deadline reached"))?;
+        let request =
+            DockerInvocation::new(arguments.iter().map(OsString::from).collect(), remaining)
+                .map_err(|e| e.to_string())?;
+        docker.invoke(request).map_err(|e| e.to_string())
+    };
+    let present = || -> Result<bool, String> {
+        let output = invoke(&[
+            "inspect",
+            "--format",
+            "{{.Id}} {{index .Config.Labels \"devcoordinator2.instance\"}}",
+            container.as_str(),
+        ])?;
+        if output.success() {
+            let mut fields = output.stdout.split_whitespace();
+            ensure!(
+                fields.next() == Some(container.as_str())
+                    && fields.next() == Some(instance)
+                    && fields.next().is_none(),
+                "refusing cleanup of a container outside the exact owned fixture"
+            );
+            return Ok(true);
+        }
+        let error = output.stderr.to_ascii_lowercase();
+        if error.contains("no such container") || error.contains("no such object") {
+            return Ok(false);
+        }
+        Err("cannot verify exact fixture container absence".to_owned())
+    };
+    if !present()? {
+        return Ok(());
+    }
+    let output = invoke(&["rm", "--force", "--volumes", container.as_str()])?;
+    let error = output.stderr.to_ascii_lowercase();
+    ensure!(
+        output.success()
+            || error.contains("removal of container") && error.contains("already in progress")
+            || error.contains("no such container")
+            || error.contains("no such object"),
+        "cannot remove exact fixture container {container}"
+    );
+    // A concurrent executor cleanup may have started the same removal. Its
+    // acknowledgement is not completion; keep observing this exact owned ID.
+    loop {
+        if !present()? {
+            return Ok(());
+        }
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| format!("fixture container {container} removal deadline reached"))?;
+        thread::sleep(remaining.min(Duration::from_millis(50)));
+    }
+}
+
 fn write_private_json(path: &Path, value: &Value) -> Result<(), String> {
     fs::write(
         path,
@@ -1382,6 +1594,26 @@ fn caller_identity(selected_user: Option<&str>) -> Result<CallerIdentity, String
         gid,
         source: "nobody_fallback",
     })
+}
+
+fn postgres_identity() -> Result<(u32, u32), String> {
+    let explicit = (
+        std::env::var("DEVCOORDINATOR2_TEST_POSTGRES_UID").ok(),
+        std::env::var("DEVCOORDINATOR2_TEST_POSTGRES_GID").ok(),
+    );
+    let (uid, gid) = if explicit.0.is_some() || explicit.1.is_some() {
+        explicit
+    } else {
+        (
+            std::env::var("SUDO_UID").ok(),
+            std::env::var("SUDO_GID").ok(),
+        )
+    };
+    let uid=uid.and_then(|v|v.parse::<u32>().ok()).filter(|v|*v!=0).ok_or("root PostgreSQL fixture requires an explicit trusted non-root UID/GID, through DEVCOORDINATOR2_TEST_POSTGRES_UID/GID or the original sudo caller")?;
+    let gid = gid
+        .and_then(|v| v.parse::<u32>().ok())
+        .ok_or("root PostgreSQL fixture GID is missing")?;
+    Ok((uid, gid))
 }
 
 fn command_json(command: &[String]) -> Result<String, String> {
@@ -2403,20 +2635,22 @@ cases=[{{id="first",args=[],postgres="seed"}},{{id="second",args=[],postgres="se
     world.git(&["commit", "-qm", "isolated database template fixture"])?;
     let mut instance = None;
     let mut last_fingerprint = String::new();
+    let mut previous_run_id = None;
     for (index, selection) in [vec!["first"], vec!["first", "second"]]
         .into_iter()
         .enumerate()
     {
-        let started = world.call(
-            "test.start",
+        let started = world.start_fresh(
             json!({"path":world.repo,"test":"database","cases":{"database-cases":selection}}),
+            previous_run_id.as_deref(),
         )?;
-        let run = data(&started)?["run_id"]
-            .as_str()
-            .ok_or("missing database run")?
-            .to_owned();
-        let status =
-            world.wait_status(&["passed", "failed", "timed-out"], Duration::from_secs(90))?;
+        let run = test_run_id(&started)?.to_owned();
+        let status = world.wait_run_status(
+            &started,
+            &["passed", "failed", "timed-out"],
+            Duration::from_secs(90),
+        )?;
+        previous_run_id = Some(run.clone());
         ensure!(
             status["status"] == "passed",
             format!("selected database run failed; run={run}")
@@ -2489,11 +2723,11 @@ cases=[{{id="first",args=[],postgres="seed"}},{{id="second",args=[],postgres="se
             "private database environment leaked into run status"
         );
     }
-    data(&world.call(
-        "test.start",
+    let started = world.start_fresh(
         json!({"path":world.repo,"test":"database","cases":{"database-cases":["first","unused"]}}),
-    )?)?;
-    let failed = world.wait_status(&["passed", "failed"], Duration::from_secs(90))?;
+        previous_run_id.as_deref(),
+    )?;
+    let failed = world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(90))?;
     ensure!(
         failed["status"] == "failed",
         "missing template input was accepted"
@@ -2536,11 +2770,12 @@ cases=[{{id="first",args=[],postgres="seed"}},{{id="second",args=[],postgres="se
             ),
         ],
     )?;
-    data(&world.call(
-        "test.start",
+    let started = world.start_fresh(
         json!({"path":world.repo,"test":"database","cases":{"database-cases":["first"]}}),
-    )?)?;
-    let restored = world.wait_status(&["passed", "failed"], Duration::from_secs(90))?;
+        Some(test_run_id(&failed)?),
+    )?;
+    let restored =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(90))?;
     ensure!(
         restored["status"] == "passed",
         "corrupt template was not recreated successfully"
@@ -2755,18 +2990,27 @@ fn case_database_template_failure_cancellation_and_restart(
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "database recovery fixture"])?;
     let mut prior = None;
+    let mut previous_run_id = None;
     for fault in ["cleanup", "cancel", "restart"] {
-        let started = world.call("test.start", json!({"path":world.repo,"test":"database"}))?;
-        let run = data(&started)?["run_id"]
-            .as_str()
-            .ok_or("missing recovery run")?
-            .to_owned();
+        let started = world.start_fresh(
+            json!({"path":world.repo,"test":"database"}),
+            previous_run_id.as_deref(),
+        )?;
+        let stage = match fault {
+            "cleanup" => "start-before-cleanup",
+            "cancel" => "start-after-cleanup-failure",
+            "restart" => "start-after-cancellation",
+            _ => unreachable!(),
+        };
+        database_lifecycle::retain_start_response(world, stage, &started)?;
+        let run = test_run_id(&started)?.to_owned();
         let mut socket = await_database_case(&listener)?;
         let containers = template_containers(world)?;
         ensure!(
             containers.len() == 1,
             "unexpected number of template instances"
         );
+        let template = database_lifecycle::assert_live_template(world, &containers[0])?;
         if fault == "cancel" {
             ensure!(
                 prior.as_ref() != containers.first(),
@@ -2779,7 +3023,11 @@ fn case_database_template_failure_cancellation_and_restart(
                 // This exact disposable instance is removed after the case writes and before cleanup.
                 run_status("docker", &["rm", "-f", &containers[0]])?;
                 socket.write_all(b"1").map_err(|e| e.to_string())?;
-                let failed = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+                let failed = world.wait_run_status(
+                    &started,
+                    &["passed", "failed"],
+                    Duration::from_secs(30),
+                )?;
                 let phases = &failed["checks"][0]["cases"][0]["phases"];
                 ensure!(
                     failed["status"] == "failed"
@@ -2790,7 +3038,8 @@ fn case_database_template_failure_cancellation_and_restart(
             }
             "cancel" => {
                 data(&world.call("test.stop", json!({"path":world.repo}))?)?;
-                let cancelled = world.wait_status(&["cancelled"], Duration::from_secs(30))?;
+                let cancelled =
+                    world.wait_run_status(&started, &["cancelled"], Duration::from_secs(30))?;
                 ensure!(
                     cancelled["checks"][0]["cases"][0]["phases"][2]["status"] == "passed",
                     "cancellation did not finish native cleanup"
@@ -2811,7 +3060,8 @@ fn case_database_template_failure_cancellation_and_restart(
             "restart" => {
                 world.stop_daemon(true)?;
                 world.start_daemon(None, None, None)?;
-                let recovered = world.wait_status(&["interrupted"], Duration::from_secs(30))?;
+                let recovered =
+                    world.wait_run_status(&started, &["interrupted"], Duration::from_secs(30))?;
                 ensure!(
                     recovered["run_id"] == run,
                     "restart recovered the wrong run"
@@ -2820,6 +3070,11 @@ fn case_database_template_failure_cancellation_and_restart(
                     template_containers(world)?.is_empty(),
                     "restart left an unowned template or writable case"
                 );
+                let inspected = world.call("test.container.inspect", template.clone())?;
+                ensure!(
+                    data(&inspected)?["record"]["cleanup_status"] == "cleanup_complete",
+                    "restart lost the template cleanup receipt"
+                );
                 ensure!(
                     world.units()?.is_empty(),
                     "interrupted database unit survived restart"
@@ -2827,13 +3082,19 @@ fn case_database_template_failure_cancellation_and_restart(
             }
             _ => unreachable!(),
         }
+        previous_run_id = Some(run);
         drop(socket);
     }
-    data(&world.call("test.start", json!({"path":world.repo,"test":"database"}))?)?;
+    let started = world.start_fresh(
+        json!({"path":world.repo,"test":"database"}),
+        previous_run_id.as_deref(),
+    )?;
+    database_lifecycle::retain_start_response(world, "start-after-restart", &started)?;
     await_database_case(&listener)?
         .write_all(b"1")
         .map_err(|e| e.to_string())?;
-    let healthy = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+    let healthy =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(30))?;
     ensure!(
         healthy["status"] == "passed",
         "fresh run failed after restart recovery"
@@ -2861,12 +3122,12 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
         "HEAD",
     ])?;
     let cold = Instant::now();
-    data(&world.call("test.start", json!({"path":world.repo,"test":"database"}))?)?;
+    let first_run = world.start_fresh(json!({"path":world.repo,"test":"database"}), None)?;
     let first = await_database_case(&listener)?;
     let cold_ms = cold.elapsed().as_millis();
     let before = template_containers(world)?;
     let warm = Instant::now();
-    data(&world.call("test.start", json!({"path":other,"test":"database"}))?)?;
+    let second_run = world.start_fresh(json!({"path":other,"test":"database"}), None)?;
     let mut second = await_database_case(&listener)?;
     let warm_ms = warm.elapsed().as_millis();
     ensure!(
@@ -2888,7 +3149,7 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
         "concurrent runs did not own separate writable databases"
     );
     data(&world.call("test.stop", json!({"path":world.repo}))?)?;
-    world.wait_status(&["cancelled"], Duration::from_secs(30))?;
+    world.wait_run_status(&first_run, &["cancelled"], Duration::from_secs(30))?;
     ensure!(
         data(&world.call("test.status", json!({"path":other}))?)?["status"] == "running",
         "stopping one worktree stopped its independent sibling"
@@ -2900,7 +3161,12 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
     drop(first);
     second.write_all(b"1").map_err(|e| e.to_string())?;
     ensure!(
-        world.wait_status_for(&other, &["passed", "failed"], Duration::from_secs(30))?["status"]
+        world.wait_status_for(
+            &other,
+            Some(test_run_id(&second_run)?),
+            &["passed", "failed"],
+            Duration::from_secs(30)
+        )?["status"]
             == "passed",
         "independent sibling could not finish"
     );
@@ -2912,7 +3178,10 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
         "seed.sql",
         format!("{SEED}-- changed initialization input\n"),
     )?;
-    data(&world.call("test.start", json!({"path":world.repo,"test":"database"}))?)?;
+    let changed_run = world.start_fresh(
+        json!({"path":world.repo,"test":"database"}),
+        Some(test_run_id(&first_run)?),
+    )?;
     let mut changed = await_database_case(&listener)?;
     ensure!(
         template_containers(world)?.len() == 2,
@@ -2920,7 +3189,8 @@ fn case_database_template_concurrent_worktrees_and_input_drift(
     );
     changed.write_all(b"1").map_err(|e| e.to_string())?;
     ensure!(
-        world.wait_status(&["passed", "failed"], Duration::from_secs(30))?["status"] == "passed",
+        world.wait_run_status(&changed_run, &["passed", "failed"], Duration::from_secs(30))?["status"]
+            == "passed",
         "changed template did not execute successfully"
     );
     world
@@ -3022,7 +3292,8 @@ command=["/usr/bin/true"]
     let mut beta = await_database_case(&listeners["beta"])?;
     beta.write_all(b"1").map_err(|e| e.to_string())?;
     gamma.write_all(b"1").map_err(|e| e.to_string())?;
-    let complete = world.wait_status_for(&other, &["passed", "failed"], Duration::from_secs(30))?;
+    let complete =
+        world.wait_status_for(&other, None, &["passed", "failed"], Duration::from_secs(30))?;
     ensure!(
         complete["status"] == "passed"
             && complete["checks"]
@@ -3212,7 +3483,12 @@ cases=[{{id="one",args=[],postgres="slow"}}]
     // Warm template exists before readers, so concurrent SQL needs no mutation.
     data(&world.call("test.start", json!({"path":others[1],"test":"warm"}))?)?;
     ensure!(
-        world.wait_status_for(&others[1], &["passed", "failed"], Duration::from_secs(90))?["status"]
+        world.wait_status_for(
+            &others[1],
+            None,
+            &["passed", "failed"],
+            Duration::from_secs(90)
+        )?["status"]
             == "passed",
         "template precondition failed"
     );
@@ -3253,6 +3529,7 @@ cases=[{{id="one",args=[],postgres="slow"}}]
         };
         let terminal = world.wait_status_for(
             &others[2],
+            None,
             &["cancelled", "failed"],
             Duration::from_secs(30),
         )?;
@@ -3324,6 +3601,7 @@ cases=[{{id="one",args=[],postgres="slow"}}]
     ensure!(
         world.wait_status_for(
             &others[2],
+            Some(&cancelled_run),
             &["cancelled", "failed"],
             Duration::from_secs(20)
         )?["status"]
@@ -3365,7 +3643,12 @@ cases=[{{id="one",args=[],postgres="slow"}}]
     // A real warmed SQL fixture remains runnable while the writer waits.
     data(&world.call("test.start", json!({"path":others[1],"test":"warm"}))?)?;
     ensure!(
-        world.wait_status_for(&others[1], &["passed", "failed"], Duration::from_secs(30))?["status"]
+        world.wait_status_for(
+            &others[1],
+            None,
+            &["passed", "failed"],
+            Duration::from_secs(30)
+        )?["status"]
             == "passed",
         "warm SQL was blocked by unrelated network wait"
     );
@@ -3456,7 +3739,12 @@ cases=[{{id="one",args=[],postgres="slow"}}]
         world.wait_status(&["passed", "failed"], Duration::from_secs(30))?["status"] == "passed",
         "cleanup-window browser observer failed"
     );
-    let done = world.wait_status_for(&others[0], &["passed", "failed"], Duration::from_secs(30))?;
+    let done = world.wait_status_for(
+        &others[0],
+        Some(&run),
+        &["passed", "failed"],
+        Duration::from_secs(30),
+    )?;
     ensure!(
         done["status"] == "passed"
             && done["checks"].as_array().is_some_and(|checks| checks
@@ -3891,11 +4179,10 @@ health={{path="/healthz",timeout_seconds=10}}
     let pending_id = data(&pending)?["release_id"]
         .as_str()
         .ok_or("missing pending release")?;
-    let database = rusqlite::Connection::open(world.state.join("authority.sqlite3"))
-        .map_err(|e| e.to_string())?;
+    let database = world.authority_connection()?;
     database
         .execute(
-            "DELETE FROM port_assignments WHERE deployment_id=?1 AND component='web'",
+            "DELETE FROM port_assignments WHERE deployment_id=$1 AND component='web'",
             [id],
         )
         .map_err(|e| e.to_string())?;
@@ -3909,7 +4196,7 @@ health={{path="/healthz",timeout_seconds=10}}
     );
     let stored: (String, Option<u16>) = database
         .query_row(
-            "SELECT status,port FROM releases WHERE release_id=?1",
+            "SELECT status,port FROM releases WHERE release_id=$1",
             [pending_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -4150,11 +4437,12 @@ command={independent}
     ))?;
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "shared database setup failure fixture"])?;
-    data(&world.call(
-        "test.start",
+    let started = world.start_fresh(
         json!({"path":world.repo,"targets":["broken","independent"]}),
-    )?)?;
-    let status = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+        None,
+    )?;
+    let status =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(
         status["status"] == "failed",
         "failed database setup was reported green"
@@ -4201,11 +4489,16 @@ command={independent}
         .and_then(|check| check["name"].as_str())
         .ok_or("cleanup identity missing")?
         .to_owned();
-    data(&world.call(
+    let started = data(&world.call(
         "test.retry",
         json!({"path":world.repo,"run_id":status["run_id"],"check":setup}),
-    )?)?;
-    let retry = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    )?)?
+    .clone();
+    ensure!(
+        test_run_id(&started)? != test_run_id(&status)?,
+        "setup retry reused the originating run identity"
+    );
+    let retry = world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(
         retry["status"] == "failed"
             && retry["proof"] == "retry"
@@ -4286,22 +4579,29 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
     fs::copy(&world.harness.executable, &helper).map_err(|e| e.to_string())?;
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
     world.start_daemon(Some(edge_uid), Some("owner@example.test"), None)?;
+    let mut previous_run_id = None;
     for identity in [Some("owner@example.test"), None] {
-        let started = call_as(
-            &helper,
-            edge_uid,
-            edge_uid,
-            &world.socket,
-            request("test.start", json!({"path":world.repo}), "edge", identity),
-        )?;
-        ensure!(
-            started["ok"] == true,
-            format!(
-                "authorized Console test could not start: {}",
-                bounded_json(&started)
-            )
-        );
-        let finished = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+        let started =
+            wait_for_fresh_test_start(previous_run_id.as_deref(), Duration::from_secs(10), || {
+                let response = call_as(
+                    &helper,
+                    edge_uid,
+                    edge_uid,
+                    &world.socket,
+                    request("test.start", json!({"path":world.repo}), "edge", identity),
+                )?;
+                ensure!(
+                    response["ok"] == true,
+                    format!(
+                        "authorized Console test could not start: {}",
+                        bounded_json(&response)
+                    )
+                );
+                data(&response).cloned()
+            })?;
+        let finished =
+            world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(30))?;
+        previous_run_id = Some(test_run_id(&started)?.to_owned());
         ensure!(
             finished["status"] == "passed",
             "Console-requested check did not execute"
@@ -4375,16 +4675,18 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
         ),
         None,
     )?)?;
-    let started = call_as(
-        &helper,
-        edge_uid,
-        edge_uid,
-        &world.socket,
-        request("test.start", json!({"path":world.repo}), "edge", None),
-    )?;
-    let run = data(&started)?["run_id"]
-        .as_str()
-        .ok_or("Console run identity missing")?;
+    let started =
+        wait_for_fresh_test_start(previous_run_id.as_deref(), Duration::from_secs(10), || {
+            data(&call_as(
+                &helper,
+                edge_uid,
+                edge_uid,
+                &world.socket,
+                request("test.start", json!({"path":world.repo}), "edge", None),
+            )?)
+            .cloned()
+        })?;
+    let run = test_run_id(&started)?;
     let ready = await_database_case(&listener)?;
     let catalog = call_as(
         &helper,
@@ -4412,7 +4714,7 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
         request("test.stop", json!({"path":world.repo}), "edge", None),
     )?)?;
     drop(ready);
-    let stopped = world.wait_status(&["cancelled"], Duration::from_secs(30))?;
+    let stopped = world.wait_run_status(&started, &["cancelled"], Duration::from_secs(30))?;
     ensure!(
         stopped["caller_uid"] == edge_uid && stopped["execution_uid"] == world.harness.caller_uid,
         "cancellation lost original requester attribution"
@@ -4437,8 +4739,7 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
         fs::metadata(&world.repo).map_err(|e| e.to_string())?.mode() & 0o777 == 0o700,
         "Console execution widened repository filesystem access"
     );
-    let database = rusqlite::Connection::open(world.state.join("authority.sqlite3"))
-        .map_err(|e| e.to_string())?;
+    let database = world.authority_connection()?;
     database
         .execute("UPDATE repositories SET registered_by_uid=0", [])
         .map_err(|e| e.to_string())?;
@@ -4451,7 +4752,7 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
     )?;
     database
         .execute(
-            "UPDATE repositories SET registered_by_uid=?1",
+            "UPDATE repositories SET registered_by_uid=$1",
             [world.harness.caller_uid],
         )
         .map_err(|e| e.to_string())?;
@@ -4651,6 +4952,26 @@ shared_from = "{owner_id}/db"
         "shared consumer altered the owner port binding"
     );
 
+    let blocked_owner_removal = world.call(
+        "deployment.remove",
+        json!({"deployment_id": owner_id, "delete_data": false}),
+    )?;
+    ensure!(
+        error_code(&blocked_owner_removal) == Some("deployment_action_failed")
+            && blocked_owner_removal
+                .to_string()
+                .contains("PostgreSQL owner"),
+        "shared PostgreSQL owner was removed while a borrower remained registered"
+    );
+    let removed_consumer_response = world.call(
+        "deployment.remove",
+        json!({"deployment_id": consumer_id, "delete_data": false}),
+    )?;
+    let removed_consumer = data(&removed_consumer_response)?;
+    ensure!(
+        removed_consumer["removed"] == true,
+        "consumer deployment cleanup did not complete"
+    );
     let removed_owner = data(&world.call(
         "deployment.remove",
         json!({"deployment_id": owner_id, "delete_data": false}),
@@ -4674,14 +4995,14 @@ shared_from = "{owner_id}/db"
             .contains("shared PostgreSQL component is not deployed"),
         "missing-owner failure did not identify the ownership boundary"
     );
-    let removed_consumer_response = world.call(
+    let removed_consumer_after_owner_response = world.call(
         "deployment.remove",
         json!({"deployment_id": consumer_id, "delete_data": false}),
     )?;
-    let removed_consumer = data(&removed_consumer_response)?;
+    let removed_consumer_after_owner = data(&removed_consumer_after_owner_response)?;
     ensure!(
-        removed_consumer["removed"] == true,
-        "consumer deployment cleanup did not complete"
+        removed_consumer_after_owner["removed"] == true,
+        "consumer cleanup after the missing-owner failure did not complete"
     );
     Ok(())
 }
@@ -4731,6 +5052,10 @@ fn case_digest_pinned_postgis_fixture_is_pulled_injected_and_removed(
 }
 
 fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Result<(), String> {
+    use devcoordinator2_control::docker::{
+        DockerCli, DockerControl, DockerInvocation, ExactContainerId,
+    };
+
     let (listener, gate) = database_case_gate(world)?;
     let command = fixture_command(
         world,
@@ -4763,26 +5088,71 @@ fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Resu
         "attaching changed the active PostgreSQL fixture"
     );
     let second = world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?;
-    let second_id = data(&second)?["run_id"]
+    let second_data = data(&second)?;
+    let second_id = second_data["run_id"]
         .as_str()
         .ok_or_else(|| "second start omitted run_id".to_owned())?
         .to_owned();
+    ensure!(
+        second_id != first_id
+            && second_data["attached"] == json!(false)
+            && second_data["superseded_run_id"] == json!(first_id),
+        "PostgreSQL replacement did not supersede the first run"
+    );
     let second_ready = await_database_case(&listener)?;
     drop(first_ready);
     ensure!(
         docker_ids("run", &first_id)?.is_empty(),
         "superseded PostgreSQL fixture survived"
     );
+    let second_containers = docker_ids("run", &second_id)?;
     ensure!(
-        docker_ids("run", &second_id)?.len() == 1,
+        second_containers.len() == 1
+            && docker_ids("instance", &world.unit_prefix)?.contains(&second_containers[0]),
         "successor PostgreSQL fixture did not start"
     );
+    let orphan =
+        ExactContainerId::parse(second_containers[0].clone()).map_err(|e| e.to_string())?;
     world.stop_daemon(true)?;
     ensure!(
-        docker_ids("run", &second_id)?.len() == 1,
+        docker_ids("run", &second_id)? == second_containers,
         "hard daemon stop unexpectedly removed the orphan fixture"
     );
     world.start_daemon(None, None, None)?;
+    let recovery_timeout = Duration::from_secs(15);
+    let recovery_deadline = Instant::now() + recovery_timeout;
+    // Keep the command blocked until recovery proves this exact orphan absent.
+    // Releasing its socket first would allow ordinary completion to fake proof.
+    wait_for_value("orphan PostgreSQL recovery", recovery_timeout, || {
+        let remaining = recovery_deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("orphan PostgreSQL recovery deadline reached")?;
+        let request = DockerInvocation::new(
+            vec![
+                "ps".into(),
+                "--all".into(),
+                "--no-trunc".into(),
+                "--quiet".into(),
+                "--filter".into(),
+                format!("id={orphan}").into(),
+            ],
+            remaining,
+        )
+        .map_err(|e| e.to_string())?;
+        let output = DockerCli::default()
+            .invoke(request)
+            .map_err(|e| e.to_string())?;
+        ensure!(
+            output.success(),
+            "cannot inspect the exact orphan container"
+        );
+        let identity = output.stdout.trim();
+        ensure!(
+            identity.is_empty() || identity == orphan.as_str(),
+            "orphan observation returned a different container identity"
+        );
+        Ok(identity.is_empty().then_some(json!(true)))
+    })?;
     drop(second_ready);
     ensure!(
         docker_ids("run", &second_id)?.is_empty(),
@@ -5037,17 +5407,22 @@ fn case_selection_and_failed_check_retry_remain_non_readiness_proof(
         &[],
     )?);
     world.write_config(&config)?;
-    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
-    let failed = world.wait_status(&["failed"], Duration::from_secs(120))?;
+    let started = world.start_fresh(json!({"path": world.repo, "mode":"replace"}), None)?;
+    let failed = world.wait_run_status(&started, &["failed"], Duration::from_secs(120))?;
     let origin = failed["run_id"]
         .as_str()
         .ok_or_else(|| "failed run omitted id".to_owned())?
         .to_owned();
-    data(&world.call(
+    let started = data(&world.call(
         "test.retry",
         json!({"path": world.repo, "run_id": origin, "check": "verify"}),
-    )?)?;
-    let retry = world.wait_status(&["failed"], Duration::from_secs(120))?;
+    )?)?
+    .clone();
+    ensure!(
+        test_run_id(&started)? != origin,
+        "check retry reused the originating run identity"
+    );
+    let retry = world.wait_run_status(&started, &["failed"], Duration::from_secs(120))?;
     ensure!(retry["proof"] == "retry", "retry proof drifted");
     ensure!(retry["origin_run_id"] == origin, "retry origin drifted");
     let states = retry["checks"]
@@ -5073,19 +5448,21 @@ fn case_selection_and_failed_check_retry_remain_non_readiness_proof(
                 .is_some_and(|message| message.to_ascii_lowercase().contains("stale")),
         "stale retry was not rejected"
     );
-    data(&world.call(
-        "test.start",
+    let started = world.start_fresh(
         json!({"path": world.repo, "checks": ["verify"]}),
-    )?)?;
-    let selected = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+        Some(test_run_id(&retry)?),
+    )?;
+    let selected =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(selected["status"] == "passed", "selected run failed");
     ensure!(selected["proof"] == "selected", "selected proof drifted");
     ensure!(
         selected["selection"] == json!(["verify"]),
         "selection drifted"
     );
-    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
-    let complete = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    let started = world.start_fresh(json!({"path": world.repo}), Some(test_run_id(&selected)?))?;
+    let complete =
+        world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(complete["status"] == "passed", "complete run failed");
     ensure!(complete["proof"] == "complete", "complete proof drifted");
     Ok(())
@@ -5125,8 +5502,15 @@ fn case_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(
         &fixture_command(world, &["sleep", "120"]),
         None,
     )?)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
-    let lease = begin_drain(&world.base, "test upgrade").map_err(|error| error.to_string())?;
+    let started = data(&world.call("test.start", json!({"path": world.repo}))?)?.clone();
+    let lease = begin_drain(
+        world
+            .socket
+            .parent()
+            .ok_or("daemon socket parent missing")?,
+        "test upgrade",
+    )
+    .map_err(|error| error.to_string())?;
     let tested = (|| {
         assert_drain_preserves_active_run_and_rejects_replacement(world)?;
         let stopped = world.call(
@@ -5141,6 +5525,7 @@ fn case_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(
             "drain stop failed"
         );
         let status = data(&world.call("test.status", json!({"path": world.repo}))?)?.clone();
+        ensure_test_run(&status, test_run_id(&started)?)?;
         ensure!(
             status["termination_reason"] == "operator_cancelled",
             "operational stop reason drifted"
@@ -5170,9 +5555,15 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
         &fixture_command(world, &["wait-fifo", &release.to_string_lossy()]),
         None,
     )?)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
-    let lease =
-        begin_drain(&world.base, "repository install").map_err(|error| error.to_string())?;
+    let started = data(&world.call("test.start", json!({"path": world.repo}))?)?.clone();
+    let lease = begin_drain(
+        world
+            .socket
+            .parent()
+            .ok_or("daemon socket parent missing")?,
+        "repository install",
+    )
+    .map_err(|error| error.to_string())?;
     let tested = (|| {
         assert_drain_preserves_active_run_and_rejects_replacement(world)?;
         data(&world.call("plan.overview", json!({"path": world.repo}))?)?;
@@ -5196,7 +5587,8 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
         release_handle
             .write_all(b"1")
             .map_err(|error| error.to_string())?;
-        let completed = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+        let completed =
+            world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
         ensure!(completed["status"] == "passed", "active run did not drain");
         let fence = world.socket.with_file_name("daemon.pre-cutover.sock");
         fs::rename(&world.socket, &fence).map_err(|error| error.to_string())?;
@@ -5228,8 +5620,9 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
     let reopened = end_drain(&lease).map_err(|error| error.to_string());
     tested.and(reopened)?;
     world.write_config(&unit_config(&fixture_command(world, &["exit", "0"]), None)?)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
-    let after = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    let prior = data(&world.call("test.status", json!({"path": world.repo}))?)?.clone();
+    let started = world.start_fresh(json!({"path": world.repo}), Some(test_run_id(&prior)?))?;
+    let after = world.wait_run_status(&started, &["passed", "failed"], Duration::from_secs(120))?;
     ensure!(after["status"] == "passed", "post-drain start failed");
 
     // Exercise the installed layout through the actual daemon, without the
@@ -5375,12 +5768,25 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     run_status("systemctl", &["stop", &api_unit])?;
     world.stop_daemon(true)?;
     world.start_daemon(None, None, None)?;
-    let recovered =
-        data(&world.call("deployment.status", json!({"deployment_id": deployment_id}))?)?.clone();
+    let deadline = (time::OffsetDateTime::now_utc() + time::Duration::seconds(20))
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| error.to_string())?;
+    let recovered = data(&world.call(
+        "deployment.wait",
+        json!({
+            "deployment_id": deployment_id, "state": "ready", "deadline_at": deadline
+        }),
+    )?)?
+    .clone();
+    ensure!(
+        recovered["completed"] == true && recovered["timed_out"] == false,
+        "restart recovery did not complete through the bounded deployment wait"
+    );
+    let recovered = &recovered["status"];
     ensure!(
         recovered["current_generation"] == 1
-            && component(&recovered, "api")?["binding"]["identity"] == api_unit
-            && component(&recovered, "api")?["port"] == json!(api_port)
+            && component(recovered, "api")?["binding"]["identity"] == api_unit
+            && component(recovered, "api")?["port"] == json!(api_port)
             && recovered["readiness"]["ready"] == true,
         "daemon restart did not recover the committed routed process"
     );
@@ -5858,6 +6264,26 @@ fn case_exact_candidate_keeps_data_route_and_rollback(world: &mut World) -> Resu
         fs::read_to_string(world.repo.join("marker.txt")).map_err(|e| e.to_string())? == "v1\n",
         "candidate changed shared source"
     );
+    let current = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        current["readiness"]["ready"] == true && current["readiness"]["source_state"] == "current",
+        "status by ID did not retain the distinct candidate origin"
+    );
+    world.stop_daemon(false)?;
+    world.start_daemon(None, None, None)?;
+    let recovered = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        recovered["current_generation"] == 2 && recovered["readiness"]["ready"] == true,
+        "daemon reconstruction lost the candidate source binding"
+    );
+    fs::write(candidate.join("marker.txt"), "unreviewed after apply\n")
+        .map_err(|e| e.to_string())?;
+    let changed = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        changed["readiness"]["pending_apply"] == true && changed["readiness"]["ready"] == false,
+        "candidate edits were not detected after daemon reconstruction"
+    );
+    fs::write(candidate.join("marker.txt"), "v2\n").map_err(|e| e.to_string())?;
     let repeated = data(&world.call("deployment.apply", request)?)?.clone();
     ensure!(
         repeated["current_generation"] == 2,
@@ -5870,6 +6296,11 @@ fn case_exact_candidate_keeps_data_route_and_rollback(world: &mut World) -> Resu
     ensure!(
         http_get_json(port)?["version"] == "v1",
         "rollback lost the healthy source"
+    );
+    ensure!(
+        data(&world.call("deployment.status", json!({"deployment_id":id}))?)?["readiness"]["ready"]
+            == true,
+        "rollback did not restore ordinary declared-source comparison"
     );
     ensure!(
         docker_exec(
@@ -5899,6 +6330,7 @@ fn case_exact_candidate_keeps_data_route_and_rollback(world: &mut World) -> Resu
         "remove",
         candidate.to_str().ok_or("invalid candidate path")?,
     ])?;
+    deployment_diagnostics::assert_frozen_worktree_candidate(world)?;
     Ok(())
 }
 
@@ -6691,24 +7123,23 @@ fn case_unchanged_apply_rechecks_already_bad_published_compose_route(
         "initial unreachable route did not fail"
     );
     {
-        let connection = rusqlite::Connection::open(world.state.join("authority.sqlite3"))
-            .map_err(|error| error.to_string())?;
+        let connection = world.authority_connection()?;
         connection
             .execute(
-                "UPDATE deployments SET state='running' WHERE deployment_id=?1",
-                rusqlite::params![deployment_id],
+                "UPDATE deployments SET state='running' WHERE deployment_id=$1",
+                devcoordinator2_control::database::params![deployment_id],
             )
             .map_err(|error| error.to_string())?;
         connection
             .execute(
-                "UPDATE components SET state='running', health='unhealthy', last_error='seeded unreachable route' WHERE deployment_id=?1 AND name='compose'",
-                rusqlite::params![deployment_id],
+                "UPDATE components SET state='running', health='unhealthy', last_error='seeded unreachable route' WHERE deployment_id=$1 AND name='compose'",
+                devcoordinator2_control::database::params![deployment_id],
             )
             .map_err(|error| error.to_string())?;
         connection
             .execute(
-                "INSERT OR REPLACE INTO domain_routes(domain, deployment_id, component, port, generation, published_at, lease_id) VALUES(?1,?2,'compose',?3,?4,'seeded',(SELECT lease_id FROM port_assignments WHERE deployment_id=?2 AND component='compose' AND port=?3))",
-                rusqlite::params![
+                "INSERT INTO domain_routes(domain, deployment_id, component, port, generation, published_at, lease_id) VALUES($1,$2,'compose',$3,$4,'seeded',(SELECT lease_id FROM port_assignments WHERE deployment_id=$2 AND component='compose' AND port=$3)) ON CONFLICT(domain) DO UPDATE SET deployment_id=excluded.deployment_id,component=excluded.component,port=excluded.port,generation=excluded.generation,published_at=excluded.published_at,lease_id=excluded.lease_id",
+                devcoordinator2_control::database::params![
                     "upgrade-stack",
                     deployment_id,
                     i64::try_from(route_port).map_err(|_| "route port overflow")?,
@@ -7536,53 +7967,96 @@ fn case_event_wait_replays_planning_and_groups_heartbeats(world: &mut World) -> 
         .to_owned();
     world.wait_status(&["passed"], Duration::from_secs(30))?;
     world.wait_units_empty(Duration::from_secs(10))?;
-    let deadline = (time::OffsetDateTime::now_utc() + time::Duration::seconds(5))
+    let event_deadline = Instant::now() + Duration::from_secs(10);
+    let deadline_at = (time::OffsetDateTime::now_utc() + time::Duration::seconds(10))
         .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| error.to_string())?;
-    let finished = world.call(
-        "event.wait",
-        json!({
-            "cursor":0,
-            "filters":[{
-                "filter_id":"finished",
-                "categories":["test"],
-                "kinds":["test.finished"],
-                "repository_ids":[repository_id],
-                "deadline_at":deadline
-            }]
-        }),
-    )?;
+        .map_err(|error| format!("cannot format lifecycle event deadline: {error}"))?;
+    let run_id = test_run_id(data(&started)?)?.to_owned();
+    let mut cursor = 0_u64;
+    let mut lifecycle = Vec::new();
+    while lifecycle.len() < 2 {
+        ensure!(
+            Instant::now() < event_deadline,
+            "native test lifecycle events did not arrive before their deadline"
+        );
+        let response = world.call(
+            "event.wait",
+            json!({
+                "cursor":cursor,
+                "limit":1,
+                "filters":[{
+                    "filter_id":"tests",
+                    "categories":["test"],
+                    "kinds":["test.started","test.finished"],
+                    "repository_ids":[repository_id],
+                    "deadline_at":deadline_at
+                }]
+            }),
+        )?;
+        let response = data(&response)?;
+        let events = response["events"]
+            .as_array()
+            .ok_or("event.wait omitted events")?;
+        ensure!(
+            events.len() == 1,
+            "event.wait returned an empty or multi-event lifecycle batch"
+        );
+        let event = &events[0];
+        ensure!(
+            event["filter_ids"] == json!(["tests"]),
+            "test lifecycle event matched an unexpected filter"
+        );
+        let event_cursor = event
+            .pointer("/event/cursor")
+            .and_then(Value::as_u64)
+            .ok_or("test lifecycle event omitted cursor")?;
+        let next_cursor = response["cursor"]
+            .as_u64()
+            .ok_or("event.wait omitted cursor")?;
+        ensure!(
+            next_cursor == event_cursor && next_cursor > cursor,
+            "event.wait cursor did not advance monotonically"
+        );
+        let event_run_id = event
+            .pointer("/event/event/data/run_id")
+            .and_then(Value::as_str)
+            .ok_or("test lifecycle event omitted run_id")?;
+        let event_repository_id = event
+            .pointer("/event/event/data/repository_id")
+            .and_then(Value::as_str)
+            .ok_or("test lifecycle event omitted repository_id")?;
+        ensure!(
+            event_run_id == run_id && event_repository_id == repository_id,
+            "test lifecycle event did not preserve the admitted run identity"
+        );
+        let kind = event
+            .pointer("/event/event/data/kind")
+            .and_then(Value::as_str)
+            .ok_or("test lifecycle event omitted kind")?;
+        match lifecycle.len() {
+            0 => ensure!(
+                kind == "test.started"
+                    && event.pointer("/event/event/data/status") == Some(&json!("running")),
+                "test lifecycle did not begin with a running event"
+            ),
+            1 => ensure!(
+                kind == "test.finished"
+                    && event.pointer("/event/event/data/status") == Some(&json!("passed"))
+                    && event.pointer("/event/event/data/exit_code") == Some(&json!(0)),
+                "test lifecycle did not finish with the admitted run"
+            ),
+            _ => unreachable!(),
+        }
+        ensure!(
+            !event.to_string().contains("caller_uid") && !event.to_string().contains("client"),
+            "test event disclosed caller attribution"
+        );
+        lifecycle.push(kind.to_owned());
+        cursor = next_cursor;
+    }
     ensure!(
-        data(&finished)?["events"].as_array().is_some_and(|events| {
-            events.len() == 1
-                && events[0].pointer("/event/event/data/kind") == Some(&json!("test.finished"))
-        }),
-        "native terminal event did not arrive before its deadline"
-    );
-    let test_events = world.call(
-        "event.wait",
-        json!({
-            "cursor":0,
-            "filters":[{
-                "filter_id":"tests",
-                "categories":["test"],
-                "repository_ids":[repository_id]
-            }]
-        }),
-    )?;
-    let test_events = data(&test_events)?;
-    ensure!(
-        test_events["events"].as_array().is_some_and(|events| {
-            events.len() == 2
-                && events[0].pointer("/event/event/data/kind") == Some(&json!("test.started"))
-                && events[1].pointer("/event/event/data/kind") == Some(&json!("test.finished"))
-        }),
+        lifecycle == ["test.started", "test.finished"],
         "native test lifecycle events were not delivered in cursor order"
-    );
-    ensure!(
-        !test_events.to_string().contains("caller_uid")
-            && !test_events.to_string().contains("client"),
-        "test event disclosed caller attribution"
     );
     let created = world.call(
         "task.create",
@@ -7713,10 +8187,8 @@ health={{path="/healthz",timeout_seconds=30}}
     let saved = world.base.join("saved");
     fs::create_dir(&saved).map_err(|e| e.to_string())?;
     fs::set_permissions(&saved, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-    let authority =
-        devcoordinator2_control::database::Database::open(world.state.join("authority.sqlite3"))
-            .map_err(|e| e.to_string())?;
-    let snapshot = saved.join("authority-before.sqlite3");
+    let authority = world.authority()?;
+    let snapshot = saved.join("authority-before.pgdump");
     authority
         .backup(snapshot.clone())
         .map_err(|e| e.to_string())?;
@@ -7724,30 +8196,32 @@ health={{path="/healthz",timeout_seconds=30}}
     authority
         .transaction(move |c| {
             c.execute(
-                "UPDATE deployments SET current_generation=0 WHERE deployment_id=?1",
+                "UPDATE deployments SET current_generation=0 WHERE deployment_id=$1",
                 [&key],
             )?;
             c.execute(
-                "DELETE FROM components WHERE deployment_id=?1 AND name='db'",
+                "DELETE FROM components WHERE deployment_id=$1 AND name='db'",
                 [&key],
             )?;
             c.execute(
-                "DELETE FROM port_assignments WHERE deployment_id=?1 AND component='db'",
+                "DELETE FROM port_assignments WHERE deployment_id=$1 AND component='db'",
                 [&key],
             )?;
             Ok(())
         })
         .map_err(|e| e.to_string())?;
     authority.close().map_err(|e| e.to_string())?;
+    let hash = sha256_hex(&fs::read(&snapshot).map_err(|e| e.to_string())?);
     let header = saved.join("installation-snapshot.json");
     fs::write(
         &header,
-        serde_json::to_vec(&json!({"schema":1,"status":"committed","transaction_dir":saved}))
-            .map_err(|e| e.to_string())?,
+        serde_json::to_vec(
+            &json!({"schema":3,"status":"committed","transaction_dir":saved,"backup_sha256":hash}),
+        )
+        .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     fs::set_permissions(&header, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-    let hash = sha256_hex(&fs::read(&snapshot).map_err(|e| e.to_string())?);
     world.start_daemon(None, None, None)?;
     let mut params = json!({"repository_id":repository,"deployment_id":deployment,"transaction_dir":saved,"backup_sha256":hash});
     let credentials = world
@@ -8235,6 +8709,10 @@ fn cases() -> Vec<Case> {
             storage_cases::worktrees_and_backup_floor,
         ),
         (
+            "storage_upstream_worktree_baselines",
+            storage_upstream_cases::upstream_worktree_baselines,
+        ),
+        (
             "storage_automatic_policy_boundaries",
             storage_cases::automatic_policy_boundaries,
         ),
@@ -8393,6 +8871,26 @@ fn cases() -> Vec<Case> {
             case_exact_candidate_keeps_data_route_and_rollback,
         ),
         (
+            "process_startup_attempts_remain_attributable_and_bounded",
+            deployment_diagnostics::case_process_startup_attempts_remain_attributable_and_bounded,
+        ),
+        (
+            "reads_survive_busy_writers_and_run_transitions",
+            request_responsiveness::reads_survive_busy_writers_and_run_transitions,
+        ),
+        (
+            "shared_database_ownership_and_recovery",
+            database_lifecycle::shared_ownership_and_recovery,
+        ),
+        (
+            "shared_database_retained_exit_diagnostics",
+            database_lifecycle::retained_exit_diagnostics,
+        ),
+        (
+            "container_receipt_monotonicity_and_pending_intent_recovery",
+            database_lifecycle::completed_receipt_and_renamed_intent,
+        ),
+        (
             "failed_component_is_degraded_and_busy_is_immediate",
             case_failed_component_is_degraded_and_busy_is_immediate,
         ),
@@ -8446,6 +8944,13 @@ fn cases() -> Vec<Case> {
 
 fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result<(), String> {
     let bridge = world.socket.with_file_name("sandbox-bridge");
+    // The API socket and filesystem bridge start independently. Observe the
+    // bridge's own initialization before staging a request in its directory.
+    let bridge_lock = bridge.join("daemon.lock");
+    world.wait_file(
+        bridge_lock.to_str().ok_or("invalid bridge lock path")?,
+        Duration::from_secs(3),
+    )?;
     let id = "eabbcdd0";
     let pending = bridge.join(format!("{id}.processing"));
     let output = bridge.join(format!("{id}.response"));
@@ -8464,27 +8969,32 @@ fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result
         &staged_request,
         serde_json::to_vec(&request_value).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| format!("cannot stage bridge cutover request: {e}"))?;
     chown_path(
         &staged_request,
         world.harness.caller_uid,
         world.harness.caller_gid,
     )?;
-    fs::rename(staged_request, request_path).map_err(|e| e.to_string())?;
+    fs::rename(staged_request, request_path)
+        .map_err(|e| format!("cannot publish bridge cutover request: {e}"))?;
     world.wait_file(
         pending.to_str().ok_or("invalid pending path")?,
         Duration::from_secs(3),
     )?;
     let fence = world.socket.with_file_name("daemon.pre-cutover.sock");
-    fs::rename(&world.socket, &fence).map_err(|e| e.to_string())?;
+    fs::rename(&world.socket, &fence)
+        .map_err(|e| format!("cannot fence bridge fixture socket: {e}"))?;
     let interrupted = world.wait_file(
         output.to_str().ok_or("invalid response path")?,
         Duration::from_secs(3),
     );
-    fs::rename(&fence, &world.socket).map_err(|e| e.to_string())?;
+    fs::rename(&fence, &world.socket)
+        .map_err(|e| format!("cannot restore bridge fixture socket: {e}"))?;
     interrupted?;
-    let response: Value = serde_json::from_slice(&fs::read(&output).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let response: Value = serde_json::from_slice(
+        &fs::read(&output).map_err(|e| format!("cannot read bridge cutover response: {e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
     ensure!(
         error_code(&response) == Some("daemon_unavailable"),
         "bridge observer did not receive reconnectable cutover response"
@@ -8496,7 +9006,7 @@ fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result
     data(&world.call("ping", json!({}))?)?;
     world.stop_daemon(false)?;
     let stale = bridge.join("abbbcd.processing");
-    fs::write(&stale, serde_json::to_vec(&json!({"protocol":2,"id":"abbbcd","operation":"health.summary","params":{},"client":{}})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    fs::write(&stale, serde_json::to_vec(&json!({"protocol":3,"id":"abbbcd","operation":"health.summary","params":{},"client":{}})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
     chown_path(&stale, world.harness.caller_uid, world.harness.caller_gid)?;
     world.start_daemon(None, None, None)?;
     let recovered = bridge.join("abbbcd.response");
@@ -8504,14 +9014,19 @@ fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result
         recovered.to_str().ok_or("invalid recovery path")?,
         Duration::from_secs(3),
     )?;
-    let response: Value = serde_json::from_slice(&fs::read(&recovered).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let response: Value = serde_json::from_slice(
+        &fs::read(&recovered).map_err(|e| format!("cannot read recovered bridge receipt: {e}"))?,
+    )
+    .map_err(|e| e.to_string())?;
     ensure!(
         error_code(&response) == Some("daemon_unavailable") && !stale.exists(),
         "interrupted read receipt did not recover truthfully"
     );
     ensure!(
-        fs::metadata(recovered).map_err(|e| e.to_string())?.uid() == world.harness.caller_uid,
+        fs::metadata(recovered)
+            .map_err(|e| format!("cannot inspect recovered bridge receipt: {e}"))?
+            .uid()
+            == world.harness.caller_uid,
         "response owner changed"
     );
     Ok(())
@@ -8556,6 +9071,7 @@ fn validate_run_inputs(
     fixture: &Path,
     work_root: &Path,
     report: &Path,
+    caller: &CallerIdentity,
 ) -> Result<(), String> {
     ensure!(
         unsafe { libc::geteuid() } == 0,
@@ -8574,6 +9090,45 @@ fn validate_run_inputs(
             path.is_absolute() && path.is_file(),
             format!("{label} must be an absolute regular file")
         );
+    }
+    let identity = Command::new(daemon)
+        .arg("--build-identity")
+        .output()
+        .map_err(|error| format!("cannot inspect candidate build identity: {error}"))?;
+    ensure!(
+        identity.status.success() && identity.stdout.len() <= 4096,
+        "candidate daemon must support the build-identity preflight"
+    );
+    let identity: Value = serde_json::from_slice(&identity.stdout)
+        .map_err(|_| "candidate daemon build identity is invalid")?;
+    ensure!(
+        identity["root_acceptance"] == true,
+        "candidate daemon must be built with --features root-acceptance; the suite uses isolated executor, clock, Docker and mount fixtures"
+    );
+    ensure!(
+        identity["protocol_version"] == devcoordinator2_api::PROTOCOL_VERSION
+            && identity["source_commit"] == devcoordinator2_control::SOURCE_COMMIT,
+        "candidate daemon and root harness must use the same source commit and protocol"
+    );
+    let (caller_uid, caller_gid) = (caller.uid, caller.gid);
+    run_as(caller_uid,caller_gid,Path::new("/tmp"),daemon.to_str().ok_or("candidate path must be UTF-8")?,&["--build-identity"],Path::new("/tmp"))
+        .map_err(|_|"candidate daemon must be executable by the fixture caller; use an accessible test build without changing installed release permissions".to_owned())?;
+    for (path, label) in [(executor, "executor"), (fixture, "fixture")] {
+        run_as(
+            caller_uid,
+            caller_gid,
+            Path::new("/tmp"),
+            "/usr/bin/test",
+            &[
+                "-x",
+                path.to_str()
+                    .ok_or("fixture executable path must be UTF-8")?,
+            ],
+            Path::new("/tmp"),
+        )
+        .map_err(|_| {
+            format!("candidate {label} must be executable by the non-root fixture caller")
+        })?;
     }
     ensure!(work_root.is_absolute(), "work root must be absolute");
     ensure!(report.is_absolute(), "report path must be absolute");
@@ -8646,7 +9201,8 @@ fn run_suite(
         .map_err(|error| format!("cannot inspect host ephemeral ports: {error}"))?;
     reject_ephemeral_overlap(&port_range, &ephemeral)?;
     let caller = caller_identity(caller_user.as_deref())?;
-    validate_run_inputs(&daemon, &executor, &fixture, &work_root, &report)?;
+    validate_run_inputs(&daemon, &executor, &fixture, &work_root, &report, &caller)?;
+    let (postgres_uid, postgres_gid) = postgres_identity()?;
     let harness = Harness {
         daemon,
         executor,
@@ -8655,6 +9211,8 @@ fn run_suite(
         work_root,
         caller_uid: caller.uid,
         caller_gid: caller.gid,
+        postgres_uid,
+        postgres_gid,
         compose_subnet,
         port_range,
     };
@@ -8886,6 +9444,53 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_test_starts_wait_for_retirement_and_bind_the_accepted_identity() {
+        let retiring = json!({"run_id":"prior", "status":"running", "attached":true});
+        let fresh = json!({"run_id":"next", "status":"running", "attached":false});
+        let mut responses = [retiring, fresh.clone()].into_iter();
+        let started = wait_for_fresh_test_start(Some("prior"), Duration::from_secs(1), || {
+            responses
+                .next()
+                .ok_or_else(|| "unexpected extra start".into())
+        })
+        .unwrap();
+        assert_eq!(started, fresh);
+        assert!(responses.next().is_none());
+        assert!(ensure_test_run(&json!({"run_id":"next", "status":"passed"}), "next").is_ok());
+        assert!(ensure_test_run(&json!({"run_id":"prior", "status":"passed"}), "next").is_err());
+        assert!(ensure_test_run(&json!({"status":"passed"}), "next").is_err());
+
+        let initial =
+            wait_for_fresh_test_start(None, Duration::ZERO, || Ok(fresh.clone())).unwrap();
+        assert_eq!(initial, fresh);
+        for invalid in [
+            json!({"run_id":"other", "status":"running", "attached":true}),
+            json!({"run_id":"prior", "status":"running", "attached":false}),
+            json!({"run_id":"next", "status":"running", "attached":false, "superseded_run_id":"prior"}),
+            json!({"run_id":"next", "status":"passed", "attached":false}),
+            json!({"run_id":"next", "status":"running"}),
+            json!({"run_id":"", "status":"running", "attached":false}),
+        ] {
+            assert!(
+                wait_for_fresh_test_start(Some("prior"), Duration::ZERO, || Ok(invalid.clone()))
+                    .is_err(),
+                "accepted {invalid}"
+            );
+        }
+        assert!(
+            wait_for_fresh_test_start(None, Duration::ZERO, || {
+                Ok(json!({"run_id":"unexpected", "status":"running", "attached":true}))
+            })
+            .is_err()
+        );
+        let timeout = wait_for_fresh_test_start(Some("prior"), Duration::ZERO, || {
+            Ok(json!({"run_id":"prior", "status":"running", "attached":true}))
+        })
+        .unwrap_err();
+        assert!(timeout.contains("deadline"));
+    }
 
     #[test]
     fn fixture_inputs_are_validated_before_runtime_work() {

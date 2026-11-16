@@ -1,6 +1,7 @@
 //! Deployment resolution, truthful status, observed control, and route changes.
 mod recovery;
 mod routing_recovery;
+mod wait;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
@@ -11,13 +12,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use devcoordinator2_api::params::{DeploymentList as DeploymentListParams, SetDomain};
+use crate::database::OptionalExtension;
+use devcoordinator2_api::params::{
+    DeploymentList as DeploymentListParams, DeploymentLogs as DeploymentLogsParams, SetDomain,
+};
 use devcoordinator2_api::results::{
     Component, ComponentBinding, ComposeService, DeclaredDeployment, DeploymentList, DeploymentLog,
-    DeploymentSource, DeploymentStatus, DomainChanged,
+    DeploymentOwnedEvent, DeploymentSource, DeploymentStatus, DomainChanged,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::OptionalExtension;
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::Caller;
@@ -28,7 +31,7 @@ use crate::deployment_git::{DeploymentGit, GitCli};
 use crate::deployment_health::{DeploymentHealth, HostDeploymentHealth, Readiness};
 use crate::deployment_state::{
     ComponentRow, ComponentRuntimePatch, ComposeCompletionInput, DeploymentRow,
-    DeploymentRuntimePatch, DeploymentStore, RegisteredDeploymentTarget,
+    DeploymentRuntimePatch, DeploymentStore, GenerationSourceOrigin, RegisteredDeploymentTarget,
 };
 use crate::docker::{
     ComposeContext, CreateContainerRequest, DockerCli, DockerControl, DockerErrorKind,
@@ -82,10 +85,14 @@ pub struct Deployments {
     files: DeploymentFiles,
     clock: Arc<dyn Clock>,
     port_availability: Arc<dyn crate::ports::PortAvailability>,
-    busy: Arc<Mutex<HashSet<String>>>,
+    busy: Arc<MutationLocks>,
     finite_operations: crate::deployment_cancellation::FiniteOperations,
     routes: RouteFilePublisher,
+    events: Arc<Mutex<Option<DeploymentEventSink>>>,
 }
+
+type DeploymentEventSink =
+    Arc<dyn Fn(DeploymentOwnedEvent) -> Result<(), ProtocolError> + Send + Sync>;
 
 struct ResolvedDeployment {
     row: DeploymentRow,
@@ -132,15 +139,73 @@ type DesiredSnapshot = (
 
 struct BusyGuard {
     deployment_id: String,
-    active: Arc<Mutex<HashSet<String>>>,
+    locks: Arc<MutationLocks>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MutationOwner {
+    Foreground,
+    Maintenance,
+}
+
+#[derive(Default)]
+struct MutationEntry {
+    owner: Option<MutationOwner>,
+    pending: usize,
+}
+
+struct MutationLocks {
+    entries: Mutex<BTreeMap<String, MutationEntry>>,
+    changed: tokio::sync::watch::Sender<()>,
+}
+
+impl Default for MutationLocks {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(BTreeMap::new()),
+            changed: tokio::sync::watch::channel(()).0,
+        }
+    }
+}
+
+struct ForegroundIntent {
+    deployment_id: String,
+    locks: Arc<MutationLocks>,
 }
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        self.active
+        let mut entries = self
+            .locks
+            .entries
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.deployment_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(&self.deployment_id) {
+            entry.owner = None;
+            if entry.pending == 0 {
+                entries.remove(&self.deployment_id);
+            }
+        }
+        drop(entries);
+        self.locks.changed.send_replace(());
+    }
+}
+
+impl Drop for ForegroundIntent {
+    fn drop(&mut self) {
+        let mut entries = self
+            .locks
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(&self.deployment_id) {
+            entry.pending -= 1;
+            if entry.pending == 0 && entry.owner.is_none() {
+                entries.remove(&self.deployment_id);
+            }
+        }
+        drop(entries);
+        self.locks.changed.send_replace(());
     }
 }
 
@@ -235,9 +300,30 @@ impl Deployments {
             files,
             clock,
             port_availability,
-            busy: Arc::new(Mutex::new(HashSet::new())),
+            busy: Arc::new(MutationLocks::default()),
             finite_operations: crate::deployment_cancellation::FiniteOperations::default(),
             routes,
+            events: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn set_event_sink(&self, sink: DeploymentEventSink) {
+        *self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    fn publish_event(&self, event: DeploymentOwnedEvent) {
+        let sink = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(sink) = sink
+            && let Err(error) = sink(event)
+        {
+            tracing::warn!(code=%error.code,"deployment event publication unavailable");
         }
     }
 
@@ -291,10 +377,96 @@ impl Deployments {
         path: Option<&str>,
         name: Option<&str>,
         deployment_id: Option<&str>,
+        candidate: Option<&devcoordinator2_api::params::DeploymentCandidateSource>,
         caller: &Caller,
     ) -> Result<devcoordinator2_api::results::DeploymentPreflight, ProtocolError> {
-        let target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
-        Ok(self.prerequisites(&target))
+        let mut target = match (candidate, deployment_id) {
+            (Some(_), Some(id)) => self.resolve_recorded_target(id, caller)?,
+            (Some(_), None) => {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate source requires an existing deployment_id",
+                ));
+            }
+            (None, _) => self.resolve_target_readonly(path, name, deployment_id, caller)?,
+        };
+        if let Some(candidate) = candidate {
+            if caller.identity.is_some() || caller.via_edge {
+                return Err(ProtocolError::new(
+                    ErrorCode::PermissionDenied,
+                    "candidate source selection requires a trusted local caller",
+                ));
+            }
+            let row = target.row.as_ref().ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate source requires an existing deployment_id",
+                )
+            })?;
+            let resolved = crate::repository::resolve_worktree(
+                Path::new(&candidate.path),
+                Some((target.caller_uid, target.caller_gid)),
+            )?;
+            let repository_id =
+                crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
+                    ProtocolError::new(
+                        ErrorCode::RepositoryNotFound,
+                        "cannot resolve candidate repository identity",
+                    )
+                })?;
+            if repository_id != target.repository_id {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate source must belong to the deployment repository",
+                ));
+            }
+            let specification =
+                load_deployment_spec(&resolved.worktree_root, &row.name).map_err(config_error)?;
+            if !specification
+                .sources
+                .iter()
+                .any(|source| source == &target.source)
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::RepositoryConfigInvalid,
+                    "candidate no longer declares the deployment source",
+                ));
+            }
+            target.worktree = resolved.worktree_root;
+            target.specification = specification;
+            if !matches!(candidate.commit.len(), 40 | 64)
+                || !candidate
+                    .commit
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate commit must be one full hexadecimal object ID",
+                ));
+            }
+        }
+        let mut result = self.prerequisites(&target);
+        if let Some(candidate) = candidate {
+            let snapshot = self
+                .git
+                .snapshot(&target.worktree, target.caller_uid, target.caller_gid)
+                .map_err(git_apply_error)?;
+            if snapshot.dirty || snapshot.commit.as_deref() != Some(candidate.commit.as_str()) {
+                result.ready = false;
+                result
+                    .blockers
+                    .push(devcoordinator2_api::results::DeploymentBlocker {
+                        component: String::new(),
+                        code: ErrorCode::DeploymentApplyFailed,
+                        file: None,
+                        message:
+                            "candidate source is dirty or no longer matches the expected commit"
+                                .into(),
+                    });
+            }
+        }
+        Ok(result)
     }
 
     fn docker_component(component: &ComponentSpec) -> bool {
@@ -474,7 +646,44 @@ impl Deployments {
                 .observed_status(deployment_id)?
                 .ok_or_else(|| not_found(deployment_id));
         }
+        // Only explicit candidate receipts have this durable comparison binding.
+        // Ordinary and historical deployments still track their declared source.
+        if let Some(id) = deployment_id
+            && let Some(row) = self.store.get(id)?
+            && let Some(generation) = row.current_generation
+            && let Some(origin) = self.store.generation_origin(id, generation)?
+        {
+            let specification = stored_deployment_specification(&row)?;
+            let mut status = self.managed_status(&ResolvedDeployment {
+                row: row.clone(),
+                specification,
+            })?;
+            match self.origin_target(&row, &origin, caller) {
+                Ok(target) => self.refresh_readiness(&target, &mut status)?,
+                Err(error) => {
+                    if let Some(readiness) = &mut status.readiness {
+                        readiness.ready = false;
+                        readiness.pending_apply = None;
+                        readiness.source_state = "unknown".into();
+                        readiness.blockers.push(devcoordinator2_api::results::DeploymentBlocker {
+                            component: String::new(), code: error.code, file: None,
+                            message: "recorded candidate source origin cannot be verified; no substitute checkout was selected".into(),
+                        });
+                    }
+                }
+            }
+            return Ok(status);
+        }
         let resolved = self.resolve(path, name, deployment_id, caller)?;
+        if deployment_id.is_none()
+            && let Some(number) = resolved.row.current_generation
+            && self
+                .store
+                .generation_origin(&resolved.row.deployment_id, number)?
+                .is_some()
+        {
+            return self.status(None, None, Some(&resolved.row.deployment_id), caller);
+        }
         let mut status = self.managed_status(&resolved)?;
         match self.resolve_target_readonly(path, name, deployment_id, caller) {
             Ok(target) => self.refresh_readiness(&target, &mut status)?,
@@ -638,6 +847,27 @@ impl Deployments {
         )
     }
 
+    #[cfg(test)]
+    fn apply_with_candidate(
+        &self,
+        path: Option<&str>,
+        name: Option<&str>,
+        deployment_id: Option<&str>,
+        candidate: Option<&devcoordinator2_api::params::DeploymentCandidateSource>,
+        caller: &Caller,
+    ) -> Result<DeploymentStatus, ProtocolError> {
+        self.apply_request(
+            &devcoordinator2_api::params::DeploymentApply {
+                path: path.map(str::to_owned),
+                name: name.map(str::to_owned),
+                deployment_id: deployment_id.map(str::to_owned),
+                candidate: candidate.cloned(),
+                ..Default::default()
+            },
+            caller,
+        )
+    }
+
     pub fn apply_request(
         &self,
         params: &devcoordinator2_api::params::DeploymentApply,
@@ -660,18 +890,20 @@ impl Deployments {
                 "candidate source requires an existing deployment_id",
             ));
         }
-        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = if candidate.is_some() {
+            self.resolve_recorded_target(
+                deployment_id.expect("candidate identity checked"),
+                caller,
+            )?
+        } else {
+            self.resolve_target(path, name, deployment_id, caller)?
+        };
+        let mut source_origin = None;
         if let Some(candidate) = candidate {
             if caller.identity.is_some() || caller.via_edge {
                 return Err(ProtocolError::new(
                     ErrorCode::PermissionDenied,
                     "candidate source selection requires a trusted local caller",
-                ));
-            }
-            if target.source != "checkout" {
-                return Err(ProtocolError::new(
-                    ErrorCode::ParamsInvalid,
-                    "candidate source requires a versioned checkout deployment",
                 ));
             }
             if !matches!(candidate.commit.len(), 40 | 64)
@@ -707,15 +939,24 @@ impl Deployments {
             if !specification
                 .sources
                 .iter()
-                .any(|source| source == "checkout")
+                .any(|source| source == &target.source)
             {
                 return Err(ProtocolError::new(
                     ErrorCode::RepositoryConfigInvalid,
-                    "candidate no longer declares the versioned deployment",
+                    "candidate no longer declares the deployment source",
                 ));
             }
             // Keep the target identity, owner, leases and generation history. Only
             // the immutable generation's source/configuration comes from the candidate.
+            source_origin = Some(GenerationSourceOrigin {
+                worktree_id: crate::ids::worktree_id(&resolved.worktree_root).map_err(|_| {
+                    ProtocolError::new(
+                        ErrorCode::RepositoryNotFound,
+                        "cannot resolve candidate worktree identity",
+                    )
+                })?,
+                path: resolved.worktree_root.clone(),
+            });
             target.worktree = resolved.worktree_root;
             target.specification = specification;
         }
@@ -827,6 +1068,23 @@ impl Deployments {
             && row.spec_fingerprint == fingerprint
             && matches!(row.state.as_str(), "running" | "completed")
             && !snapshot.dirty
+            && row
+                .current_generation
+                .map(|number| self.store.generation_origin(&target.deployment_id, number))
+                .transpose()?
+                .flatten()
+                == source_origin
+            && (candidate.is_none()
+                || row
+                    .current_generation
+                    .map(|number| self.store.generation(&target.deployment_id, number))
+                    .transpose()?
+                    .flatten()
+                    .is_some_and(|generation| {
+                        self.files
+                            .owned_generation(&target.deployment_id, &generation.path)
+                            .is_some()
+                    }))
         {
             let resolved = ResolvedDeployment {
                 row: row.clone(),
@@ -896,21 +1154,52 @@ impl Deployments {
             .filter(|component| DeploymentStore::is_owned(component))
             .all(ComponentSpec::is_finite_workload)
             .then(|| self.finite_operations.begin(&target.deployment_id));
-        let generation_path =
-            match self.prepare_generation(&target, generation, snapshot.commit.as_deref()) {
-                Ok(path) => path,
+        let generation_path = match self.prepare_generation(
+            &target,
+            generation,
+            snapshot.commit.as_deref(),
+            candidate.is_some(),
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                self.restore_after_preparation_failure(&target, &old_components, &desired)?;
+                return Err(error);
+            }
+        };
+        if candidate.is_some() {
+            // Runtime configuration must come from the same committed tree as
+            // the commands and files. Reject a source edit racing preparation.
+            let retained_spec = load_deployment_spec(&generation_path, &target.specification.name)
+                .map_err(config_error)
+                .and_then(|specification| {
+                    if specification.canonical(&target.source)
+                        != target.specification.canonical(&target.source)
+                    {
+                        Err(ProtocolError::new(
+                            ErrorCode::DeploymentApplyFailed,
+                            "candidate specification changed while freezing its generation",
+                        ))
+                    } else {
+                        Ok(specification)
+                    }
+                });
+            match retained_spec {
+                Ok(specification) => target.specification = specification,
                 Err(error) => {
+                    self.remove_generation_path(&target, generation, &generation_path);
                     self.restore_after_preparation_failure(&target, &old_components, &desired)?;
                     return Err(error);
                 }
-            };
-        self.store.add_generation(
+            }
+        }
+        self.store.add_generation_with_origin(
             &target.deployment_id,
             generation,
             snapshot.commit.as_deref(),
             snapshot.dirty,
             &generation_path,
             &fingerprint,
+            source_origin.as_ref(),
         )?;
         if let Err(error) = self.run_build(&target, generation, &generation_path) {
             self.remove_generation_path(&target, generation, &generation_path);
@@ -988,18 +1277,16 @@ impl Deployments {
         deployment_id: Option<&str>,
         caller: &Caller,
     ) -> Result<DeploymentStatus, ProtocolError> {
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = if let Some(id) = deployment_id {
+            self.resolve_recorded_target(id, caller)?
+        } else {
+            self.resolve_target(path, name, None, caller)?
+        };
         let row = target
             .row
             .as_ref()
             .ok_or_else(|| not_found(&target.deployment_id))?;
         let _busy = self.acquire_busy(&target.deployment_id)?;
-        if target.source != "checkout" {
-            return Err(ProtocolError::new(
-                ErrorCode::RollbackUnavailable,
-                "worktree deployments keep no previous generation",
-            ));
-        }
         let previous = row.previous_generation.ok_or_else(|| {
             ProtocolError::new(
                 ErrorCode::RollbackUnavailable,
@@ -1009,7 +1296,13 @@ impl Deployments {
         let retained = self
             .store
             .generation(&target.deployment_id, previous)?
-            .filter(|generation| generation.path.is_dir())
+            .filter(|generation| {
+                generation.path.is_dir()
+                    && self
+                        .files
+                        .owned_generation(&target.deployment_id, &generation.path)
+                        .is_some()
+            })
             .ok_or_else(|| {
                 ProtocolError::new(
                     ErrorCode::RollbackUnavailable,
@@ -1022,6 +1315,20 @@ impl Deployments {
                 "deployment has no current generation",
             )
         })?;
+        let source_origin = self
+            .store
+            .generation_origin(&target.deployment_id, previous)?;
+        if source_origin.is_some()
+            || self
+                .store
+                .generation_origin(&target.deployment_id, current)?
+                .is_some()
+        {
+            // The selected source may have advanced; runtime rollback must use
+            // the immutable retained generation's configuration, not that edit.
+            target.specification = load_deployment_spec(&retained.path, &target.specification.name)
+                .map_err(config_error)?;
+        }
         let generation = self.next_generation(&target)?;
         let old_components = self
             .store
@@ -1035,16 +1342,26 @@ impl Deployments {
             DeploymentRuntimePatch {
                 state: Some("applying".into()),
                 spec_fingerprint: Some(retained.fingerprint.clone()),
+                spec_json: Some(
+                    serde_json::to_string(&target.specification.canonical(&target.source))
+                        .map_err(|_| {
+                            ProtocolError::new(
+                                ErrorCode::InternalError,
+                                "cannot retain rolled-back specification",
+                            )
+                        })?,
+                ),
                 ..Default::default()
             },
         )?;
-        self.store.add_generation(
+        self.store.add_generation_with_origin(
             &target.deployment_id,
             generation,
             retained.commit_hash.as_deref(),
             retained.dirty,
             &retained.path,
             &retained.fingerprint,
+            source_origin.as_ref(),
         )?;
         self.converge(
             &target,
@@ -1082,12 +1399,16 @@ impl Deployments {
         {
             return self.control_observed(action, deployment_id, component);
         }
-        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = if let Some(id) = deployment_id {
+            self.resolve_recorded_target(id, caller)?
+        } else {
+            self.resolve_target(path, name, None, caller)?
+        };
         let row = target
             .row
             .clone()
             .ok_or_else(|| not_found(&target.deployment_id))?;
-        if matches!(action, "start" | "restart") {
+        if matches!(action, "start" | "restart") && deployment_id.is_none() {
             // Runtime controls must use the exact specification recorded by
             // the applied generation. The checkout may have changed since
             // that generation was applied; reading it here would silently
@@ -1180,29 +1501,59 @@ impl Deployments {
 
     pub fn logs(
         &self,
-        path: Option<&str>,
-        name: Option<&str>,
-        deployment_id: Option<&str>,
-        component: &str,
-        tail_lines: u16,
+        params: DeploymentLogsParams,
         caller: &Caller,
     ) -> Result<DeploymentLog, ProtocolError> {
-        if let Some(deployment_id) = deployment_id
+        let component = params.component.as_str();
+        let generation = params.generation;
+        let attempt = params.attempt;
+        let selected = generation.is_some() || attempt.is_some();
+        if attempt.is_some() && generation.is_none() || generation == Some(0) || attempt == Some(0)
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "a positive process attempt requires a positive generation",
+            ));
+        }
+        let tail_lines = params.tail_lines;
+        if let Some(deployment_id) = params.deployment_id.as_deref()
             && self.store.observed_exists(deployment_id)?
         {
+            if selected {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "observed container logs have no process generation or attempt selector",
+                ));
+            }
             return self.observed_logs(deployment_id, component, tail_lines);
         }
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        let target = if let Some(id) = params.deployment_id.as_deref() {
+            self.resolve_recorded_target(id, caller)?
+        } else {
+            self.resolve_target_readonly(
+                params.path.as_deref(),
+                params.name.as_deref(),
+                None,
+                caller,
+            )?
+        };
         let row = target
             .row
             .as_ref()
             .ok_or_else(|| not_found(&target.deployment_id))?;
         if component == "build" {
+            if selected {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "build logs have no process generation or attempt selector",
+                ));
+            }
             let (tail, truncated) = self
                 .files
                 .read_log_tail(&target.deployment_id, component, tail_lines)
                 .map_err(file_action_error)?;
             return Ok(DeploymentLog {
+                process_log: None,
                 deployment_id: Some(target.deployment_id),
                 component: component.into(),
                 tail,
@@ -1212,42 +1563,62 @@ impl Deployments {
                 observed_only: Some(false),
             });
         }
-        let specification = target.specification.component(component).ok_or_else(|| {
-            ProtocolError::new(
-                ErrorCode::ParamsInvalid,
-                format!("no component {component:?}"),
-            )
-        })?;
+        let specification = target.specification.component(component);
         let stored = self
             .store
             .components(&target.deployment_id)?
             .into_iter()
-            .find(|stored| stored.name == component)
-            .ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::ParamsInvalid,
-                    format!("no component {component:?}"),
-                )
-            })?;
+            .find(|stored| stored.name == component);
+        let (Some(specification), Some(stored)) = (specification, stored) else {
+            if let Some(generation) = generation {
+                return self
+                    .process_log(&target, component, generation, attempt, tail_lines, false);
+            }
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                format!("no component {component:?}"),
+            ));
+        };
+        if selected && specification.kind != ComponentKind::Process {
+            if let Some(generation) = generation {
+                let archived =
+                    self.process_log(&target, component, generation, attempt, tail_lines, false)?;
+                if archived
+                    .process_log
+                    .as_ref()
+                    .is_some_and(|info| info.retained_generations.contains(&generation))
+                {
+                    return Ok(archived);
+                }
+            }
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "generation and attempt selectors apply only to process logs",
+            ));
+        }
         match (
             specification.kind,
             stored.binding_kind.as_deref(),
             stored.binding_identity.as_deref(),
         ) {
             (ComponentKind::Process, _, _) => {
-                let (tail, truncated) = self
-                    .files
-                    .read_log_tail(&target.deployment_id, component, tail_lines)
-                    .map_err(file_action_error)?;
-                Ok(DeploymentLog {
-                    deployment_id: Some(target.deployment_id),
-                    component: component.into(),
-                    tail,
-                    truncated_before_tail: Some(truncated),
-                    log_path: None,
-                    container_id: None,
-                    observed_only: Some(false),
-                })
+                let selected_generation = generation
+                    .or(stored.generation)
+                    .or(row.current_generation)
+                    .ok_or_else(|| {
+                        ProtocolError::new(
+                            ErrorCode::DeploymentActionFailed,
+                            "process component has no generation-bound log",
+                        )
+                    })?;
+                self.process_log(
+                    &target,
+                    component,
+                    selected_generation,
+                    attempt,
+                    tail_lines,
+                    !selected,
+                )
             }
             (_, Some("container"), Some(identity)) => {
                 let identity = ExactContainerId::parse(identity.to_owned()).map_err(|_| {
@@ -1257,6 +1628,7 @@ impl Deployments {
                     )
                 })?;
                 Ok(DeploymentLog {
+                    process_log: None,
                     deployment_id: Some(target.deployment_id),
                     component: component.into(),
                     tail: self
@@ -1279,6 +1651,7 @@ impl Deployments {
                     self.compose_context(&target, specification, &path, generation)?;
                 context.project = project.to_owned();
                 Ok(DeploymentLog {
+                    process_log: None,
                     deployment_id: Some(target.deployment_id),
                     component: component.into(),
                     tail: self
@@ -1292,6 +1665,7 @@ impl Deployments {
                 })
             }
             _ => Ok(DeploymentLog {
+                process_log: None,
                 deployment_id: Some(target.deployment_id),
                 component: component.into(),
                 tail: String::new(),
@@ -1301,6 +1675,39 @@ impl Deployments {
                 observed_only: Some(false),
             }),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_log(
+        &self,
+        target: &DeploymentTarget,
+        component: &str,
+        generation: u32,
+        attempt: Option<u32>,
+        tail_lines: u16,
+        allow_legacy: bool,
+    ) -> Result<DeploymentLog, ProtocolError> {
+        let (tail, truncated, info) = self
+            .files
+            .read_process_log(
+                &target.deployment_id,
+                component,
+                generation,
+                attempt,
+                tail_lines,
+                allow_legacy,
+            )
+            .map_err(file_action_error)?;
+        Ok(DeploymentLog {
+            deployment_id: Some(target.deployment_id.clone()),
+            component: component.into(),
+            tail,
+            truncated_before_tail: Some(truncated),
+            log_path: None,
+            container_id: None,
+            observed_only: Some(false),
+            process_log: Some(info),
+        })
     }
 
     pub fn remove(
@@ -1314,11 +1721,42 @@ impl Deployments {
         if let Some(deployment_id) = deployment_id {
             self.reject_observed_configuration(deployment_id)?;
         }
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        let target = if let Some(id) = deployment_id {
+            self.resolve_recorded_target(id, caller)?
+        } else {
+            self.resolve_target(path, name, None, caller)?
+        };
         let row = target
             .row
             .clone()
             .ok_or_else(|| not_found(&target.deployment_id))?;
+        let shared_references = self
+            .store
+            .shared_postgres_references(&target.deployment_id)?;
+        if !shared_references.is_empty() {
+            let shown = shared_references
+                .iter()
+                .take(8)
+                .map(|reference| {
+                    format!(
+                        "{} ({})",
+                        reference.deployment_name, reference.component_name
+                    )
+                })
+                .collect::<Vec<_>>();
+            let suffix = if shared_references.len() > shown.len() {
+                format!("; and {} more", shared_references.len() - shown.len())
+            } else {
+                Default::default()
+            };
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentActionFailed,
+                format!(
+                    "deployment is still the PostgreSQL owner for {}; remove or reconfigure those deployments before removing it{suffix}",
+                    shown.join(", ")
+                ),
+            ));
+        }
         let _busy = self.acquire_busy(&target.deployment_id)?;
         let mut components = target.specification.components.clone();
         components.reverse();
@@ -1397,9 +1835,37 @@ impl Deployments {
     }
 
     pub fn expire_previews(&self) -> Result<Vec<DeploymentStatus>, ProtocolError> {
+        let mut cursor = None;
+        let mut expired = Vec::new();
+        loop {
+            let (rows, next) = self.expire_previews_step(cursor)?;
+            expired.extend(rows);
+            if next.is_none() {
+                return Ok(expired);
+            }
+            cursor = next;
+        }
+    }
+
+    pub fn expire_previews_step(
+        &self,
+        after_deployment_id: Option<String>,
+    ) -> Result<(Vec<DeploymentStatus>, Option<String>), ProtocolError> {
         let now = self.store.current_timestamp()?;
         let mut expired = Vec::new();
-        for row in self.store.list(None)? {
+        let ids=self.database.read(|connection| {
+            let mut statement=connection.prepare("SELECT deployment_id FROM deployments WHERE deployment_id>$1 AND ttl_expires_at<$2 AND state<>'stopped' ORDER BY deployment_id LIMIT 2")?;
+            Ok(statement.query_map(crate::database::params![after_deployment_id.as_deref().unwrap_or(""),now],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
+        }).map_err(database_error)?;
+        let next = if ids.len() > 1 {
+            ids.first().cloned()
+        } else {
+            None
+        };
+        for id in ids.into_iter().take(1) {
+            let Some(row) = self.store.get(&id)? else {
+                continue;
+            };
             if row
                 .ttl_expires_at
                 .as_deref()
@@ -1425,7 +1891,7 @@ impl Deployments {
                 }
             }
         }
-        Ok(expired)
+        Ok((expired, next))
     }
 
     pub fn control_observed(
@@ -1495,6 +1961,7 @@ impl Deployments {
             );
         }
         Ok(DeploymentLog {
+            process_log: None,
             deployment_id: Some(deployment_id.into()),
             component: component.into(),
             tail: truncate_tail(&tails.join("\n"), 65_536),
@@ -1517,20 +1984,107 @@ impl Deployments {
     }
 
     fn acquire_busy(&self, deployment_id: &str) -> Result<BusyGuard, ProtocolError> {
-        let mut active = self
+        let owner = if Database::in_maintenance_context() {
+            MutationOwner::Maintenance
+        } else {
+            MutationOwner::Foreground
+        };
+        self.acquire_mutation(deployment_id, owner)
+    }
+
+    fn acquire_mutation(
+        &self,
+        deployment_id: &str,
+        owner: MutationOwner,
+    ) -> Result<BusyGuard, ProtocolError> {
+        let mut entries = self
             .busy
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !active.insert(deployment_id.to_owned()) {
+        let entry = entries.entry(deployment_id.to_owned()).or_default();
+        if entry.owner.is_some() || (owner == MutationOwner::Maintenance && entry.pending != 0) {
             return Err(ProtocolError::new(
                 ErrorCode::Busy,
                 format!("deployment {deployment_id} has a mutation in progress"),
             ));
         }
+        entry.owner = Some(owner);
         Ok(BusyGuard {
             deployment_id: deployment_id.to_owned(),
-            active: Arc::clone(&self.busy),
+            locks: Arc::clone(&self.busy),
         })
+    }
+
+    pub(crate) fn prepare_mutation_admission(
+        &self,
+        path: Option<&str>,
+        name: Option<&str>,
+        deployment_id: Option<&str>,
+        caller: &Caller,
+    ) -> Result<Option<crate::daemon::PreparedAdmission>, ProtocolError> {
+        let id = match deployment_id {
+            Some(id) => id.to_owned(),
+            None => {
+                self.resolve_target_readonly(path, name, None, caller)?
+                    .deployment_id
+            }
+        };
+        Ok(Some(
+            self.foreground_admission(&id, Duration::from_secs(15)),
+        ))
+    }
+
+    fn foreground_admission(
+        &self,
+        deployment_id: &str,
+        budget: Duration,
+    ) -> crate::daemon::PreparedAdmission {
+        let mut changed = self.busy.changed.subscribe();
+        let mut entries = self
+            .busy
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.entry(deployment_id.to_owned()).or_default();
+        entry.pending += 1;
+        let maintenance = entry.owner == Some(MutationOwner::Maintenance);
+        drop(entries);
+        self.busy.changed.send_replace(());
+        let intent = ForegroundIntent {
+            deployment_id: deployment_id.to_owned(),
+            locks: self.busy.clone(),
+        };
+        if !maintenance {
+            return crate::daemon::PreparedAdmission::Ready(Box::new(intent));
+        }
+        let id = deployment_id.to_owned();
+        // Creating the intent before waiting closes the race with the next
+        // maintenance turn. Foreground conflicts still reach acquire_busy.
+        crate::daemon::PreparedAdmission::Waiting(Box::pin(async move {
+            tokio::time::timeout(budget, async move {
+                loop {
+                    let maintenance = intent.locks.entries
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(&intent.deployment_id)
+                        .is_some_and(|entry| entry.owner == Some(MutationOwner::Maintenance));
+                    if !maintenance {
+                        return Ok(Box::new(intent) as crate::daemon::AdmissionHold);
+                    }
+                    changed.changed().await.map_err(|_| {
+                        ProtocolError::new(ErrorCode::InternalError, "deployment admission ended")
+                    })?;
+                }
+            })
+            .await
+            .map_err(|_| {
+                ProtocolError::new(
+                    ErrorCode::Busy,
+                    format!("deployment {id} maintenance handoff deadline reached; mutation was not started"),
+                )
+            })?
+        }))
     }
 
     fn control_compose_service(
@@ -2066,9 +2620,6 @@ impl Deployments {
                     "deployment generation counter is exhausted",
                 )
             })?;
-            if target.source != "checkout" {
-                return Ok(last);
-            }
             let path = self
                 .files
                 .generation_path(&target.deployment_id, last)
@@ -2091,11 +2642,12 @@ impl Deployments {
         target: &DeploymentTarget,
         generation: u32,
         commit: Option<&str>,
+        freeze_source: bool,
     ) -> Result<PathBuf, ProtocolError> {
         self.files
             .ensure_layout(&target.deployment_id, target.caller_uid, target.caller_gid)
             .map_err(file_apply_error)?;
-        if target.source == "worktree" {
+        if target.source == "worktree" && !freeze_source {
             return Ok(target.worktree.clone());
         }
         let commit = commit.ok_or_else(|| {
@@ -2128,9 +2680,6 @@ impl Deployments {
     }
 
     fn remove_generation_path(&self, target: &DeploymentTarget, generation: u32, path: &Path) {
-        if target.source != "checkout" {
-            return;
-        }
         let Ok(expected) = self
             .files
             .generation_path(&target.deployment_id, generation)
@@ -2152,22 +2701,7 @@ impl Deployments {
     }
 
     fn remove_recorded_generation_path(&self, target: &DeploymentTarget, path: &Path) {
-        if target.source != "checkout" {
-            return;
-        }
-        let Ok(directory) = self.files.deployment_dir(&target.deployment_id) else {
-            return;
-        };
-        if path.parent() != Some(directory.as_path()) {
-            return;
-        }
-        let Some(generation) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix("gen-"))
-            .and_then(|number| number.parse::<u32>().ok())
-            .filter(|number| *number > 0)
-        else {
+        let Some(generation) = self.files.owned_generation(&target.deployment_id, path) else {
             return;
         };
         let _ =
@@ -2321,9 +2855,9 @@ impl Deployments {
         let id = target.deployment_id.clone();
         let previous_route = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection.query_row(
-                "SELECT domain,component,port,generation FROM domain_routes WHERE deployment_id=?1",
+                "SELECT domain,component,port,generation FROM domain_routes WHERE deployment_id=$1",
                 [id], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?,
                     row.get::<_,Option<u16>>(2)?, row.get::<_,Option<u32>>(3)?)),
             ).optional().map_err(DatabaseError::from)
@@ -2698,6 +3232,16 @@ impl Deployments {
         }
 
         let previous = target.row.as_ref().and_then(|row| row.current_generation);
+        let retained_previous = previous
+            .map(|number| self.store.generation(&target.deployment_id, number))
+            .transpose()?
+            .flatten()
+            .filter(|row| {
+                self.files
+                    .owned_generation(&target.deployment_id, &row.path)
+                    .is_some()
+            })
+            .map(|row| row.number);
         self.retire_previous(
             target,
             old_components,
@@ -2706,9 +3250,7 @@ impl Deployments {
             generation_path,
         );
         let mut keep = BTreeSet::from([generation]);
-        if target.source == "checkout"
-            && let Some(previous) = previous
-        {
+        if let Some(previous) = retained_previous {
             keep.insert(previous);
         }
         let protected_paths = self
@@ -2723,17 +3265,9 @@ impl Deployments {
                 self.remove_recorded_generation_path(target, &stale.path);
             }
         }
-        if target.source != "checkout"
-            && let Some(previous) = previous
-        {
-            crate::ports::release(&self.database, &target.deployment_id, Some(previous), None)
-                .map_err(runtime_error)?;
-        }
         self.store
             .set_generation_state(&target.deployment_id, generation, "current")?;
-        if target.source == "checkout"
-            && let Some(previous) = previous
-        {
+        if let Some(previous) = retained_previous {
             self.store
                 .set_generation_state(&target.deployment_id, previous, "previous")?;
         }
@@ -2755,11 +3289,7 @@ impl Deployments {
                     .into(),
                 ),
                 current_generation: Some(Some(generation)),
-                previous_generation: Some(if target.source == "checkout" {
-                    previous
-                } else {
-                    None
-                }),
+                previous_generation: Some(retained_previous),
                 ..Default::default()
             },
         )?;
@@ -2945,6 +3475,12 @@ impl Deployments {
             .collect::<BTreeSet<_>>();
         keep.insert(0);
         keep.insert(generation);
+        if let Some(row) = &target.row {
+            // Failure restores both selected pointers; preserve their receipts
+            // and optional source origins until that snapshot is restored.
+            keep.extend(row.current_generation);
+            keep.extend(row.previous_generation);
+        }
         self.store.prune_generations(&target.deployment_id, &keep)?;
         if let Some(row) = &target.row {
             self.store.restore_apply_snapshot(
@@ -3022,9 +3558,7 @@ impl Deployments {
                 let _ = self.docker.remove_container(&identity, false);
             }
         }
-        if target.source == "checkout"
-            && let Some(previous) = previous
-        {
+        if let Some(previous) = previous {
             let _ =
                 crate::ports::release(&self.database, &target.deployment_id, Some(previous), None);
         }
@@ -3185,7 +3719,13 @@ impl Deployments {
                 }
                 let log_path = self
                     .files
-                    .log_path(&target.deployment_id, &component.name)
+                    .reserve_process_log(
+                        &target.deployment_id,
+                        &component.name,
+                        generation,
+                        target.caller_uid,
+                        target.caller_gid,
+                    )
                     .map_err(file_apply_error)?;
                 self.systemd
                     .start_persistent(&PersistentUnitSpec {
@@ -3200,6 +3740,7 @@ impl Deployments {
                         environment_file: environment_path,
                         command: component.command.iter().map(OsString::from).collect(),
                         log_path,
+                        allow_new_privileges: component.allow_new_privileges,
                     })
                     .map_err(|error| {
                         apply_runtime_error(
@@ -3790,21 +4331,27 @@ impl Deployments {
         }
         match binding.0.as_str() {
             "unit" => {
-                while launched.elapsed() < Duration::from_secs(1) {
-                    if let Some(reason) = terminal() {
-                        return Ok(Readiness::failed(reason));
+                let deadline = launched + timeout;
+                loop {
+                    let state = self
+                        .systemd
+                        .process_state(&binding.1)
+                        .map_err(systemd_error)?;
+                    if state.state == "running" {
+                        return Ok(Readiness::ready(format!("unit {}", state.active_state)));
+                    }
+                    if matches!(state.state.as_str(), "failed" | "stopped") {
+                        return Ok(Readiness::failed(format!("unit {}", state.active_state)));
+                    }
+                    if Instant::now() >= deadline {
+                        return Ok(Readiness::failed(format!(
+                            "unit {} did not become running within {} seconds",
+                            state.active_state,
+                            timeout.as_secs()
+                        )));
                     }
                     thread::sleep(Duration::from_millis(100));
                 }
-                let state = self
-                    .systemd
-                    .process_state(&binding.1)
-                    .map_err(systemd_error)?;
-                Ok(if state.state == "running" {
-                    Readiness::ready(format!("unit {}", state.active_state))
-                } else {
-                    Readiness::failed(format!("unit {}", state.active_state))
-                })
             }
             "container" => {
                 let identity = ExactContainerId::parse(binding.1.clone()).map_err(|_| {
@@ -4080,54 +4627,98 @@ impl Deployments {
     }
 
     pub fn reconcile_routes(&self) -> Result<(), ProtocolError> {
+        let mut cursor = None;
+        loop {
+            let next = self.reconcile_routes_step(cursor)?;
+            if next.is_none() {
+                return Ok(());
+            }
+            cursor = next;
+        }
+    }
+
+    pub fn reconcile_routes_step(
+        &self,
+        after_deployment_id: Option<String>,
+    ) -> Result<Option<String>, ProtocolError> {
         let ids = self
             .database
-            .call(|connection| {
+            .read(|connection| {
                 let mut statement =
-                    connection.prepare("SELECT deployment_id FROM domain_routes")?;
+                    connection.prepare("SELECT DISTINCT deployment_id FROM domain_routes WHERE deployment_id>$1 ORDER BY deployment_id LIMIT 2")?;
                 Ok(statement
-                    .query_map([], |row| row.get::<_, String>(0))?
+                    .query_map([after_deployment_id.as_deref().unwrap_or("")], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)?;
-        let mut changed = false;
-        for id in ids {
-            let Ok(_busy) = self.acquire_busy(&id) else {
-                continue;
-            };
-            match routing_recovery::restore_route(self, &id) {
-                Ok(routing_recovery::Recovery::Restored) => changed = true,
-                Ok(routing_recovery::Recovery::Deferred) => continue,
-                Ok(routing_recovery::Recovery::NotApplicable) => {}
-                Err(error) => {
-                    tracing::warn!(code=%error.code, deployment_id=%id, "route recovery incomplete");
-                    continue;
-                }
+        let next = if ids.len() > 1 {
+            ids.first().cloned()
+        } else {
+            None
+        };
+        let Some(id) = ids.into_iter().next() else {
+            return Ok(next);
+        };
+        let Ok(_busy) = self.acquire_mutation(&id, MutationOwner::Maintenance) else {
+            return Ok(next);
+        };
+        let repository_id = self.store.get(&id)?.map(|row| row.repository_id);
+        let was_routed=self.database.read({
+            let id=id.clone();
+            move |connection|connection.query_row("SELECT EXISTS(SELECT 1 FROM domain_routes WHERE deployment_id=$1 AND port IS NOT NULL)",
+                [id],|row|row.get::<_,bool>(0)).map_err(DatabaseError::from)
+        }).map_err(database_error)?;
+        let recovered = match routing_recovery::restore_route(self, &id) {
+            Ok(routing_recovery::Recovery::Restored) => true,
+            Ok(routing_recovery::Recovery::Deferred) => return Ok(next),
+            Ok(routing_recovery::Recovery::NotApplicable) => false,
+            Err(error) => {
+                tracing::warn!(code=%error.code,deployment_id=%id,"route recovery incomplete");
+                return Ok(next);
             }
-            match self.validate_or_withdraw_route(&id) {
-                Ok(true) => {}
-                Ok(false) => changed = true,
-                Err(error) => {
-                    tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
-                }
+        };
+        let withdrawn = match self.validate_or_withdraw_route(&id) {
+            Ok(valid) => !valid,
+            Err(error) => {
+                tracing::warn!(code=%error.code,deployment_id=%id,"route reconciliation failed");
+                false
             }
-        }
-        // A deferred deployment keeps its prior route, but it must not hide a
-        // confirmed change for another deployment (or a successful recovery).
-        if changed {
+        };
+        if recovered || withdrawn {
             self.routes.publish_current()?;
+            if recovered || was_routed {
+                let state = match self.store.get(&id) {
+                    Ok(row) => row.map(|row| row.state),
+                    Err(error) => {
+                        tracing::warn!(code=%error.code,"deployment event state unavailable");
+                        None
+                    }
+                };
+                self.publish_event(DeploymentOwnedEvent {
+                    kind: if recovered {
+                        "deployment.recovered"
+                    } else {
+                        "deployment.route_changed"
+                    }
+                    .into(),
+                    repository_id,
+                    deployment_id: id,
+                    component: None,
+                    state,
+                });
+            }
         }
-        Ok(())
+        Ok(next)
     }
 
     fn validate_or_withdraw_route(&self, deployment_id: &str) -> Result<bool, ProtocolError> {
         let deployment_id_owned = deployment_id.to_owned();
         let route = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=$1",
                         [&deployment_id_owned],
                         |row| {
                             Ok((
@@ -4151,10 +4742,10 @@ impl Deployments {
         let deployment_id_for_lease = deployment_id.to_owned();
         let valid_lease = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM port_assignments p JOIN components c ON c.deployment_id=p.deployment_id AND c.name=p.component WHERE p.lease_id=?1 AND p.port=?2 AND p.deployment_id=?3 AND p.component=?4 AND p.generation IN (?5,0) AND c.state='running' AND c.health='healthy')",
-                    rusqlite::params![lease_id, port, deployment_id_for_lease, component, generation.unwrap_or(0)],
+                    "SELECT EXISTS(SELECT 1 FROM port_assignments p JOIN components c ON c.deployment_id=p.deployment_id AND c.name=p.component WHERE p.lease_id=$1 AND p.port=$2 AND p.deployment_id=$3 AND p.component=$4 AND p.generation IN ($5,0) AND c.state='running' AND c.health='healthy')",
+                    crate::database::params![lease_id, port, deployment_id_for_lease, component, generation.unwrap_or(0)],
                     |row| row.get::<_, i64>(0),
                 )? != 0)
             })
@@ -4214,6 +4805,44 @@ impl Deployments {
         Ok(false)
     }
 
+    fn origin_target(
+        &self,
+        row: &DeploymentRow,
+        origin: &GenerationSourceOrigin,
+        caller: &Caller,
+    ) -> Result<DeploymentTarget, ProtocolError> {
+        let (caller_uid, caller_gid) = if caller.is_console() {
+            (
+                row.created_by_uid,
+                primary_gid(row.created_by_uid).map_err(systemd_error)?,
+            )
+        } else {
+            (caller.uid, caller.gid)
+        };
+        let worktree =
+            crate::deployment_origin::resolve(origin, &row.repository_id, caller_uid, caller_gid)?;
+        let specification = load_deployment_spec(&worktree, &row.name).map_err(config_error)?;
+        if !specification.sources.contains(&row.source) {
+            return Err(ProtocolError::new(
+                ErrorCode::RepositoryConfigInvalid,
+                "recorded candidate source is no longer declared",
+            ));
+        }
+        Ok(DeploymentTarget {
+            row: Some(row.clone()),
+            deployment_id: row.deployment_id.clone(),
+            repository_id: row.repository_id.clone(),
+            worktree_id: row.worktree_id.clone(),
+            worktree,
+            specification,
+            source: row.source.clone(),
+            caller_uid,
+            caller_gid,
+            client: client_kind_name(caller.client_kind).into(),
+            session: caller.client_session.clone(),
+        })
+    }
+
     fn resolve(
         &self,
         path: Option<&str>,
@@ -4252,6 +4881,51 @@ impl Deployments {
         Ok(target)
     }
 
+    /// Runtime controls and retained diagnostics use the applied declaration.
+    /// Current-source parsing belongs to desired-source validation instead.
+    fn resolve_recorded_target(
+        &self,
+        deployment_id: &str,
+        caller: &Caller,
+    ) -> Result<DeploymentTarget, ProtocolError> {
+        let row = self
+            .store
+            .get(deployment_id)?
+            .ok_or_else(|| not_found(deployment_id))?;
+        let worktree = self.worktree_path(&row.worktree_id)?;
+        let specification = stored_deployment_specification(&row)?;
+        Self::target_from_record(row, worktree, specification, caller)
+    }
+
+    fn target_from_record(
+        row: DeploymentRow,
+        worktree: PathBuf,
+        specification: DeploymentSpec,
+        caller: &Caller,
+    ) -> Result<DeploymentTarget, ProtocolError> {
+        let (caller_uid, caller_gid) = if caller.is_console() {
+            (
+                row.created_by_uid,
+                primary_gid(row.created_by_uid).map_err(systemd_error)?,
+            )
+        } else {
+            (caller.uid, caller.gid)
+        };
+        Ok(DeploymentTarget {
+            deployment_id: row.deployment_id.clone(),
+            repository_id: row.repository_id.clone(),
+            worktree_id: row.worktree_id.clone(),
+            source: row.source.clone(),
+            row: Some(row),
+            worktree,
+            specification,
+            caller_uid,
+            caller_gid,
+            client: client_kind_name(caller.client_kind).into(),
+            session: caller.client_session.clone(),
+        })
+    }
+
     fn resolve_target_readonly(
         &self,
         path: Option<&str>,
@@ -4276,27 +4950,7 @@ impl Deployments {
                     "recorded deployment source is no longer declared",
                 ));
             }
-            let (caller_uid, caller_gid) = if caller.is_console() {
-                (
-                    row.created_by_uid,
-                    primary_gid(row.created_by_uid).map_err(systemd_error)?,
-                )
-            } else {
-                (caller.uid, caller.gid)
-            };
-            return Ok(DeploymentTarget {
-                deployment_id: row.deployment_id.clone(),
-                repository_id: row.repository_id.clone(),
-                worktree_id: row.worktree_id.clone(),
-                source: row.source.clone(),
-                row: Some(row),
-                worktree,
-                specification,
-                caller_uid,
-                caller_gid,
-                client: client_kind_name(caller.client_kind).into(),
-                session: caller.client_session.clone(),
-            });
+            return Self::target_from_record(row, worktree, specification, caller);
         }
         if caller.identity.is_some() {
             return Err(ProtocolError::new(
@@ -4458,10 +5112,10 @@ impl Deployments {
         let deployment_id = row.deployment_id.clone();
         let (domain, route_port, route_valid) = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let route = connection
                     .query_row(
-                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=$1",
                         [&deployment_id],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
                             row.get::<_, Option<u16>>(2)?, row.get::<_, Option<u32>>(3)?,
@@ -4521,10 +5175,10 @@ impl Deployments {
         let repository_id = row.repository_id.clone();
         let repository_name = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT display_name FROM repositories WHERE repository_id=?1",
+                        "SELECT display_name FROM repositories WHERE repository_id=$1",
                         [&repository_id],
                         |row| row.get::<_, String>(0),
                     )
@@ -4705,7 +5359,7 @@ impl Deployments {
                 Some(port) => {
                     let deployment_id = row.deployment_id.clone();
                     let name = row.name.clone();
-                    self.database.call(move |c| Ok(c.query_row("SELECT lease_id FROM port_assignments WHERE port=?1 AND deployment_id=?2 AND component=?3",rusqlite::params![port,deployment_id,name],|r|r.get::<_,String>(0)).optional()?)).map_err(database_error)?
+                    self.database.read(move |c| Ok(c.query_row("SELECT lease_id FROM port_assignments WHERE port=$1 AND deployment_id=$2 AND component=$3",crate::database::params![port,deployment_id,name],|r|r.get::<_,String>(0)).optional()?)).map_err(database_error)?
                 }
                 None => None,
             },
@@ -4737,9 +5391,9 @@ impl Deployments {
     ) -> Result<Vec<(String, String)>, ProtocolError> {
         let deployment_id = deployment_id.to_owned();
         let component = component.map(str::to_owned);
-        let rows = self.database.call(move |connection| {
+        let rows = self.database.read(move |connection| {
             let mut statement = connection.prepare(
-                "SELECT container_id,compose_service FROM observed_containers WHERE observed_deployment_id=?1 ORDER BY compose_service,name,container_id",
+                "SELECT container_id,compose_service FROM observed_containers WHERE observed_deployment_id=$1 ORDER BY compose_service,name,container_id",
             )?;
             Ok(statement.query_map([deployment_id], |row| {
                 Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))
@@ -4819,13 +5473,13 @@ impl Deployments {
         self.database.transaction(move |transaction| {
             for (container_id,state,status,health) in rows {
                 transaction.execute(
-                    "UPDATE observed_containers SET state=?1,status=?2,health=?3,observed_at=?4 WHERE container_id=?5",
-                    rusqlite::params![state,status,health,now,container_id],
+                    "UPDATE observed_containers SET state=$1,status=$2,health=$3,observed_at=$4 WHERE container_id=$5",
+                    crate::database::params![state,status,health,now,container_id],
                 )?;
             }
             transaction.execute(
-                "UPDATE observed_deployments SET state=?1,health=?2,observed_at=?3 WHERE observed_deployment_id=?4",
-                rusqlite::params![deployment_state,deployment_health,now,deployment_id],
+                "UPDATE observed_deployments SET state=$1,health=$2,observed_at=$3 WHERE observed_deployment_id=$4",
+                crate::database::params![deployment_state,deployment_health,now,deployment_id],
             )?;
             Ok(())
         }).map_err(database_error)
@@ -4834,10 +5488,10 @@ impl Deployments {
     fn worktree_path(&self, worktree_id: &str) -> Result<PathBuf, ProtocolError> {
         let worktree_id = worktree_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT worktree_path FROM worktrees WHERE worktree_id=?1",
+                        "SELECT worktree_path FROM worktrees WHERE worktree_id=$1",
                         [&worktree_id],
                         |row| row.get::<_, String>(0),
                     )
@@ -5308,6 +5962,7 @@ mod tests {
     struct MutationSystemd {
         actions: Mutex<Vec<String>>,
         states: Mutex<HashMap<String, String>>,
+        activation_polls: std::sync::atomic::AtomicUsize,
         build_exit: std::sync::atomic::AtomicI32,
         listener_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         reject_running_starts: std::sync::atomic::AtomicBool,
@@ -5318,6 +5973,7 @@ mod tests {
             Self {
                 actions: Mutex::new(Vec::new()),
                 states: Mutex::new(HashMap::new()),
+                activation_polls: std::sync::atomic::AtomicUsize::new(0),
                 build_exit: std::sync::atomic::AtomicI32::new(0),
                 listener_hook: Mutex::new(None),
                 reject_running_starts: std::sync::atomic::AtomicBool::new(false),
@@ -5368,15 +6024,38 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("start:{}", specification.unit));
-            self.states
-                .lock()
-                .unwrap()
-                .insert(specification.unit.clone(), "running".into());
+            self.states.lock().unwrap().insert(
+                specification.unit.clone(),
+                if self.activation_polls.load(Ordering::SeqCst) > 0 {
+                    "activating"
+                } else {
+                    "running"
+                }
+                .into(),
+            );
             std::fs::write(&specification.log_path, "process output\n")
                 .map_err(|error| SystemdError::Operation(error.to_string()))
         }
 
         fn process_state(&self, unit: &str) -> Result<ProcessState, SystemdError> {
+            if self
+                .states
+                .lock()
+                .unwrap()
+                .get(unit)
+                .is_some_and(|state| state == "activating")
+            {
+                let remaining = self.activation_polls.load(Ordering::SeqCst);
+                if remaining > 0 {
+                    self.activation_polls.fetch_sub(1, Ordering::SeqCst);
+                    if remaining == 1 {
+                        self.states
+                            .lock()
+                            .unwrap()
+                            .insert(unit.into(), "running".into());
+                    }
+                }
+            }
             let state = self
                 .states
                 .lock()
@@ -5909,7 +6588,9 @@ mod tests {
 
     struct CheckoutGit {
         snapshot: Mutex<crate::deployment_git::GitSnapshot>,
+        snapshots: Mutex<BTreeMap<PathBuf, crate::deployment_git::GitSnapshot>>,
         actions: Mutex<Vec<String>>,
+        snapshot_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl CheckoutGit {
@@ -5920,7 +6601,9 @@ mod tests {
                     dirty: false,
                     source_digest: "a".repeat(64),
                 }),
+                snapshots: Mutex::new(BTreeMap::new()),
                 actions: Mutex::new(Vec::new()),
+                snapshot_hook: Mutex::new(None),
             }
         }
     }
@@ -5928,17 +6611,27 @@ mod tests {
     impl DeploymentGit for CheckoutGit {
         fn snapshot(
             &self,
-            _worktree: &Path,
+            worktree: &Path,
             _caller_uid: u32,
             _caller_gid: u32,
         ) -> Result<crate::deployment_git::GitSnapshot, crate::deployment_git::DeploymentGitError>
         {
-            Ok(self.snapshot.lock().unwrap().clone())
+            let snapshot = self
+                .snapshots
+                .lock()
+                .unwrap()
+                .get(worktree)
+                .cloned()
+                .unwrap_or_else(|| self.snapshot.lock().unwrap().clone());
+            if let Some(hook) = self.snapshot_hook.lock().unwrap().take() {
+                hook();
+            }
+            Ok(snapshot)
         }
 
         fn add_detached_worktree(
             &self,
-            _worktree: &Path,
+            worktree: &Path,
             target: &Path,
             commit: &str,
             _caller_uid: u32,
@@ -5950,6 +6643,15 @@ mod tests {
             std::fs::write(target.join("commit"), commit).map_err(|error| {
                 crate::deployment_git::DeploymentGitError::Invocation(error.to_string())
             })?;
+            if worktree.join(".devcoordinator.toml").is_file() {
+                std::fs::copy(
+                    worktree.join(".devcoordinator.toml"),
+                    target.join(".devcoordinator.toml"),
+                )
+                .map_err(|error| {
+                    crate::deployment_git::DeploymentGitError::Invocation(error.to_string())
+                })?;
+            }
             self.actions
                 .lock()
                 .unwrap()
@@ -6095,8 +6797,8 @@ tcp="127.0.0.1:25"
             let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
             let root = worktree.display().to_string();
             database.transaction(move |transaction| {
-                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',?1,'repo','t',1000,'t')",[&root])?;
-                transaction.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','r1111111111111111',?1,'t','t')",[&root])?;
+                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111',$1,'repo','t',1000,'t')",[&root])?;
+                transaction.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','r1111111111111111',$1,'t','t')",[&root])?;
                 Ok(())
             }).unwrap();
             let config = Config {
@@ -6211,7 +6913,7 @@ tcp="127.0.0.1:25"
                 .set_deployment_runtime(&deployment_id, "running", Some(1), None)
                 .unwrap();
             self.database.transaction({let deployment_id=deployment_id.clone(); move |transaction| {
-                transaction.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,?1,'api',0,'t','lfixture')",[deployment_id])?;
+                transaction.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,$1,'api',0,'t','lfixture')",[deployment_id])?;
                 Ok(())
             }}).unwrap();
             self.deployments
@@ -6564,7 +7266,18 @@ image="cache:2"
             .unwrap();
         assert_eq!(started.state, "running");
         let logs = deployments
-            .logs(None, None, Some(&deployment_id), "cache", 20, &caller)
+            .logs(
+                DeploymentLogsParams {
+                    attempt: None,
+                    path: None,
+                    name: None,
+                    deployment_id: Some(deployment_id.clone()),
+                    component: "cache".into(),
+                    generation: None,
+                    tail_lines: 20,
+                },
+                &caller,
+            )
             .unwrap();
         assert!(logs.tail.starts_with("managed log "));
 
@@ -6693,9 +7406,12 @@ image="cache:1"
         );
         assert!(first_path.is_dir());
 
-        let rolled = deployments
-            .rollback(None, None, Some(&first.deployment_id), &caller)
-            .unwrap();
+        let declaration = worktree.join(".devcoordinator.toml");
+        let original = std::fs::read(&declaration).unwrap();
+        std::fs::write(&declaration, "schema = [\n").unwrap();
+        let rolled = deployments.rollback(None, None, Some(&first.deployment_id), &caller);
+        std::fs::write(&declaration, original).unwrap();
+        let rolled = rolled.expect("recorded rollback must not parse the editable declaration");
         assert_eq!(rolled.rolled_back_from, Some(2));
         assert_eq!(rolled.rolled_back_to, Some(1));
         assert_eq!(rolled.current_generation, Some(3));
@@ -6705,6 +7421,7 @@ image="cache:1"
             "a".repeat(40)
         );
 
+        std::fs::remove_file(&declaration).unwrap();
         deployments
             .remove(None, None, Some(&first.deployment_id), false, &caller)
             .unwrap();
@@ -6808,12 +7525,34 @@ command=["serve"]
         assert_eq!(first.current_generation, Some(1));
         assert_eq!(first.components[0].binding.kind.as_deref(), Some("unit"));
         let build_log = deployments
-            .logs(None, None, Some(&first.deployment_id), "build", 20, &caller)
+            .logs(
+                DeploymentLogsParams {
+                    attempt: None,
+                    path: None,
+                    name: None,
+                    deployment_id: Some(first.deployment_id.clone()),
+                    component: "build".into(),
+                    generation: None,
+                    tail_lines: 20,
+                },
+                &caller,
+            )
             .unwrap();
         assert!(build_log.tail.contains("build stdout"));
         assert!(build_log.tail.contains("build stderr"));
         let process_log = deployments
-            .logs(None, None, Some(&first.deployment_id), "api", 20, &caller)
+            .logs(
+                DeploymentLogsParams {
+                    attempt: None,
+                    path: None,
+                    name: None,
+                    deployment_id: Some(first.deployment_id.clone()),
+                    component: "api".into(),
+                    generation: None,
+                    tail_lines: 20,
+                },
+                &caller,
+            )
             .unwrap();
         assert_eq!(process_log.tail, "process output");
 
@@ -7213,11 +7952,15 @@ route=true
         assert_eq!(started.state, "running");
         let logs = deployments
             .logs(
-                None,
-                None,
-                Some(&applied.deployment_id),
-                "stack",
-                20,
+                DeploymentLogsParams {
+                    attempt: None,
+                    path: None,
+                    name: None,
+                    deployment_id: Some(applied.deployment_id.clone()),
+                    component: "stack".into(),
+                    generation: None,
+                    tail_lines: 20,
+                },
                 &caller,
             )
             .unwrap();
@@ -7250,11 +7993,15 @@ route=true
         assert!(!failure.message.contains("fixture-current-compose-failure"));
         let logs = deployments
             .logs(
-                None,
-                None,
-                Some(&applied.deployment_id),
-                "build",
-                500,
+                DeploymentLogsParams {
+                    attempt: None,
+                    path: None,
+                    name: None,
+                    deployment_id: Some(applied.deployment_id.clone()),
+                    component: "build".into(),
+                    generation: None,
+                    tail_lines: 500,
+                },
                 &caller,
             )
             .unwrap();
@@ -7464,9 +8211,59 @@ database="app"
         assert_eq!(failure.code, ErrorCode::DeploymentActionFailed);
         assert!(failure.message.contains("PostgreSQL host port"));
 
-        let removed = deployments
-            .remove(None, None, Some(&applied.deployment_id), true, &caller)
-            .unwrap();
+        let declaration = worktree.join(".devcoordinator.toml");
+        let original = std::fs::read(&declaration).unwrap();
+        std::fs::write(&declaration, "schema = [\n").unwrap();
+        let kept = deployments.remove(None, None, Some(&applied.deployment_id), false, &caller);
+        std::fs::write(&declaration, &original).unwrap();
+        let mut failures = Vec::new();
+        match kept {
+            Ok(kept) => {
+                assert!(!kept.data_deleted);
+                assert!(kept.deleted_volumes.is_empty());
+                assert!(secret.exists());
+                assert!(
+                    !docker
+                        .actions
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|action| action.contains("volume-remove:"))
+                );
+                host_tcp_ready.store(true, Ordering::SeqCst);
+                let reapplied = deployments
+                    .apply(
+                        Some(worktree.to_str().unwrap()),
+                        Some("database"),
+                        None,
+                        &caller,
+                    )
+                    .unwrap();
+                assert_eq!(reapplied.deployment_id, applied.deployment_id);
+            }
+            Err(error) => failures.push(format!(
+                "retaining data with malformed declaration: {}",
+                error.code
+            )),
+        }
+        std::fs::remove_file(&declaration).unwrap();
+        let removed = deployments.remove(None, None, Some(&applied.deployment_id), true, &caller);
+        std::fs::write(&declaration, original).unwrap();
+        let removed = match removed {
+            Ok(removed) => Some(removed),
+            Err(error) => {
+                failures.push(format!(
+                    "deleting data with removed declaration: {}",
+                    error.code
+                ));
+                None
+            }
+        };
+        assert!(
+            failures.is_empty(),
+            "recorded removal depends on editable source: {failures:?}"
+        );
+        let removed = removed.unwrap();
         assert!(removed.data_deleted);
         assert_eq!(removed.deleted_volumes.len(), 1);
         assert!(!secret.exists());
@@ -7599,6 +8396,28 @@ shared_from="{owner_id}/db"
         assert!(!consumer.components[0].owned);
         assert_eq!(consumer.components[0].health, "healthy");
 
+        let declaration = worktree.join(".devcoordinator.toml");
+        let original = std::fs::read(&declaration).unwrap();
+        std::fs::write(&declaration, "schema = [\n").unwrap();
+        let mut failures = Vec::new();
+        for delete_data in [false, true] {
+            let refused = deployments
+                .remove(None, None, Some(&owner_id), delete_data, &caller)
+                .unwrap_err();
+            if refused.code != ErrorCode::DeploymentActionFailed
+                || !refused.message.contains("PostgreSQL owner")
+            {
+                failures.push(format!("delete_data={delete_data}: {}", refused.code));
+            }
+            assert!(deployments.store.get(&owner_id).unwrap().is_some());
+            assert!(deployments.store.get(&consumer_id).unwrap().is_some());
+        }
+        std::fs::write(&declaration, original).unwrap();
+        assert!(
+            failures.is_empty(),
+            "recorded owner protection was unreachable: {failures:?}"
+        );
+
         crate::ports::release(&database, &owner_id, None, Some("db")).unwrap();
         crate::ports::lease_with_availability(
             &database,
@@ -7697,7 +8516,7 @@ env_file=".web.env"
         let repository_count = || {
             world
                 .database
-                .call(|connection| {
+                .read(|connection| {
                     Ok(
                         connection.query_row("SELECT count(*) FROM repositories", [], |row| {
                             row.get::<_, i64>(0)
@@ -7708,7 +8527,7 @@ env_file=".web.env"
         };
         let before = repository_count();
         let preflight = deployments
-            .preflight(Some(path), Some("web"), None, &caller)
+            .preflight(Some(path), Some("web"), None, None, &caller)
             .unwrap();
         assert!(!preflight.ready);
         assert_eq!(preflight.blockers.len(), 2);
@@ -7735,7 +8554,7 @@ env_file=".web.env"
         assert_eq!(
             world
                 .database
-                .call(|connection| Ok(connection.query_row(
+                .read(|connection| Ok(connection.query_row(
                     "SELECT count(*) FROM deployments",
                     [],
                     |row| row.get::<_, i64>(0)
@@ -7761,7 +8580,7 @@ env_file=".web.env"
             revision = updated.active_revision;
             assert_eq!(
                 deployments
-                    .preflight(Some(path), Some("web"), None, &caller)
+                    .preflight(Some(path), Some("web"), None, None, &caller)
                     .unwrap()
                     .blockers
                     .len(),
@@ -7770,7 +8589,7 @@ env_file=".web.env"
         }
         docker.bridge_unavailable.store(true, Ordering::SeqCst);
         let blocked = deployments
-            .preflight(Some(path), Some("web"), None, &caller)
+            .preflight(Some(path), Some("web"), None, None, &caller)
             .unwrap();
         assert!(!blocked.ready);
         let docker_blocker = blocked

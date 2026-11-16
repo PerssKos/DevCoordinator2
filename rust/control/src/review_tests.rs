@@ -155,7 +155,7 @@ fn review_requires_interpretation_and_honest_missing_measurements() {
             .usage
             .coverage
             .unavailable_reasons
-            .contains_key("query_budget_exhausted")
+            .contains_key("legacy_source_unsupported")
     );
     assert!(
         packet
@@ -411,7 +411,7 @@ fn review_protocol_cli_and_mcp_preserve_exact_receipt_validation() {
     let request = record(&fixture);
     let response = runtime.block_on(app.dispatch(
         RequestEnvelope {
-            protocol: 2,
+            protocol: 3,
             id: "record".into(),
             operation: "review.record".into(),
             params: serde_json::to_value(request).unwrap(),
@@ -423,11 +423,13 @@ fn review_protocol_cli_and_mcp_preserve_exact_receipt_validation() {
         panic!("record response: {response:?}")
     };
     let reference = data["reference"].as_str().unwrap();
+    let receipt_params = serde_json::json!({"reference": reference}).to_string();
     let invocation = Cli::try_parse_from([
         "devcoordinator2",
-        "review",
-        "show",
-        reference,
+        "call",
+        "review.receipt",
+        "--params",
+        &receipt_params,
         "--format",
         "json",
     ])
@@ -442,9 +444,9 @@ fn review_protocol_cli_and_mcp_preserve_exact_receipt_validation() {
     (tool.validate_params)(&params).unwrap();
     let response = runtime.block_on(app.dispatch(
         RequestEnvelope {
-            protocol: 2,
+            protocol: 3,
             id: "show".into(),
-            operation: operation.into(),
+            operation,
             params,
             client: ClientContext::default(),
         },
@@ -458,7 +460,7 @@ fn review_protocol_cli_and_mcp_preserve_exact_receipt_validation() {
     assert_eq!(receipt["completed"], true);
     let response = runtime.block_on(app.dispatch(
         RequestEnvelope {
-            protocol: 2,
+            protocol: 3,
             id: "fake".into(),
             operation: "release.evidence".into(),
             params: serde_json::json!({"reference":"invented"}),
@@ -581,6 +583,8 @@ fn review_schedule_routes_escalates_and_only_valid_receipts_advance_it() {
         (86_400_000, 3_600_000)
     );
     let due = policy.window_end_ms;
+    fixture.service.review_reminders(&events, due - 1).unwrap();
+    assert_eq!(count(), 0);
     fixture
         .service
         .delivery_register(
@@ -600,6 +604,7 @@ fn review_schedule_routes_escalates_and_only_valid_receipts_advance_it() {
     fixture.service.review_reminders(&events, due).unwrap();
     fixture.service.review_reminders(&events, due).unwrap();
     assert_eq!(count(), 1);
+    assert_eq!(fixture.database.read(|connection|Ok(connection.query_row("SELECT next_reminder_at_ms FROM review_policies WHERE repository_id='project-alpha'",[],|row|row.get::<_,Option<u64>>(0))?)).unwrap(),Some(due+3_600_000));
     let native = fixture
         .service
         .delivery_pending(
@@ -636,6 +641,7 @@ fn review_schedule_routes_escalates_and_only_valid_receipts_advance_it() {
         .review_reminders(&events, due + 3_600_001)
         .unwrap();
     assert_eq!((count(), message_count()), (2, 2));
+    assert_eq!(fixture.database.read(|connection|Ok(connection.query_row("SELECT next_reminder_at_ms FROM review_policies WHERE repository_id='project-alpha'",[],|row|row.get::<_,Option<u64>>(0))?)).unwrap(),None);
     assert!(
         fixture
             .service
@@ -681,6 +687,34 @@ fn review_schedule_routes_escalates_and_only_valid_receipts_advance_it() {
         .review_reminders(&events, START + WEEK)
         .unwrap();
     assert_eq!(count(), 2);
+
+    // A generation turn has a finite indexed page, and its continuation cannot
+    // starve the last due policy or recreate stages that were already emitted.
+    fixture.database.transaction(|connection| {
+        for index in 0..129 {
+            connection.execute("INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,next_reminder_at_ms) VALUES('project-alpha',$1,1000,1000,1,$2,$3,$3)",crate::database::params![format!("\"page-{index:03}\""),START+WEEK-1000,START+WEEK])?;
+        }
+        Ok(())
+    }).unwrap();
+    let remaining = || {
+        fixture.database.read(|connection|Ok(connection.query_row("SELECT COUNT(*) FROM review_policies WHERE active=1 AND next_reminder_at_ms<=$1",[START+WEEK],|row|row.get::<_,u32>(0))?)).unwrap()
+    };
+    fixture
+        .service
+        .review_reminders(&events, START + WEEK)
+        .unwrap();
+    assert_eq!(remaining(), 1);
+    fixture
+        .service
+        .review_reminders(&events, START + WEEK)
+        .unwrap();
+    assert_eq!(remaining(), 0);
+    let emitted = count();
+    fixture
+        .service
+        .review_reminders(&events, START + WEEK)
+        .unwrap();
+    assert_eq!(count(), emitted);
 }
 
 #[test]

@@ -23,10 +23,29 @@ pub fn absent(_: &Path) -> Result<bool, ProtocolError> {
 pub fn measure(_: &Path) -> Result<Measurement, ProtocolError> {
     unsupported()
 }
+pub struct MeasurementCursor;
+impl MeasurementCursor {
+    pub fn new(_: &Path) -> Result<Self, ProtocolError> {
+        unsupported()
+    }
+    pub fn step(
+        &mut self,
+        _: usize,
+        _: std::time::Duration,
+    ) -> Result<Option<Measurement>, ProtocolError> {
+        unsupported()
+    }
+}
 pub fn mount_targets() -> Result<Vec<PathBuf>, ProtocolError> {
     unsupported()
 }
 pub fn remove_tree(_: &Path, _: (u64, u64), _: bool, _: bool) -> Result<(), ProtocolError> {
+    unsupported()
+}
+pub fn validate_native_snapshot(_: &Path) -> Result<(), ProtocolError> {
+    unsupported()
+}
+pub fn remove_native_snapshot(_: &Path, _: (u64, u64), _: (u64, u64)) -> Result<(), ProtocolError> {
     unsupported()
 }
 pub fn filesystem(_: &Path, _: u64, _: &str) -> Result<Filesystem, ProtocolError> {

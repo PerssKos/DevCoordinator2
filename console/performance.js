@@ -38,10 +38,30 @@ window.DevCoordinatorPerformance = (() => {
         ['Cache write cost', cost.cache_write_usd_micros],
         ['Output cost', cost.output_usd_micros],
       ];
-      return `<span class="performance-token-detail"><button type="button" class="performance-token-detail-button" data-performance-token-detail="${id}" aria-expanded="false" aria-controls="${id}" aria-label="Show token breakdown for ${esc(label)}">${amount(measurement)}</button><span class="performance-token-popover" id="${id}" role="dialog" aria-label="Token breakdown" hidden><strong>${esc(label)}</strong><dl>${rows.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${integer(value)}</dd></div>`).join('')}</dl><dl class="performance-cost-detail">${costs.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${usd(value)}</dd></div>`).join('')}</dl><small>${esc(costState(cost))} · API-equivalent Standard basis</small></span></span>`;
+      const hasComponents = rows.some(([, value]) => value != null) || costs.some(([, value]) => value != null);
+      const componentMarkup = hasComponents
+        ? `<dl>${rows.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${value == null ? 'Unavailable' : integer(value)}</dd></div>`).join('')}</dl><dl class="performance-cost-detail">${costs.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${value == null ? 'Unavailable' : usd(value)}</dd></div>`).join('')}</dl>`
+        : '<p class="performance-token-popover-empty">Component details unavailable for this breakdown.</p>';
+      return `<span class="performance-token-detail"><button type="button" class="performance-token-detail-button" data-performance-token-detail="${id}" aria-expanded="false" aria-controls="${id}" aria-label="Show token breakdown for ${esc(label)}">${amount(measurement)}</button><span class="performance-token-popover" id="${id}" role="dialog" aria-label="Token breakdown" hidden><strong>${esc(label)}</strong>${componentMarkup}<small>${esc(costState(cost))} · API-equivalent Standard basis</small></span></span>`;
     }
     const costAmount = cost => usd(cost?.estimated_usd_micros);
     const totalSource = usage => usage?.totals || usage?.outcomes?.totals?.cost || null;
+    const pendingUsageReasons = new Set(['api_refresh_pending', 'api_source_busy', 'api_busy']);
+    const usageRefreshPending = coverage => {
+      const reasons = Object.keys(coverage?.unavailable_reasons || {});
+      return reasons.some(reason => pendingUsageReasons.has(reason)) || (!reasons.length && !!coverage?.snapshot?.refreshing);
+    };
+    const coverageStatusText = coverage => {
+      const snapshot = coverage?.snapshot;
+      const unavailableReasons = Object.keys(coverage?.unavailable_reasons || {});
+      // A refresh can remain marked as active after the coordinator has
+      // established that no source can answer this request. Keep that state
+      // truthful instead of leaving the page saying "Loading usage…" forever.
+      if (coverage?.state === 'unavailable' && !snapshot?.updated_at_ms && unavailableReasons.length && !usageRefreshPending(coverage)) {
+        return coverageText({ ...coverage, snapshot: snapshot ? { ...snapshot, refreshing: false } : snapshot });
+      }
+      return coverageText(coverage);
+    };
     const badge = disposition => `<span class="performance-status ${esc(disposition)}">${window.DevCoordinatorI18n.computedMarkup(() => statuses[disposition] ? window.DevCoordinatorI18n.t("performance.status_" + disposition) : disposition)}</span>`;
     const color = key => ({coding:'var(--chart-blue)',integration_testing:'var(--chart-violet)',unknown:'var(--muted)',unattributed:'var(--muted)'})[key] || `var(--chart-${['blue', 'violet', 'amber', 'teal', 'green'][Array.from(key).reduce((n, c) => n + c.charCodeAt(0), 0) % 5]})`;
     const entries = values => Object.entries(values || {}).sort((a, b) => b[1].measured - a[1].measured || a[0].localeCompare(b[0]));
@@ -51,18 +71,27 @@ window.DevCoordinatorPerformance = (() => {
     }
     function distribution(title, values, total, kind = false, source = null) {
       const rows = entries(values); const sum = rows.reduce((n, [, value]) => n + value.measured, 0);
-      return `<section class="performance-distribution"><div class="performance-section-head"><h2>${window.DevCoordinatorI18n.markup("performance." + title)}</h2><span><span data-i18n="performance.total_c9b3c3">Total</span> <strong title="${esc(exact(total))}">${tokenDetail(kind ? 'Plan item total' : 'Activity total', total, source)}</strong></span></div>${mix(values, sum)}<div class="performance-legend">${rows.slice(0, 5).map(([key, value]) => `<span><i style="background:${key === 'unattributed' ? 'var(--muted)' : color(key)}"></i>${esc(kind ? labels[key] || activityLabel(key) : activityLabel(key))}<strong>${tokenDetail(kind ? labels[key] || activityLabel(key) : activityLabel(key), value, source)}</strong></span>`).join('')}${rows.length > 5 ? `<span>${window.DevCoordinatorI18n.markup("performance.value1_more_activities_a0186b", {value1: rows.length - 5})}</span>` : ''}</div><details class="performance-exact"><summary><span data-i18n="performance.exact_values_29bdd9">Exact values</span></summary><table><thead><tr><th>${(kind ? window.DevCoordinatorI18n.markup("performance.plan_item_kind_4accd6") : window.DevCoordinatorI18n.markup("performance.activity_38da15"))}</th><th><span data-i18n="performance.measured_tokens_ca4840">Measured tokens</span></th><th><span data-i18n="performance.share_29887a">Share</span></th></tr></thead><tbody>${rows.map(([key, value]) => `<tr><td>${esc(kind ? labels[key] || activityLabel(key) : activityLabel(key))}</td><td><span class="performance-exact-value">${integer(value.measured)}</span>${value.exact == null ? window.DevCoordinatorI18n.markup("performance.partial_27f7a4") : ''}</td><td>${sum ? (value.measured / sum * 100).toFixed(1) + '%' : '—'}</td></tr>`).join('')}</tbody></table></details></section>`;
+      return `<section class="performance-distribution"><div class="performance-section-head"><h2>${window.DevCoordinatorI18n.markup("performance." + title)}</h2><span><span data-i18n="performance.total_c9b3c3">Total</span> <strong title="${esc(exact(total))}">${tokenDetail(kind ? 'Plan item total' : 'Activity total', total, source)}</strong></span></div>${mix(values, sum)}<div class="performance-legend">${rows.slice(0, 5).map(([key, value]) => `<span><i style="background:${key === 'unattributed' ? 'var(--muted)' : color(key)}"></i>${esc(kind ? labels[key] || activityLabel(key) : activityLabel(key))}<strong>${tokenDetail(kind ? labels[key] || activityLabel(key) : activityLabel(key), value)}</strong></span>`).join('')}${rows.length > 5 ? `<span>${window.DevCoordinatorI18n.markup("performance.value1_more_activities_a0186b", {value1: rows.length - 5})}</span>` : ''}</div><details class="performance-exact"><summary><span data-i18n="performance.exact_values_29bdd9">Exact values</span></summary><table><thead><tr><th>${(kind ? window.DevCoordinatorI18n.markup("performance.plan_item_kind_4accd6") : window.DevCoordinatorI18n.markup("performance.activity_38da15"))}</th><th><span data-i18n="performance.measured_tokens_ca4840">Measured tokens</span></th><th><span data-i18n="performance.share_29887a">Share</span></th></tr></thead><tbody>${rows.map(([key, value]) => `<tr><td>${esc(kind ? labels[key] || activityLabel(key) : activityLabel(key))}</td><td><span class="performance-exact-value">${integer(value.measured)}</span>${value.exact == null ? window.DevCoordinatorI18n.markup("performance.partial_27f7a4") : ''}</td><td>${sum ? (value.measured / sum * 100).toFixed(1) + '%' : '—'}</td></tr>`).join('')}</tbody></table></details></section>`;
     }
     function costMatrix(usage) {
       const activityRows = (usage.activities || []).filter(row => row.total_tokens || row.cost?.estimated_usd_micros != null);
       if (!activityRows.length) return '';
-      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(activityLabel(row.activity))}</td><td>${tokenDetail(activityLabel(row.activity), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.operations)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
+      const phases = new Map();
+      for (const row of activityRows) {
+        if (!phases.has(row.activity)) phases.set(row.activity, new Set());
+        if (row.phase) phases.get(row.activity).add(row.phase);
+      }
+      const rowLabel = row => phases.get(row.activity).size > 1 && row.phase
+        ? `${activityLabel(row.activity)} · ${window.DevCoordinatorI18n.t('common.phase_' + row.phase)}`
+        : activityLabel(row.activity);
+      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(rowLabel(row))}</td><td>${tokenDetail(rowLabel(row), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.operations)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
     }
     async function render(root, repositoryId, signal) {
       if (!identity()?.administrator) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p class=\"notice\"><span data-i18n=\"performance.administrator_access_is_required_to_read_perform_81e663\">Administrator access is required to read performance reviews.</span></p>"; return; }
       if (!repositoryId) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p><span data-i18n=\"performance.no_repository_is_selected_386f0c\">No repository is selected.</span></p>"; return; }
       let session = sessions.get(repositoryId);
-      if (!session) { session = { end: Date.now(), lifetimeEnd: Date.now(), range: '7d', scroll: 0 }; if (sessions.size >= 16) sessions.delete(sessions.keys().next().value); sessions.set(repositoryId, session); }
+      const now = Date.now();
+      if (!session) { session = { end: now, lifetimeEnd: now, range: '7d', scroll: 0 }; if (sessions.size >= 16) sessions.delete(sessions.keys().next().value); sessions.set(repositoryId, session); }
       const query = new URLSearchParams(location.hash.split('?')[1] || '');
       const range = ['7d', '30d', '90d', 'custom'].includes(query.get('range')) ? query.get('range') : session.range;
       const parsedEnd = Number(query.get('to'));
@@ -70,16 +99,23 @@ window.DevCoordinatorPerformance = (() => {
       const parsedStart = Number(query.get('from'));
       const start = query.has('from') && Number.isSafeInteger(parsedStart) && parsedStart >= 0 && parsedStart < end ? parsedStart : Math.max(0, end - (parseInt(range, 10) || 7) * DAY);
       session.end = end; session.range = range;
+      const recordedTo = Number(query.get('recordedTo'));
+      if (query.has('recordedTo') && Number.isSafeInteger(recordedTo) && recordedTo > 0) session.lifetimeEnd = Math.min(recordedTo, now);
       const reference = query.get('review');
       const active = () => !signal.aborted && root.querySelector('[data-performance-page]');
       const find = name => root.querySelector(`[data-performance-${name}]`);
       const requests = { repository_id: repositoryId, window_start_ms: start, window_end_ms: end, outcome_limit: 5 };
       let currentUsage = null; let reviewData = null; let historyBefore = session.history?.next_before ?? null; let revisionBefore = null;
+      const refreshTimers = new Map();
+      const loadingProgress = new Map();
+      let loadingProgressTimer = null;
       function route(review, overrides = {}) {
-        const p = new URLSearchParams({ range, from: String(start), to: String(end), ...overrides });
+        const p = new URLSearchParams({ range, from: String(start), to: String(end), recordedTo: String(session.lifetimeEnd), ...overrides });
         if (review) p.set('review', review);
         return `#/performance/${encodeURIComponent(repositoryId)}?${p}`;
       }
+      // Reloads must consume the same exact query, including a read still in progress.
+      if (location.hash !== route(reference)) history.replaceState(history.state, '', route(reference));
       function navigate(review, overrides) {
         if (!reference) session.scroll = window.scrollY;
         location.hash = route(review, overrides);
@@ -88,8 +124,64 @@ window.DevCoordinatorPerformance = (() => {
         target.innerHTML = `<p role="alert">${esc(message)}</p><button type="button" class="btn btn-small"><span data-i18n="performance.retry_942087">Retry</span></button>`;
         target.querySelector('button').addEventListener('click', retry);
       }
+      function clearRefresh(name) {
+        window.clearTimeout(refreshTimers.get(name));
+        refreshTimers.delete(name);
+      }
+      function needsRefresh(data) {
+        const coverage = data?.usage?.coverage || data?.coverage;
+        return usageRefreshPending(coverage);
+      }
+      const pendingMeasurements = coverage => coverage?.state === 'unavailable' && usageRefreshPending(coverage);
+      const loadingCoverage = coverage => Boolean(coverage?.loading) || pendingMeasurements(coverage);
+      const loadingEstimate = loading => {
+        if (loading?.state === 'estimate_exceeded') return 'Taking longer than estimated';
+        if (loading?.estimated_remaining_ms != null) return `Estimated remaining: about ${Math.max(1, Math.ceil(Number(loading.estimated_remaining_ms) / 60000))} min`;
+        return 'Estimated remaining: unknown';
+      };
+      function clearLoadingProgress(name) {
+        loadingProgress.delete(name);
+        if (!loadingProgress.size) {
+          window.clearTimeout(loadingProgressTimer);
+          loadingProgressTimer = null;
+          const target = find('loading-progress');
+          if (target) { target.hidden = true; target.innerHTML = ''; }
+        }
+      }
+      function paintLoadingProgress() {
+        if (signal.aborted || !loadingProgress.size) return;
+        const target = find('loading-progress');
+        if (!target) return;
+        const latest = [...loadingProgress.values()].sort((left, right) => right.startedAt - left.startedAt)[0];
+        const loading = latest.coverage?.loading;
+        target.innerHTML = `<span class="performance-loading-spinner" aria-hidden="true"></span><span>Loading token usage…</span><span class="performance-loading-estimate"> · ${esc(loadingEstimate(loading))}</span>`;
+        target.hidden = false;
+      }
+      function scheduleLoadingProgress(name, coverage, startedAt) {
+        if (!loadingCoverage(coverage)) { clearLoadingProgress(name); return; }
+        loadingProgress.set(name, { coverage, startedAt });
+        window.clearTimeout(loadingProgressTimer);
+        const delay = Math.max(0, 1000 - (Date.now() - startedAt));
+        loadingProgressTimer = window.setTimeout(paintLoadingProgress, delay);
+      }
+      function startLoadingProgress(name) {
+        const startedAt = Date.now();
+        loadingProgress.set(name, { coverage: null, startedAt });
+        window.clearTimeout(loadingProgressTimer);
+        loadingProgressTimer = window.setTimeout(paintLoadingProgress, 1000);
+        return startedAt;
+      }
+      function scheduleRefresh(name, readAgain) {
+        if (refreshTimers.has(name) || signal.aborted) return;
+        refreshTimers.set(name, window.setTimeout(() => {
+          refreshTimers.delete(name);
+          if (active()) readAgain(true);
+        }, 5000));
+      }
       async function read(operation, params, useCache = true) {
-        const key = `${operation}:${JSON.stringify(params)}`; const saved = cache.get(key);
+        // A refresh updates the same period instead of caching a second version.
+        const scope = { ...params }; delete scope.wait_for_refresh;
+        const key = `${operation}:${JSON.stringify(scope)}`; const saved = cache.get(key);
         if (useCache && saved && Date.now() - saved.at < 60000) return saved.data;
         const data = await api(operation, params);
         if (active()) { if (cache.size > 32) cache.delete(cache.keys().next().value); cache.set(key, { at: Date.now(), data }); }
@@ -99,14 +191,20 @@ window.DevCoordinatorPerformance = (() => {
       if (previousHeight) root.style.minHeight = previousHeight + "px";
       root.innerHTML = `<section data-performance-page><div class="performance-top"><header class="performance-heading"><h1><a class="destination-link" href="#/performance"><span data-i18n="performance.performance_442ade">Performance</span></a></h1><div class="performance-range" aria-label="Overview period" data-i18n-attrs='{"aria-label":"performance.overview_period_80309e"}'>${['7d', '30d', '90d'].map(value => `<button type="button" class="btn btn-small" data-performance-range="${value}" aria-pressed="${range === value}">${value}</button>`).join('')}<button type="button" class="btn btn-small" data-performance-custom-open><span data-i18n="performance.custom_494ca7">Custom</span></button><dialog class="performance-date-dialog"><form><h2><span data-i18n="performance.custom_dates_9c855c">Custom dates</span></h2><label><span data-i18n="performance.from_utc_bec5d5">From (UTC)</span><input type="date" name="from" value="${day(start)}" required></label><label><span data-i18n="performance.through_utc_615e9f">Through (UTC)</span><input type="date" name="to" value="${day(end - 1)}" max="${day(Date.now())}" required></label><p role="alert"></p><button class="btn btn-primary" type="submit"><span data-i18n="performance.apply_dates_eb4a4d">Apply dates</span></button><button class="btn" type="button" data-performance-cancel-dates><span data-i18n="performance.cancel_19766e">Cancel</span></button></form></dialog></div><span class="performance-dates">${window.DevCoordinatorI18n.computedMarkup(() => period(start, end))}</span><button type="button" class="btn btn-small" data-performance-refresh><span data-i18n="performance.refresh_0e9161">Refresh</span></button></header>
         <div class="performance-totals" aria-label="Repository totals" data-i18n-attrs='{"aria-label":"performance.repository_totals_3058a4"}'><div><span><span data-i18n="performance.all_recorded_tokens_998a8f">All recorded tokens</span></span><strong data-performance-lifetime><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div><div><span><span data-i18n="performance.overview_period_tokens_9bcdf5">Overview period tokens</span></span><strong data-performance-period-total><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div><div><span>API-equivalent estimate</span><strong data-performance-period-cost><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong><small data-performance-cost-status class="muted">Standard API basis</small></div><div><span><span data-i18n="performance.all_reviews_ab84bf">All reviews</span></span><strong data-performance-count><span data-i18n="performance.loading_ba3bbb">Loading…</span></strong></div></div></div>
-        <div class="performance-scope"><div><h2 data-performance-scope-title>${(reference ? window.DevCoordinatorI18n.markup("performance.review_usage_c39675") : window.DevCoordinatorI18n.markup("performance.overview_usage_83f004"))}</h2><span data-performance-scope-total></span></div>${reference ? "<button type=\"button\" class=\"btn btn-small\" data-performance-overview><span data-i18n=\"performance.return_to_overview_d8eeb2\">Return to overview</span></button>" : ''}</div><p class="performance-coverage muted" data-performance-coverage role="status"><span data-i18n="performance.loading_measurements_baea02">Loading measurements…</span></p>
+        <div class="performance-scope"><div><h2 data-performance-scope-title>${(reference ? window.DevCoordinatorI18n.markup("performance.review_usage_c39675") : window.DevCoordinatorI18n.markup("performance.overview_usage_83f004"))}</h2><span data-performance-scope-total></span><span class="performance-loading-progress" data-performance-loading-progress role="status" aria-live="polite" aria-atomic="true" hidden></span></div>${reference ? "<button type=\"button\" class=\"btn btn-small\" data-performance-overview><span data-i18n=\"performance.return_to_overview_d8eeb2\">Return to overview</span></button>" : ''}</div><p class="performance-coverage muted" data-performance-coverage role="status"><span data-i18n="performance.loading_measurements_baea02">Loading measurements…</span></p>
         <div class="performance-distributions" data-performance-charts><p><span data-i18n="performance.loading_token_breakdowns_b62cda">Loading token breakdowns…</span></p></div>
         <div class="performance-workspace"><div class="performance-primary"><section class="performance-outcomes"><div class="performance-section-head"><h2><span data-i18n="performance.tokens_by_outcome_860e7c">Tokens by outcome</span></h2><span data-performance-outcome-count></span></div><div data-performance-outcomes><span data-i18n="performance.loading_outcomes_a12af3">Loading outcomes…</span></div><div data-performance-outcomes-more></div></section>
         <section class="performance-history"><h2><span data-i18n="performance.review_history_063ea2">Review history</span></h2><div data-performance-history><span data-i18n="performance.loading_reviews_510c76">Loading reviews…</span></div><div data-performance-history-more></div></section></div>
         <aside class="performance-reader" data-performance-reader tabindex="-1" aria-label="Selected performance review" data-i18n-attrs='{"aria-label":"performance.selected_performance_review_362d6a"}'>${reference ? "<p><span data-i18n=\"performance.loading_review_fc2441\">Loading review…</span></p>" : "<h2><span data-i18n=\"performance.review_details_1640b0\">Review details</span></h2><p class=\"muted\"><span data-i18n=\"performance.select_a_review_to_see_its_decisions_measurement_316280\">Select a review to see its decisions, measurements and evidence.</span></p>"}</aside></div></section>`;
       root.querySelectorAll('[data-performance-range]').forEach(button => button.addEventListener('click', () => { const nextEnd = Date.now(); navigate(null, { range: button.dataset.performanceRange, from: String(nextEnd - parseInt(button.dataset.performanceRange, 10) * DAY), to: String(nextEnd) }); }));
       find('overview')?.addEventListener('click', () => navigate(null));
-      find('refresh').addEventListener('click', () => { cache.clear(); session.history = null; session.periodUsage = null; session.end = Date.now(); session.lifetimeEnd = Date.now(); window.render(); });
+      find('refresh').addEventListener('click', () => {
+        cache.clear(); session.history = null; session.periodUsage = null;
+        const nextEnd = Date.now(); session.lifetimeEnd = nextEnd;
+        const bounds = range === 'custom' ? {} : { from: String(Math.max(0, nextEnd - parseInt(range, 10) * DAY)), to: String(nextEnd) };
+        history.replaceState(history.state, '', route(reference, bounds));
+        window.render();
+      });
       const form = root.querySelector('.performance-date-dialog form');
       const custom = root.querySelector('.performance-date-dialog');
       root.append(custom);
@@ -134,16 +232,28 @@ window.DevCoordinatorPerformance = (() => {
         popover.hidden = open;
         button.setAttribute('aria-expanded', String(!open));
       }, { signal });
-      const showCoverage = usage => { window.DevCoordinatorI18n.bind(find('coverage'), () => `${coverageText(usage.coverage)}${usage.outcomes.unattributed.operations ? ' · ' + window.DevCoordinatorI18n.t("performance.unattributedWork") : ''}`); };
+      const showCoverage = usage => { window.DevCoordinatorI18n.bind(find('coverage'), () => `${coverageStatusText(usage.coverage)}${usage.outcomes.unattributed.operations ? ' · ' + window.DevCoordinatorI18n.t("performance.unattributedWork") : ''}`); };
       function showUsage(usage, append = false) {
         const previousUsage = currentUsage; currentUsage = usage;
         if (!reference) { session.periodUsage = { start, end, usage: append && previousUsage ? { ...usage, outcomes: { ...usage.outcomes, rows: [...previousUsage.outcomes.rows, ...usage.outcomes.rows] } } : usage }; currentUsage = session.periodUsage.usage; }
         const outcomes = usage.outcomes; const total = outcomes.totals.providerTotalTokens;
+        const workstream = reference && reviewData?.review.record.workstreamId;
+        // The producer scopes outcomes by workstream; its other rows remain repository-wide.
+        const source = workstream ? outcomes.totals.cost : usage.totals;
+        if (!append && pendingMeasurements(usage.coverage) && !total.measured) {
+          showCoverage(usage);
+          window.DevCoordinatorI18n.text(find('scope-total'), 'performance.loading_measurements_baea02');
+          find('charts').innerHTML = `<p>${window.DevCoordinatorI18n.markup('performance.loading_token_breakdowns_b62cda')}</p>`;
+          window.DevCoordinatorI18n.text(find('outcomes'), 'performance.loading_outcomes_a12af3');
+          window.DevCoordinatorI18n.text(find('outcome-count'), 'performance.loading_ba3bbb');
+          find('outcomes-more').innerHTML = '';
+          return;
+        }
         if (!append) {
           showCoverage(usage);
-          find('scope-total').innerHTML = `${tokenDetail(reference ? 'Review total' : 'Period total', total, usage.totals)}${reference ? '' : ' · ' + esc(period(start, end))}`;
-          find('charts').innerHTML = distribution('tokensByActivity', outcomes.totals.activities, total, false, usage.totals) + distribution('tokensByKind', outcomes.kinds, total, true, usage.totals) + costMatrix(usage);
-          find('outcomes').innerHTML = `<table class="performance-outcome-table"><thead><tr><th><span data-i18n="performance.outcome_4e80ab">Outcome</span></th><th><span data-i18n="performance.plan_item_kind_4accd6">Plan item kind</span></th><th><span data-i18n="performance.activity_mix_3b0dfb">Activity mix</span></th><th><span data-i18n="performance.total_tokens_e7601c">Total tokens</span></th><th>API-equivalent USD</th></tr></thead><tbody></tbody><tfoot><tr><th colspan="4">${window.DevCoordinatorI18n.markup(reference ? "performance.reviewTotalLabel" : "performance.periodTotalLabel")}</th><td>${tokenDetail(reference ? 'Review total' : 'Period total', total, usage.totals)}</td></tr></tfoot></table>`;
+          find('scope-total').innerHTML = `${tokenDetail(reference ? 'Review total' : 'Period total', total, source)}${reference ? '' : ' · ' + esc(period(start, end))}`;
+          find('charts').innerHTML = distribution('tokensByActivity', outcomes.totals.activities, total, false, source) + distribution('tokensByKind', outcomes.kinds, total, true, source) + (workstream ? '' : costMatrix(usage));
+          find('outcomes').innerHTML = `<table class="performance-outcome-table"><thead><tr><th><span data-i18n="performance.outcome_4e80ab">Outcome</span></th><th><span data-i18n="performance.plan_item_kind_4accd6">Plan item kind</span></th><th><span data-i18n="performance.activity_mix_3b0dfb">Activity mix</span></th><th><span data-i18n="performance.total_tokens_e7601c">Total tokens</span></th><th>API-equivalent USD</th></tr></thead><tbody></tbody><tfoot><tr><th colspan="4">${window.DevCoordinatorI18n.markup(reference ? "performance.reviewTotalLabel" : "performance.periodTotalLabel")}</th><td>${tokenDetail(reference ? 'Review total' : 'Period total', total, source)}</td></tr></tfoot></table>`;
         }
         if (usage.coverage.state === 'unavailable' && !total.measured) find('charts').innerHTML = "<p class=\"muted\"><span data-i18n=\"performance.token_measurements_are_unavailable_for_this_peri_cd0465\">Token measurements are unavailable for this period.</span></p>";
         const body = find('outcomes').querySelector('tbody');
@@ -202,21 +312,49 @@ window.DevCoordinatorPerformance = (() => {
         } catch (error) { if (active()) { if (!more) window.DevCoordinatorI18n.text(find('count'), "performance.unavailable_ca1844"); errorPanel(more ? find('history-more') : find('history'), error.message, () => loadHistory(more)); } }
       }
       root.addEventListener('click', event => { if (event.target.closest('[data-performance-select]')) { session.focusReview = true; session.activationScroll = window.scrollY; if (!reference) session.scroll = window.scrollY; } }, { signal });
-      async function loadPeriod() {
-        try { const data = await read('performance.overview', requests); if (!active()) return; find('period-total').innerHTML = tokenDetail('Overview period total', data.total_tokens, data.totals); find('period-cost').innerHTML = esc(costAmount(data.cost)); find('cost-status').textContent = `${costState(data.cost)} · Standard API basis`; if (!reference) { showUsage(session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage); if (session.scroll) window.scrollTo({ top: session.scroll }); } if (data.usage?.coverage?.snapshot?.refreshing) { read('performance.overview', { ...requests, wait_for_refresh: true }, false).then(fresh => { if (!active()) return; find('period-total').innerHTML = tokenDetail('Overview period total', fresh.total_tokens, fresh.totals); find('period-cost').innerHTML = esc(costAmount(fresh.cost)); find('cost-status').textContent = `${costState(fresh.cost)} · Standard API basis`; if (!reference && fresh.usage) showUsage(fresh.usage); }).catch(() => {}); } }
-        catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
+      async function loadPeriod(waitForRefresh = false) {
+        const startedAt = Date.now();
+        try {
+          const data = await read('performance.overview', waitForRefresh ? { ...requests, wait_for_refresh: true } : requests, !waitForRefresh);
+          if (!active()) return;
+          const pending = pendingMeasurements(data.usage?.coverage || data.coverage) && !data.total_tokens.measured;
+          scheduleLoadingProgress('period', data.usage?.coverage || data.coverage, startedAt);
+          find('period-total').innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('Overview period total', data.total_tokens, data.totals);
+          find('period-cost').innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : esc(costAmount(data.cost));
+          find('cost-status').textContent = pending ? 'Standard API basis' : `${costState(data.cost)} · Standard API basis`;
+          if (!reference) {
+            if (data.usage) showUsage(!waitForRefresh && session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage);
+            if (session.scroll) window.scrollTo({ top: session.scroll });
+          }
+          if (needsRefresh(data)) scheduleRefresh('period', loadPeriod);
+          else { clearRefresh('period'); clearLoadingProgress('period'); }
+        }
+        catch (error) { clearLoadingProgress('period'); if (active()) { window.DevCoordinatorI18n.text(find('period-total'), "performance.unavailable_ca1844"); if (!reference) { window.DevCoordinatorI18n.text(find('coverage'), "performance.measurements_could_not_be_loaded_77193b"); window.DevCoordinatorI18n.text(find('outcomes'), "performance.measurements_could_not_be_loaded_77193b"); errorPanel(find('charts'), error.message, loadPeriod); } } }
       }
-      async function loadLifetime() {
-        try { const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }); if (!active()) return; find('lifetime').innerHTML = tokenDetail('All recorded total', data.total_tokens, data.totals); find('lifetime').title = coverageText(data.coverage); }
-        catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; } }
+      async function loadLifetime(waitForRefresh = false) {
+        const startedAt = Date.now();
+        try {
+          const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }, !waitForRefresh);
+          if (!active()) return;
+          scheduleLoadingProgress('lifetime', data.coverage, startedAt);
+          find('lifetime').innerHTML = pendingMeasurements(data.coverage) && !data.total_tokens.measured ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('All recorded total', data.total_tokens, data.totals);
+          find('lifetime').title = coverageStatusText(data.coverage);
+          if (needsRefresh(data)) scheduleRefresh('lifetime', loadLifetime);
+          else { clearRefresh('lifetime'); clearLoadingProgress('lifetime'); }
+        }
+        catch (error) { clearLoadingProgress('lifetime'); if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; } }
       }
-      async function loadReview() {
-        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }); if (active()) showReview(data); }
-        catch (error) { if (active()) { errorPanel(find('reader'), error.message, loadReview); window.DevCoordinatorI18n.text(find('coverage'), "performance.review_measurements_are_unavailable_497d4e"); find('charts').innerHTML = ''; window.DevCoordinatorI18n.text(find('outcomes'), "performance.review_measurements_are_unavailable_497d4e"); } }
+      async function loadReview(waitForRefresh = false) {
+        const startedAt = Date.now();
+        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }, !waitForRefresh); if (!active()) return; scheduleLoadingProgress('review', data.usage?.coverage || data.coverage, startedAt); showReview(data); if (needsRefresh(data)) scheduleRefresh('review', loadReview); else { clearRefresh('review'); clearLoadingProgress('review'); } }
+        catch (error) { clearLoadingProgress('review'); if (active()) { errorPanel(find('reader'), error.message, loadReview); window.DevCoordinatorI18n.text(find('coverage'), "performance.review_measurements_are_unavailable_497d4e"); find('charts').innerHTML = ''; window.DevCoordinatorI18n.text(find('outcomes'), "performance.review_measurements_are_unavailable_497d4e"); } }
       }
+      startLoadingProgress('period');
+      startLoadingProgress('lifetime');
+      if (reference) startLoadingProgress('review');
       await Promise.allSettled([loadHistory(), loadPeriod(), loadLifetime(), ...(reference ? [loadReview()] : [])]);
       if (active()) root.style.minHeight = '';
-      signal.addEventListener('abort', () => { root.style.minHeight = ''; }, { once: true });
+      signal.addEventListener('abort', () => { for (const name of refreshTimers.keys()) clearRefresh(name); for (const name of loadingProgress.keys()) clearLoadingProgress(name); window.clearTimeout(loadingProgressTimer); root.style.minHeight = ''; }, { once: true });
     }
     return { render };
   }

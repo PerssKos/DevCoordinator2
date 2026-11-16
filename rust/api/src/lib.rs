@@ -28,8 +28,8 @@ pub mod test_containers;
 pub mod tickets;
 pub mod work_context;
 
-pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 34;
+pub const PROTOCOL_VERSION: u8 = 3;
+pub const DATABASE_SCHEMA_VERSION: u32 = 35;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -506,9 +506,11 @@ pub struct PingData {
 
 #[derive(Clone, Copy, Debug)]
 pub struct OperationDefinition {
+    pub id: OperationId,
     pub name: &'static str,
     pub description: &'static str,
     pub policy: OperationPolicy,
+    pub execution: ExecutionProfile,
     pub cli_routes: &'static [CliRouteDefinition],
     pub cli_exclusion: Option<&'static str>,
     pub mcp_names: &'static [&'static str],
@@ -524,6 +526,39 @@ pub struct OperationDefinition {
 pub enum CliDispatch {
     Protocol,
     Local,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionProfile {
+    Ordinary,
+    PassiveWait,
+    Finite,
+    Extended,
+}
+
+impl OperationDefinition {
+    pub fn passive_wait(&self) -> bool {
+        self.execution == ExecutionProfile::PassiveWait
+    }
+    pub fn long_running(&self) -> bool {
+        self.execution == ExecutionProfile::Finite
+    }
+    pub fn response_timeout_seconds(&self) -> Option<u64> {
+        match self.execution {
+            ExecutionProfile::PassiveWait | ExecutionProfile::Finite => None,
+            ExecutionProfile::Extended => Some(20),
+            ExecutionProfile::Ordinary => Some(10),
+        }
+    }
+}
+
+macro_rules! execution_profile {
+    () => {
+        ExecutionProfile::Ordinary
+    };
+    ($profile:ident) => {
+        ExecutionProfile::$profile
+    };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -707,42 +742,6 @@ const REVERSIBLE_SELF: OperationPolicy =
 const IDEMPOTENT_APPEND_SELF: OperationPolicy =
     OperationPolicy::new(Scope::Self_, Role::Self_, Effect::Append, true);
 
-macro_rules! operation {
-    ($name:literal, $description:literal, $policy:expr, $dispatch:ident [$($cli:literal),+ $(,)?], [$($mcp:literal),* $(,)?], $input:ty, $output:ty) => {
-        OperationDefinition {
-            name: $name,
-            description: $description,
-            policy: $policy,
-            cli_routes: &[$(CliRouteDefinition {
-                route: $cli,
-                dispatch: CliDispatch::$dispatch,
-            }),+],
-            cli_exclusion: None,
-            mcp_names: &[$($mcp),*],
-            mcp_exclusion: mcp_exclusion!($($mcp),*),
-            mcp_overrides: &[],
-            input_schema: schema_for::<$input>,
-            output_schema: schema_for::<$output>,
-            validate_params: validate_params::<$input>,
-        }
-    };
-    ($name:literal, $description:literal, $policy:expr, excluded $reason:literal, [$($mcp:literal),* $(,)?], $input:ty, $output:ty) => {
-        OperationDefinition {
-            name: $name,
-            description: $description,
-            policy: $policy,
-            cli_routes: &[],
-            cli_exclusion: Some($reason),
-            mcp_names: &[$($mcp),*],
-            mcp_exclusion: mcp_exclusion!($($mcp),*),
-            mcp_overrides: &[],
-            input_schema: schema_for::<$input>,
-            output_schema: schema_for::<$output>,
-            validate_params: validate_params::<$input>,
-        }
-    };
-}
-
 macro_rules! mcp_exclusion {
     () => {
         Some("Deliberately not exposed as an MCP tool.")
@@ -752,1535 +751,276 @@ macro_rules! mcp_exclusion {
     };
 }
 
-pub static OPERATIONS: &[OperationDefinition] = &[
-    operation!(
-        "ping",
-        "Report daemon, schema, protocol, source, and socket identity.",
-        READ_PUBLIC,
-        Protocol["ping"],
-        [],
-        EmptyParams,
-        PingData
-    ),
-    operation!(
-        "storage.inventory",
-        "List measured artifacts and evidence-backed deletion safety.",
-        READ_SERVER_ADMIN,
-        Protocol["storage inventory"],
-        ["storage_inventory"],
-        storage::List,
-        storage::Inventory
-    ),
-    operation!(
-        "agent.settings.get",
-        "Read the effective harness routing rules and capability freshness.",
-        READ_SERVER_ADMIN,
-        Protocol["agent settings-get"],
-        ["agent_settings_get"],
-        params::AgentSettingsGet,
-        agent_routing::Settings
-    ),
-    operation!(
-        "agent.settings.save",
-        "Save global or repository harness routing rules with revision checks.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["agent settings-save"],
-        ["agent_settings_save"],
-        params::AgentSettingsSave,
-        agent_routing::Settings
-    ),
-    operation!(
-        "agent.roles.save",
-        "Create, rename, reorder, or retire agent work roles.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["agent roles-save"],
-        ["agent_roles_save"],
-        params::AgentRolesSave,
-        results::AgentRolesSaved
-    ),
-    operation!(
-        "agent.capabilities.report",
-        "Report the current model and effort capabilities of one harness.",
-        APPEND_SELF,
-        Protocol["agent capabilities-report"],
-        ["agent_capabilities_report"],
-        params::AgentCapabilitiesReport,
-        results::AgentCapabilitiesReported
-    ),
-    operation!(
-        "agent.instruction.current",
-        "Return concise current ownership and spawn guidance for this harness.",
-        READ_SERVER_ADMIN,
-        Protocol["agent instruction-current"],
-        ["agent_instruction_current"],
-        params::AgentInstructionCurrent,
-        results::AgentInstruction
-    ),
-    operation!(
-        "storage.artifact.get",
-        "Inspect one tracked artifact and its protection reasons.",
-        READ_SERVER_ADMIN,
-        Protocol["storage show"],
-        ["storage_artifact_get"],
-        storage::Reference,
-        storage::Artifact
-    ),
-    operation!(
-        "storage.scan",
-        "Queue storage discovery and return a durable job.",
-        IDEMPOTENT_APPEND_SERVER_ADMIN,
-        Protocol["storage scan"],
-        ["storage_scan"],
-        storage::Scan,
-        storage::Job
-    ),
-    operation!(
-        "storage.register",
-        "Record a disposal decision for an exact discovered artifact.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["storage register"],
-        ["storage_register"],
-        storage::Register,
-        storage::Artifact
-    ),
-    operation!(
-        "storage.legacy.register",
-        "Queue cleanup-only ownership verification of a legacy group.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["storage legacy-register"],
-        ["storage_legacy_register"],
-        storage::LegacyRegister,
-        storage::Job
-    ),
-    operation!(
-        "storage.protection.set",
-        "Protect an artifact or remove its explicit protection.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["storage protect"],
-        ["storage_protection_set"],
-        storage::Protection,
-        storage::Artifact
-    ),
-    operation!(
-        "storage.policy.get",
-        "Read the effective automatic cleanup policy.",
-        READ_SERVER_ADMIN,
-        Protocol["storage policy show"],
-        ["storage_policy_get"],
-        storage::Scope,
-        storage::Policy
-    ),
-    operation!(
-        "storage.policy.set",
-        "Change a revision of an automatic cleanup policy.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["storage policy set"],
-        ["storage_policy_set"],
-        storage::PolicySet,
-        storage::Policy
-    ),
-    operation!(
-        "storage.roots.list",
-        "List shared discovery roots without private paths.",
-        READ_SERVER_ADMIN,
-        Protocol["storage roots list"],
-        ["storage_roots_list"],
-        EmptyParams,
-        storage::Roots
-    ),
-    operation!(
-        "storage.roots.set",
-        "Configure an exact shared discovery root.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["storage roots set"],
-        ["storage_roots_set"],
-        storage::RootSet,
-        storage::Root
-    ),
-    operation!(
-        "storage.cleanup.plan",
-        "Resolve removal dependencies and blockers without deleting data.",
-        APPEND_SERVER_ADMIN,
-        Protocol["storage cleanup plan"],
-        ["storage_cleanup_plan"],
-        storage::PlanRequest,
-        storage::CleanupPlan
-    ),
-    operation!(
-        "storage.cleanup.start",
-        "Start an identity-bound cleanup plan.",
-        DESTRUCTIVE_SERVER_ADMIN,
-        Protocol["storage cleanup start"],
-        ["storage_cleanup_start"],
-        storage::Start,
-        storage::Job
-    ),
-    operation!(
-        "storage.job.status",
-        "Read cleanup progress and exact artifact receipts.",
-        READ_SERVER_ADMIN,
-        Protocol["storage job status"],
-        ["storage_job_status"],
-        storage::JobReference,
-        storage::Job
-    ),
-    operation!(
-        "storage.job.cancel",
-        "Cancel pending steps without undoing completed deletions.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["storage job cancel"],
-        ["storage_job_cancel"],
-        storage::JobReference,
-        storage::Job
-    ),
-    operation!(
-        "storage.history",
-        "Read bounded permanent cleanup history.",
-        READ_SERVER_ADMIN,
-        Protocol["storage history"],
-        ["storage_history"],
-        storage::HistoryRequest,
-        storage::History
-    ),
-    operation!(
-        "storage.lease.set",
-        "Register or renew an active-use lease.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["storage lease set"],
-        ["storage_lease_set"],
-        storage::LeaseSet,
-        storage::Lease
-    ),
-    operation!(
-        "storage.lease.release",
-        "Release an active-use lease without bypassing usage checks.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["storage lease release"],
-        ["storage_lease_release"],
-        storage::LeaseRelease,
-        storage::Lease
-    ),
-    operation!("ticket.request", "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.", EXTERNAL_SELF, excluded "Use Console or MCP ticket_request.", ["ticket_request"], tickets::Request, tickets::Reply),
-    operation!("ticket.settings", "Read the feature request upstream, default vr.ae, and prior ticket destinations.", READ_SELF, excluded "Use Console or MCP ticket_settings.", ["ticket_settings"], EmptyParams, tickets::Settings),
-    operation!("ticket.configure", "Set the feature request upstream without moving existing tickets; local uses this server.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP ticket_configure.", ["ticket_configure"], tickets::Configure, tickets::Settings),
-    operation!("ticket.remote", "Dedicated federation adapter. Public reads and credential-bound originating-server writes; no inherited administrator authority.", OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::External, false), excluded "Used only by the dedicated edge ticket endpoint.", [], tickets::RemoteRequest, tickets::Reply),
-    operation!(
-        "user.whoami",
-        "Show the current public identity and grants.",
-        READ_PUBLIC,
-        excluded "The signed-in identity is served directly by the Console edge.",
-        [],
-        params::Empty,
-        results::WhoAmI
-    ),
-    operation!(
-        "user.accept_invitation",
-        "Accept an invitation for the edge-authenticated identity.",
-        APPEND_SELF,
-        excluded "Invitation acceptance is bound to the authenticated Console edge.",
-        [],
-        params::AcceptInvitation,
-        results::AcceptedInvitation
-    ),
-    operation!(
-        "user.list",
-        "List public Console users and invitations.",
-        READ_SERVER_ADMIN,
-        excluded "User administration is a Console-only owner workflow.",
-        [],
-        params::Empty,
-        results::UserList
-    ),
-    operation!(
-        "user.invite",
-        "Invite a public Console user.",
-        APPEND_SERVER_ADMIN,
-        excluded "User administration is a Console-only owner workflow.",
-        [],
-        params::InviteUser,
-        results::InvitedUser
-    ),
-    operation!(
-        "user.remove",
-        "Remove one public Console user.",
-        DESTRUCTIVE_SERVER_ADMIN,
-        excluded "User administration is a Console-only owner workflow.",
-        [],
-        params::EmailOnly,
-        results::RemovedUser
-    ),
-    operation!(
-        "grant.set",
-        "Set one deployment access role.",
-        IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN,
-        excluded "Access grants are a Console-only owner workflow.",
-        [],
-        params::SetGrant,
-        results::GrantSet
-    ),
-    operation!(
-        "grant.remove",
-        "Remove one deployment access grant.",
-        DESTRUCTIVE_DEPLOYMENT_ADMIN,
-        excluded "Access grants are a Console-only owner workflow.",
-        [],
-        params::RemoveGrant,
-        results::GrantRemoved
-    ),
-    operation!(
-        "repository.register",
-        "Register the repository containing a path.",
-        IDEMPOTENT_APPEND_SERVER_ADMIN,
-        Protocol["repository register"],
-        [],
-        params::PathOnly,
-        results::RegisteredRepository
-    ),
-    operation!(
-        "repository.list",
-        "List registered repositories.",
-        READ_SERVER_ADMIN,
-        Protocol["repository list"],
-        ["repository_list"],
-        params::RepositoryList,
-        results::RepositoryList
-    ),
-    operation!(
-        "repository.status",
-        "Show one registered repository.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["repository status"],
-        [],
-        params::PathOnly,
-        results::RepositoryStatus
-    ),
-    operation!(
-        "repository.presentation.update",
-        "Choose a repository's Console name and icon without changing its identity.",
-        IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN,
-        excluded "Repository appearance is a Console-only administrator workflow.",
-        [],
-        params::RepositoryPresentationUpdate,
-        results::RepositoryPresentation
-    ),
-    operation!(
-        "repository.archive",
-        "Archive a repository after its blockers are cleared.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["repository archive"],
-        ["repository_archive"],
-        params::ArchiveRepository,
-        results::Repository
-    ),
-    operation!(
-        "repository.unarchive",
-        "Restore one archived repository.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["repository unarchive"],
-        ["repository_unarchive"],
-        params::UnarchiveRepository,
-        results::Repository
-    ),
-    operation!(
-        "repository.retire",
-        "Remove one exact repository and its linked worktrees while retaining a compact Coordinator receipt.",
-        DESTRUCTIVE_SERVER_ADMIN,
-        Protocol["repository retire"],
-        ["repository_retire"],
-        params::RetireRepository,
-        results::RetiredRepository
-    ),
-    operation!(
-        "server.register",
-        "Adopt one systemd-supervised local listener into the server inventory.",
-        IDEMPOTENT_APPEND_SERVER_ADMIN,
-        Protocol["server register"],
-        [],
-        params::ServerRegister,
-        results::ServerRow
-    ),
-    operation!(
-        "server.list",
-        "List exact systemd-supervised local listener registrations.",
-        READ_SERVER_ADMIN,
-        Protocol["server list"],
-        [],
-        params::ServerList,
-        results::ServerList
-    ),
-    operation!(
-        "server.stop",
-        "Mark one systemd-supervised listener registration as stopping.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["server stop"],
-        [],
-        params::ServerStop,
-        results::ServerRow
-    ),
-    operation!(
-        "test.start",
-        "Attach to or replace one governed validation run.",
-        DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["test start"],
-        ["test_start"],
-        params::StartTest,
-        results::TestStarted
-    ),
-    operation!(
-        "test.container.create",
-        "Create one daemon-owned temporary container for a running governed check.",
-        DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["test container create"],
-        ["test_container_create"],
-        test_containers::ContainerCreate,
-        test_containers::ContainerOperationResult
-    ),
-    operation!(
-        "test.container.start",
-        "Start one exact daemon-owned temporary test container.",
-        DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["test container start"],
-        ["test_container_start"],
-        test_containers::ContainerReference,
-        test_containers::ContainerOperationResult
-    ),
-    operation!(
-        "test.container.inspect",
-        "Inspect one exact daemon-owned temporary test container.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test container inspect"],
-        ["test_container_inspect"],
-        test_containers::ContainerReference,
-        test_containers::ContainerOperationResult
-    ),
-    operation!(
-        "test.container.remove",
-        "Force-remove one exact daemon-owned temporary test container and verify absence.",
-        IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["test container remove"],
-        ["test_container_remove"],
-        test_containers::ContainerReference,
-        test_containers::ContainerOperationResult
-    ),
-    operation!(
-        "test.container.retry",
-        "Retry cleanup for one exact daemon-owned temporary test container.",
-        IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["test container retry"],
-        ["test_container_retry"],
-        test_containers::ContainerReference,
-        test_containers::ContainerOperationResult
-    ),
-    operation!(
-        "test.admission.status",
-        "Explain whether governed test admission is open or draining.",
-        READ_SERVER_ADMIN,
-        Protocol["test admission-status"],
-        ["test_admission_status"],
-        params::TestAdmissionStatus,
-        results::TestAdmissionStatus
-    ),
-    operation!(
-        "test.admission.wait",
-        "Wait until governed test admission reopens or a deadline expires.",
-        READ_SERVER_ADMIN,
-        Protocol["test admission-wait"],
-        ["test_admission_wait"],
-        params::TestAdmissionWait,
-        results::TestAdmissionStatus
-    ),
-    operation!(
-        "test.wait",
-        "Wait for one governed validation run to reach a terminal state.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test wait"],
-        ["test_wait"],
-        params::TestWait,
-        results::TestWaitResult
-    ),
-    operation!(
-        "test.retry",
-        "Retry one failed check from a completed run.",
-        DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["test retry"],
-        ["test_retry"],
-        params::RetryTest,
-        results::TestStarted
-    ),
-    operation!(
-        "test.status",
-        "Show the current governed validation result.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test status"],
-        ["test_status"],
-        params::PathOnly,
-        results::TestSummary
-    ),
-    operation!(
-        "test.log.catalog",
-        "List retained log metadata without content.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test log catalog"],
-        ["test_log_catalog"],
-        params::LogCatalog,
-        results::LogCatalog
-    ),
-    operation!(
-        "test.log.tail",
-        "Read a bounded final-line log slice.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test log tail"],
-        ["test_log_tail"],
-        params::LogTail,
-        results::LogContent
-    ),
-    operation!(
-        "test.log.search",
-        "Search one retained stream literally.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test log search"],
-        ["test_log_search"],
-        params::LogSearch,
-        results::LogSearch
-    ),
-    operation!(
-        "test.log.range",
-        "Read one exact bounded log range.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test log range"],
-        ["test_log_range"],
-        params::LogRange,
-        results::LogContent
-    ),
-    operation!(
-        "test.log.failure_context",
-        "Read deterministic bounded failure context.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test log failure-context"],
-        ["test_log_failure_context"],
-        params::LogFailureContext,
-        results::LogFailureContext
-    ),
-    operation!(
-        "test.log.retention.get",
-        "Show governed-log retention settings.",
-        READ_SERVER_ADMIN,
-        Protocol["test log retention show"],
-        ["test_log_retention_show"],
-        params::Empty,
-        results::Retention
-    ),
-    operation!(
-        "test.log.retention.set",
-        "Change governed-log retention settings.",
-        DESTRUCTIVE_SERVER_ADMIN,
-        Protocol["test log retention set"],
-        ["test_log_retention_set"],
-        params::SetRetention,
-        results::Retention
-    ),
-    operation!(
-        "test.evidence.get",
-        "List retained journey evidence.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test evidence show"],
-        ["test_evidence_get"],
-        params::EvidenceReference,
-        results::EvidenceGet
-    ),
-    operation!(
-        "test.evidence.image",
-        "Read one verified screenshot chunk.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test evidence image"],
-        ["test_evidence_image"],
-        params::EvidenceImage,
-        results::ImageChunk
-    ),
-    operation!(
-        "test.artifact.catalog",
-        "List retained artifact-tree metadata.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test artifact catalog"],
-        ["test_artifact_catalog"],
-        params::ArtifactCatalog,
-        results::ArtifactCatalog
-    ),
-    operation!(
-        "test.artifact.file",
-        "Read one verified retained artifact chunk.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test artifact file"],
-        ["test_artifact_file"],
-        params::ArtifactFile,
-        results::ArtifactChunk
-    ),
-    operation!(
-        "test.evidence.feedback.create",
-        "Create screenshot-anchored project feedback.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["test evidence feedback create"],
-        ["test_evidence_feedback_create"],
-        params::CreateFeedback,
-        results::FeedbackCreated
-    ),
-    operation!(
-        "test.evidence.lookup",
-        "Open an exact retained screenshot run without relying on the latest-runs list.",
-        READ_SERVER_ADMIN,
-        Protocol["test evidence lookup"],
-        ["test_evidence_lookup"],
-        params::EvidenceLookup,
-        results::EvidenceLookup
-    ),
-    operation!(
-        "test.evidence.feedback.reply",
-        "Reply to screenshot-anchored feedback.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["test evidence feedback reply"],
-        ["test_evidence_feedback_reply"],
-        params::FeedbackReply,
-        results::FeedbackMutation
-    ),
-    operation!(
-        "test.evidence.feedback.edit",
-        "Edit the caller's feedback comment.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        Protocol["test evidence feedback edit"],
-        ["test_evidence_feedback_edit"],
-        params::FeedbackEdit,
-        results::FeedbackMutation
-    ),
-    operation!(
-        "test.evidence.feedback.state",
-        "Resolve or reopen screenshot feedback.",
-        IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN,
-        Protocol["test evidence feedback state"],
-        ["test_evidence_feedback_state"],
-        params::FeedbackStateChange,
-        results::FeedbackMutation
-    ),
-    operation!(
-        "test.evidence.feedback.delete",
-        "Delete the caller's screenshot annotation.",
-        IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["test evidence feedback delete"],
-        ["test_evidence_feedback_delete"],
-        params::FeedbackDelete,
-        results::FeedbackMutation
-    ),
-    operation!(
-        "test.stop",
-        "Cancel the current governed run.",
-        IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["test stop"],
-        ["test_stop"],
-        params::StopTest,
-        results::StopTest
-    ),
-    operation!(
-        "test.history",
-        "List bounded run history without logs or file contents.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["test history"],
-        ["test_history"],
-        params::TestHistory,
-        results::TestHistory
-    ),
-    operation!(
-        "test.list",
-        "List current governed runs.",
-        READ_SERVER_ADMIN,
-        Protocol["test list"],
-        ["test_list"],
-        params::TestList,
-        results::TestList
-    ),
-    operation!(
-        "test.capacity.get",
-        "Show host-wide validation capacity.",
-        READ_SERVER_ADMIN,
-        Protocol["test capacity show"],
-        ["test_capacity_show"],
-        params::Empty,
-        results::Capacity
-    ),
-    OperationDefinition {
-        name: "test.capacity.set",
-        description: "Set or clear the validation capacity cap.",
-        policy: REVERSIBLE_SERVER_ADMIN,
-        cli_routes: &[
-            CliRouteDefinition {
-                route: "test capacity set",
-                dispatch: CliDispatch::Protocol,
-            },
-            CliRouteDefinition {
-                route: "test capacity clear",
-                dispatch: CliDispatch::Protocol,
-            },
-        ],
-        cli_exclusion: None,
-        mcp_names: &["test_capacity_set"],
-        mcp_exclusion: None,
-        mcp_overrides: &[McpToolOverride {
-            name: "test_capacity_clear",
-            input_schema: schema_for::<params::Empty>,
-            validate_params: validate_params::<params::Empty>,
-            transform: McpArgumentTransform::ClearCapacity,
-        }],
-        input_schema: schema_for::<params::SetCapacity>,
-        output_schema: schema_for::<results::Capacity>,
-        validate_params: validate_params::<params::SetCapacity>,
-    },
-    operation!(
-        "config.get",
-        "Inspect live configuration revisions and bounded change history without exposing private settings.",
-        READ_SERVER_ADMIN,
-        Protocol["config show"],
-        ["config_get"],
-        EmptyParams,
-        configuration::Snapshot
-    ),
-    operation!(
-        "config.env.set",
-        "Grant or revoke one declared repository environment-file authorization and activate it without restart.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["config authorize", "config revoke"],
-        ["config_env_set"],
-        params::SetComposeEnvAuthorization,
-        configuration::Snapshot
-    ),
-    operation!(
-        "config.reload",
-        "Validate and activate reloadable private settings, retaining the last working state on failure.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["config reload"],
-        ["config_reload"],
-        configuration::Revision,
-        configuration::Snapshot
-    ),
-    operation!(
-        "deployment.preflight",
-        "Check declared deployment prerequisites without registering or changing runtime resources.",
-        READ_DEPLOYMENT_ADMIN,
-        Protocol["deployment preflight"],
-        ["deployment_preflight"],
-        params::DeploymentReference,
-        results::DeploymentPreflight
-    ),
-    operation!(
-        "deployment.list",
-        "List visible deployments.",
-        READ_DEPLOYMENT_VIEWER,
-        Protocol["deployment list"],
-        ["deployment_list"],
-        params::DeploymentList,
-        results::DeploymentList
-    ),
-    operation!(
-        "deployment.status",
-        "Show one deployment.",
-        READ_DEPLOYMENT_VIEWER,
-        Protocol["deployment status"],
-        ["deployment_status"],
-        params::DeploymentReference,
-        results::DeploymentStatus
-    ),
-    operation!(
-        "deployment.wait",
-        "Wait for a deployment state or source transition.",
-        READ_DEPLOYMENT_VIEWER,
-        Protocol["deployment wait"],
-        ["deployment_wait"],
-        params::DeploymentWait,
-        results::DeploymentWaitResult
-    ),
-    operation!(
-        "deployment.logs",
-        "Read bounded deployment logs.",
-        READ_DEPLOYMENT_VIEWER,
-        Protocol["deployment logs"],
-        ["deployment_logs"],
-        params::DeploymentLogs,
-        results::DeploymentLog
-    ),
-    operation!(
-        "deployment.apply",
-        "Apply a declared deployment.",
-        REVERSIBLE_DEPLOYMENT_ADMIN,
-        Protocol["deployment apply"],
-        ["deployment_apply"],
-        params::DeploymentApply,
-        results::DeploymentStatus
-    ),
-    operation!(
-        "deployment.rollback",
-        "Roll back to the prior generation.",
-        REVERSIBLE_DEPLOYMENT_ADMIN,
-        Protocol["deployment rollback"],
-        ["deployment_rollback"],
-        params::DeploymentReference,
-        results::DeploymentStatus
-    ),
-    operation!(
-        "deployment.start",
-        "Start a deployment or selected service.",
-        IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR,
-        Protocol["deployment start"],
-        ["deployment_start"],
-        params::DeploymentControl,
-        results::DeploymentStatus
-    ),
-    operation!(
-        "deployment.stop",
-        "Stop a deployment or selected service.",
-        IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR,
-        Protocol["deployment stop"],
-        ["deployment_stop"],
-        params::DeploymentControl,
-        results::DeploymentStatus
-    ),
-    operation!(
-        "deployment.restart",
-        "Restart a deployment or selected service.",
-        REVERSIBLE_DEPLOYMENT_OPERATOR,
-        Protocol["deployment restart"],
-        ["deployment_restart"],
-        params::DeploymentControl,
-        results::DeploymentStatus
-    ),
-    operation!(
-        "deployment.set_domain",
-        "Set or clear a deployment route.",
-        IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN,
-        Protocol["deployment set-domain"],
-        ["deployment_set_domain"],
-        params::SetDomain,
-        results::DomainChanged
-    ),
-    operation!(
-        "deployment.remove",
-        "Remove a deployment with an explicit data outcome.",
-        DESTRUCTIVE_DEPLOYMENT_ADMIN,
-        Protocol["deployment remove"],
-        [],
-        params::RemoveDeployment,
-        results::DeploymentRemoved
-    ),
-    operation!(
-        "health.summary",
-        "Show host health and active alerts.",
-        READ_SERVER_ADMIN,
-        Protocol["health summary"],
-        ["health_summary"],
-        params::Empty,
-        results::HealthSummary
-    ),
-    operation!(
-        "health.incidents",
-        "List escalated incidents, dismissed occurrences, or all observations for agent triage.",
-        READ_SERVER_ADMIN,
-        Protocol["health incidents"],
-        ["health_incidents"],
-        incidents::IncidentListParams,
-        incidents::IncidentList
-    ),
-    operation!(
-        "health.incident.update",
-        "Record handling, non-reporting, escalation or dismissal for one exact incident occurrence.",
-        REVERSIBLE_SERVER_ADMIN,
-        Protocol["health incident update"],
-        ["health_incident_update"],
-        incidents::IncidentUpdate,
-        incidents::Incident
-    ),
-    operation!(
-        "health.repositories",
-        "Show visible per-repository resource use.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["health repositories"],
-        ["health_repositories"],
-        params::Empty,
-        results::HealthRepositories
-    ),
-    operation!(
-        "health.repository",
-        "Show one repository's resource use.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["health repository"],
-        ["health_repository"],
-        params::PathOnly,
-        results::HealthRepository
-    ),
-    operation!(
-        "health.history",
-        "Show bounded resource history.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["health history"],
-        [],
-        params::HealthHistory,
-        results::HealthHistory
-    ),
-    operation!(
-        "health.containers",
-        "List every container with truthful attribution.",
-        READ_SERVER_ADMIN,
-        Protocol["health containers"],
-        ["health_containers"],
-        params::Empty,
-        results::ContainerList
-    ),
-    operation!(
-        "health.container_remove",
-        "Remove one exact unmanaged container.",
-        DESTRUCTIVE_SERVER_ADMIN,
-        excluded "Container removal is deliberately exposed only by the authenticated Console.",
-        [],
-        params::RemoveContainer,
-        results::RemovedContainer
-    ),
-    operation!(
-        "glossary.list",
-        "Browse shared or effective project terminology; never application messages.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["glossary list"],
-        ["glossary_list"],
-        glossary::List,
-        glossary::Page
-    ),
-    operation!(
-        "glossary.resolve",
-        "Read the effective glossary before UI work, with pinned shared revision and provenance. Follow the project's own localization mechanism; paginate all needed concepts.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["glossary resolve"],
-        ["glossary_resolve"],
-        glossary::List,
-        glossary::Page
-    ),
-    operation!(
-        "glossary.get",
-        "Read one multilingual concept, optionally at a historical scope revision.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["glossary get"],
-        ["glossary_get"],
-        glossary::Get,
-        glossary::Detail
-    ),
-    operation!(
-        "glossary.save",
-        "Create or revise a concept using an exact expected scope revision. Mandatory inherited concepts cannot be overridden.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        Protocol["glossary save"],
-        ["glossary_save"],
-        glossary::Save,
-        glossary::Mutation
-    ),
-    operation!(
-        "glossary.configure",
-        "Revise glossary languages and guidance or explicitly adopt a shared revision; this does not change localization files.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        Protocol["glossary configure"],
-        ["glossary_configure"],
-        glossary::Configure,
-        glossary::Mutation
-    ),
-    operation!(
-        "glossary.inherit",
-        "Remove a project specialization and return to its pinned shared concept, preserving history.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        Protocol["glossary inherit"],
-        ["glossary_inherit"],
-        glossary::Inherit,
-        glossary::Mutation
-    ),
-    operation!(
-        "glossary.history",
-        "Read bounded permanent glossary revision history.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["glossary history"],
-        ["glossary_history"],
-        glossary::History,
-        glossary::HistoryPage
-    ),
-    operation!(
-        "glossary.check",
-        "Check explicitly identified concept usages against approved localized terms. This is not a general prose or translation-quality detector.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["glossary check"],
-        ["glossary_check"],
-        glossary::Check,
-        glossary::CheckResult
-    ),
-    operation!(
-        "glossary.impact",
-        "Inspect which projects have adopted shared glossary revisions.",
-        READ_SERVER_ADMIN,
-        Protocol["glossary impact"],
-        ["glossary_impact"],
-        glossary::ImpactRequest,
-        glossary::Impact
-    ),
-    operation!(
-        "deployment.recovery",
-        "Prepare or recover one saved deployment with exact ownership checks and a private database backup.",
-        IDEMPOTENT_APPEND_SERVER_ADMIN,
-        Protocol["deployment recovery"],
-        ["deployment_recovery"],
-        runtime_recovery::Request,
-        runtime_recovery::Receipt
-    ),
-    operation!(
-        "plan.recovery",
-        "Prepare or atomically recover one repository's saved planning history without replacing live authority.",
-        IDEMPOTENT_APPEND_SERVER_ADMIN,
-        Protocol["plan recovery"],
-        ["plan_recovery"],
-        recovery::Request,
-        recovery::Receipt
-    ),
-    operation!(
-        "plan.overview",
-        "Show releases and the active completion plan in byte-bounded pages; append all collection arrays using next_offset and revision until next_offset is null.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["plan overview"],
-        ["plan_overview"],
-        params::PlanReference,
-        results::PlanOverview
-    ),
-    operation!(
-        "completion.check",
-        "Check a hash-bound capability inventory against the repository's open outcomes and evidence contract.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["completion check"],
-        ["completion_check"],
-        params::CompletionCheck,
-        completion::CheckResult
-    ),
-    operation!(
-        "task.search",
-        "Search all task states, including dropped history, without changing the active plan.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["task search"],
-        ["task_search"],
-        params::TaskSearch,
-        results::TaskSearch
-    ),
-    operation!(
-        "task.history",
-        "Show one task and its permanent history.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["task history"],
-        ["task_history"],
-        params::TaskHistory,
-        results::TaskHistory
-    ),
-    operation!(
-        "task.create",
-        "Create one completion-ledger task.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["task create"],
-        ["task_create"],
-        params::TaskCreate,
-        results::TaskCreated
-    ),
-    operation!(
-        "task.update",
-        "Append a task state or wording change.",
-        DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["task update"],
-        ["task_update"],
-        params::TaskUpdate,
-        results::TaskMutation
-    ),
-    operation!(
-        "release.create",
-        "Create a planned release.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["release create"],
-        ["release_create"],
-        params::ReleaseCreate,
-        results::Release
-    ),
-    operation!(
-        "release.update",
-        "Change a planned release.",
-        DESTRUCTIVE_REPOSITORY_ADMIN,
-        Protocol["release update"],
-        [],
-        params::ReleaseUpdate,
-        results::Release
-    ),
-    operation!(
-        "release.request",
-        "Request a preview deployment.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["release request"],
-        [],
-        params::ReleaseRequest,
-        results::Release
-    ),
-    operation!(
-        "release.deliver",
-        "Record deployment metadata for a release; this does not create a qualified delivery receipt or satisfy a delivery clock.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["release deliver"],
-        ["release_deliver"],
-        params::ReleaseDeliver,
-        results::ReleaseDelivered
-    ),
-    operation!(
-        "decision.tail",
-        "Read the rolling decision summary and latest decisions.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["decision tail"],
-        ["decision_tail"],
-        params::DecisionTail,
-        results::DecisionTail
-    ),
-    operation!(
-        "performance.overview",
-        "Read repository performance overview without changing accounting or reviews.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["performance_overview"],
-        performance::Overview,
-        performance::OverviewResult
-    ),
-    operation!(
-        "performance.reviews",
-        "Read repository performance reviews without changing accounting or reviews.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["performance_reviews"],
-        performance::Reviews,
-        performance::ReviewPage
-    ),
-    operation!(
-        "performance.review",
-        "Read repository performance review without changing accounting or reviews.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["performance_review"],
-        performance::Review,
-        performance::ReviewResult
-    ),
-    operation!(
-        "review.delivery.pending",
-        "Reconcile outstanding native reminders after a cursor gap.",
-        READ_SERVER_ADMIN,
-        Protocol["review delivery-pending"],
-        ["review_delivery_pending"],
-        review_policy::PendingRequest,
-        review_policy::Pending
-    ),
-    operation!(
-        "review.policy.set",
-        "Set a continuing repository/workstream review schedule.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["review policy-set"],
-        ["review_policy_set"],
-        review_policy::Set,
-        review_policy::Policy
-    ),
-    operation!(
-        "review.policy.status",
-        "Read review obligation and delivery route.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["review policy-status"],
-        ["review_policy_status"],
-        review_policy::Scope,
-        Option<review_policy::Policy>
-    ),
-    operation!(
-        "review.delivery.register",
-        "Register a leased native alarm delivery capability.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["review delivery-register"],
-        ["review_delivery_register"],
-        review_policy::Register,
-        review_policy::Policy
-    ),
-    operation!(
-        "review.prepare",
-        "Prepare bounded canonical usage and outcome evidence without scheduling work.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["review prepare"],
-        ["review_prepare"],
-        review::Prepare,
-        review::Prepared
-    ),
-    operation!(
-        "review.record",
-        "Append an evidence-backed review revision with optimistic concurrency.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["review record"],
-        ["review_record"],
-        review::Record,
-        review::Revision
-    ),
-    operation!(
-        "review.show",
-        "Read bounded immutable review revisions.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["review list"],
-        ["review_show"],
-        review::Show,
-        review::Page
-    ),
-    operation!(
-        "review.receipt",
-        "Read one exact immutable structured review revision.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["review show"],
-        ["review_receipt"],
-        review::Reference,
-        review::Revision
-    ),
-    operation!(
-        "release.evidence",
-        "Read an exact delivery receipt; qualification and verification time are server-derived.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["release evidence"],
-        ["release_evidence"],
-        review::Reference,
-        delivery::Receipt
-    ),
-    operation!(
-        "release.deliver_evidence",
-        "Create a server-derived delivery receipt from retained artifact proof; use a qualified receipt ID for the delivery clock.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["release deliver-evidence"],
-        ["release_deliver_evidence"],
-        delivery::Deliver,
-        delivery::Receipt
-    ),
-    operation!(
-        "release.evidence_show",
-        "Read bounded immutable delivery evidence receipts.",
-        READ_REPOSITORY_ADMIN,
-        Protocol["release evidence-show"],
-        ["release_evidence_show"],
-        delivery::Show,
-        delivery::Page
-    ),
-    operation!(
-        "decision.search",
-        "Search permanent repository decisions.",
-        READ_REPOSITORY_VIEWER,
-        Protocol["decision search"],
-        ["decision_search"],
-        params::DecisionSearch,
-        results::DecisionSearch
-    ),
-    operation!(
-        "decision.record",
-        "Record a permanent repository decision.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["decision record"],
-        ["decision_record"],
-        params::DecisionRecord,
-        results::DecisionRecorded
-    ),
-    operation!(
-        "decision.summarize",
-        "Store a new rolling decision summary.",
-        APPEND_REPOSITORY_ADMIN,
-        Protocol["decision summarize"],
-        ["decision_summarize"],
-        params::DecisionSummarize,
-        results::DecisionSummarized
-    ),
-    operation!(
-        "usage.repositories",
-        "Show privacy-preserving usage across visible repositories.",
-        READ_REPOSITORY_OPERATOR,
-        excluded "Usage analytics are presented by the Console, not the preserved CLI.",
-        [],
-        params::UsageRepositories,
-        results::UsageRepositories
-    ),
-    operation!(
-        "usage.repository",
-        "Show privacy-preserving usage for one repository.",
-        READ_REPOSITORY_OPERATOR,
-        excluded "Usage analytics are presented by the Console, not the preserved CLI.",
-        [],
-        params::UsageRepository,
-        results::UsageRepository
-    ),
-    operation!(
-        "usage.rate_card.list",
-        "List administrator-managed API-equivalent pricing cards.",
-        READ_SERVER_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        [],
-        rate_card::List,
-        rate_card::Page
-    ),
-    operation!(
-        "usage.rate_card.set",
-        "Append one immutable API-equivalent pricing-card version.",
-        DESTRUCTIVE_SERVER_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        [],
-        rate_card::Set,
-        rate_card::Mutation
-    ),
-    operation!(
-        "progress.repositories",
-        "Show delivery progress across visible repositories.",
-        READ_REPOSITORY_OPERATOR,
-        excluded "Progress analytics are presented by the Console, not the preserved CLI.",
-        [],
-        params::Empty,
-        results::ProgressRepositories
-    ),
-    operation!(
-        "progress.repository",
-        "Show delivery progress for one repository.",
-        READ_REPOSITORY_OPERATOR,
-        excluded "Progress analytics are presented by the Console, not the preserved CLI.",
-        [],
-        params::ProgressRepository,
-        results::ProgressRepository
-    ),
-    operation!(
-        "telegram.link",
-        "Link one Telegram chat to an identity.",
-        EXTERNAL_SELF,
-        Protocol["telegram link"],
-        [],
-        params::TelegramLink,
-        results::TelegramLinked
-    ),
-    operation!(
-        "telegram.subscribe",
-        "Subscribe one linked chat to notices.",
-        EXTERNAL_SELF,
-        Protocol["telegram subscribe"],
-        [],
-        params::TelegramSubscription,
-        results::TelegramSubscription
-    ),
-    operation!(
-        "telegram.unsubscribe",
-        "Remove one notice subscription.",
-        IDEMPOTENT_EXTERNAL_SELF,
-        Protocol["telegram unsubscribe"],
-        [],
-        params::TelegramSubscription,
-        results::TelegramSubscription
-    ),
-    operation!(
-        "telegram.list",
-        "List the caller's linked chats and subscriptions.",
-        READ_SELF,
-        Protocol["telegram list"],
-        [],
-        params::Empty,
-        results::TelegramList
-    ),
-    operation!(
-        "event.wait",
-        "Wait for authorized owned-state events or per-filter heartbeat deadlines.",
-        READ_SELF,
-        Protocol["event wait"],
-        ["event_wait"],
-        params::EventWait,
-        results::EventWaitResult
-    ),
-    operation!(
-        "design.sketch.publish",
-        "Retain a project-scoped batch of generated sketches and its generation record.",
-        APPEND_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_publish"],
-        params::SketchPublish,
-        results::SketchBatch
-    ),
-    operation!(
-        "design.sketch.list",
-        "List retained project sketches and their current decisions.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_list"],
-        params::SketchList,
-        results::SketchListResult
-    ),
-    operation!(
-        "design.sketch.search",
-        "Search retained sketch descriptions, decisions, and lineage context.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_search"],
-        params::SketchSearch,
-        results::SketchListResult
-    ),
-    operation!(
-        "design.sketch.story",
-        "Read one surface's mockup history graph and current heads.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_story"],
-        params::SketchStory,
-        results::SketchStoryResult
-    ),
-    operation!(
-        "design.sketch.resolve",
-        "Resolve the explicit current mockup head for one surface.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_resolve"],
-        params::SketchResolve,
-        results::SketchResolveResult
-    ),
-    operation!(
-        "design.sketch.get",
-        "Open one retained project sketch with decision history and annotations.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_get"],
-        params::SketchReference,
-        results::SketchDetail
-    ),
-    operation!(
-        "design.sketch.image",
-        "Read one verified retained sketch image chunk.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_image"],
-        params::SketchImage,
-        results::SketchChunk
-    ),
-    operation!(
-        "design.sketch.record",
-        "Read one verified retained generation record chunk.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_record"],
-        params::SketchReference,
-        results::SketchRecordChunk
-    ),
-    operation!(
-        "design.sketch.decision",
-        "Change a sketch decision with an expected revision and rationale.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_decision"],
-        params::SketchDecisionChange,
-        results::SketchDecisionResult
-    ),
-    operation!(
-        "design.sketch.activate",
-        "Record the explicit current continuation set for one surface.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_activate"],
-        params::SketchActivate,
-        results::SketchActivationResult
-    ),
-    operation!(
-        "design.sketch.description",
-        "Append a revised mockup description and context revision.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_description"],
-        params::SketchDescriptionChange,
-        results::SketchDescriptionResult
-    ),
-    operation!(
-        "design.sketch.annotation.create",
-        "Save a marked-up sketch annotation.",
-        APPEND_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["design_sketch_annotation_create"],
-        params::SketchAnnotationCreate,
-        results::SketchAnnotationMutation
-    ),
-    operation!("agent.hub.register", "Register an agent in the private or opt-in public hub space and issue its lease token.", EXTERNAL_SELF, excluded "Use Console or MCP agent_hub_register.", ["agent_hub_register"], agent_hub::Register, agent_hub::RegisterResult),
-    operation!("agent.hub.heartbeat", "Renew one agent's 90-second lease.", IDEMPOTENT_EXTERNAL_SELF, excluded "Use Console or MCP agent_hub_heartbeat.", ["agent_hub_heartbeat"], agent_hub::Heartbeat, agent_hub::AgentProfile),
-    operation!("agent.hub.unregister", "Remove one agent from the hub and its room memberships.", DESTRUCTIVE_SELF, excluded "Use Console or MCP agent_hub_unregister.", ["agent_hub_unregister"], agent_hub::Unregister, agent_hub::AgentProfile),
-    operation!("agent.hub.directory", "List opaque agent profiles in one isolated hub space.", READ_SELF, excluded "Use Console or MCP agent_hub_directory.", ["agent_hub_directory"], agent_hub::Directory, agent_hub::DirectoryResult),
-    operation!("agent.hub.room.create", "Create a direct or group room in one hub space.", APPEND_SELF, excluded "Use Console or MCP agent_hub_room_create.", ["agent_hub_room_create"], agent_hub::RoomCreate, agent_hub::Room),
-    operation!("agent.hub.room.list", "List rooms visible to one registered agent.", READ_SELF, excluded "Use Console or MCP agent_hub_room_list.", ["agent_hub_room_list"], agent_hub::RoomList, agent_hub::RoomListResult),
-    operation!("agent.hub.room.member.add", "Add one registered agent to a room.", REVERSIBLE_SELF, excluded "Use Console or MCP agent_hub_room_member_add.", ["agent_hub_room_member_add"], agent_hub::RoomMemberChange, agent_hub::Room),
-    operation!("agent.hub.room.member.remove", "Remove one registered agent from a room.", REVERSIBLE_SELF, excluded "Use Console or MCP agent_hub_room_member_remove.", ["agent_hub_room_member_remove"], agent_hub::RoomMemberChange, agent_hub::Room),
-    operation!("agent.hub.send", "Send a durable message with bounded attachments to a room.", APPEND_SELF, excluded "Use Console or MCP agent_hub_send.", ["agent_hub_send"], agent_hub::Send, agent_hub::Message),
-    operation!("agent.hub.receive", "Read at-least-once deliveries for one agent.", READ_SELF, excluded "Use Console or MCP agent_hub_receive.", ["agent_hub_receive"], agent_hub::Receive, agent_hub::ReceiveResult),
-    operation!("agent.hub.ack", "Acknowledge one or more durable deliveries.", IDEMPOTENT_APPEND_SELF, excluded "Use Console or MCP agent_hub_ack.", ["agent_hub_ack"], agent_hub::Ack, agent_hub::ReceiveResult),
-    operation!("agent.hub.upload.start", "Start a resumable bounded attachment upload.", APPEND_SELF, excluded "Use Console or MCP agent_hub_upload_start.", ["agent_hub_upload_start"], agent_hub::UploadStart, agent_hub::UploadStartResult),
-    operation!("agent.hub.upload.chunk", "Append one base64 attachment chunk at its exact offset.", IDEMPOTENT_APPEND_SELF, excluded "Use Console or MCP agent_hub_upload_chunk.", ["agent_hub_upload_chunk"], agent_hub::UploadChunk, agent_hub::UploadChunkResult),
-    operation!("agent.hub.upload.file", "Read one bounded attachment chunk.", READ_SELF, excluded "Use Console or MCP agent_hub_upload_file.", ["agent_hub_upload_file"], agent_hub::UploadFile, agent_hub::FileChunk),
-    operation!("agent.hub.upload.remove", "Remove one private incomplete upload.", DESTRUCTIVE_SELF, excluded "Use Console or MCP agent_hub_upload_remove.", ["agent_hub_upload_remove"], agent_hub::UploadRemove, EmptyParams),
-    operation!("agent.hub.settings.get", "Read private/public hub controls and callback queue status.", READ_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_settings_get.", ["agent_hub_settings_get"], EmptyParams, agent_hub::Settings),
-    operation!("agent.hub.console.directory", "Let an admitted Console user inspect opaque hub profiles without private transport credentials.", READ_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_directory.", ["agent_hub_console_directory"], agent_hub::ConsoleDirectory, agent_hub::DirectoryResult),
-    operation!("agent.hub.console.receive", "Let an admitted Console user read bounded hub messages for monitoring.", READ_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_receive.", ["agent_hub_console_receive"], agent_hub::ConsoleReceive, agent_hub::ReceiveResult),
-    operation!("agent.hub.console.send", "Let an admitted Console user reply in a visible hub room.", APPEND_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_send.", ["agent_hub_console_send"], agent_hub::ConsoleSend, agent_hub::Message),
-    operation!("agent.hub.admin.agent.remove", "Remove an agent and its room memberships from the hub.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_agent_remove.", ["agent_hub_admin_agent_remove"], agent_hub::AgentRemove, agent_hub::RemovalResult),
-    operation!("agent.hub.admin.room.remove", "Remove a room, its messages, and its attachments.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_room_remove.", ["agent_hub_admin_room_remove"], agent_hub::RoomRemove, agent_hub::RemovalResult),
-    operation!("agent.hub.admin.message.remove", "Remove one message and its attachments from the hub.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_message_remove.", ["agent_hub_admin_message_remove"], agent_hub::MessageRemove, agent_hub::RemovalResult),
-    operation!("agent.hub.settings.set", "Enable or pause the isolated public hub space.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_settings_set.", ["agent_hub_settings_set"], agent_hub::SettingsSet, agent_hub::Settings),
-    operation!("agent.hub.key.rotate", "Rotate the instance bearer key with seven-day overlap.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_key_rotate.", ["agent_hub_key_rotate"], agent_hub::KeyRotate, agent_hub::KeyRotateResult),
-    operation!("agent.hub.activity", "Read bounded aggregate hub activity without agent identity or message content.", READ_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_activity.", ["agent_hub_activity"], agent_hub::Activity, agent_hub::ActivityResult),
-    operation!("agent.hub.remote", "Dedicated remote adapter for the agent hub; only the edge allowlist may invoke it.", OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::External, false), excluded "Used only by the dedicated edge agent-hub endpoint.", [], agent_hub::RemoteRequest, serde_json::Value),
-    operation!(
-        "agent.message.poll",
-        "Read pending repository messages for an agent.",
-        READ_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["agent_message_poll"],
-        params::AgentMessagePoll,
-        results::AgentMessageList
-    ),
-    operation!(
-        "agent.message.claim",
-        "Claim one repository message for the current agent.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["agent_message_claim"],
-        params::AgentMessageClaim,
-        results::AgentMessageMutation
-    ),
-    operation!(
-        "agent.message.ack",
-        "Acknowledge one claimed repository message.",
-        REVERSIBLE_REPOSITORY_ADMIN,
-        excluded "Use the typed API or MCP adapter.",
-        ["agent_message_ack"],
-        params::AgentMessageAck,
-        results::AgentMessageMutation
-    ),
-    operation!(
-        "bug.report",
-        "Report or count a Coordinator defect while the daemon may be unavailable.",
-        APPEND_SELF,
-        Local["bug report"],
-        ["bug_report"],
-        params::BugReport,
-        results::BugRecord
-    ),
-    operation!(
-        "bug.list",
-        "List open Coordinator defects.",
-        READ_SELF,
-        Local["bug list"],
-        ["bug_list"],
-        params::Empty,
-        results::BugList
-    ),
-    operation!(
-        "bug.close",
-        "Close one Coordinator defect.",
-        DESTRUCTIVE_SELF,
-        Local["bug close"],
-        ["bug_close"],
-        params::BugClose,
-        results::BugClosed
-    ),
-];
+/// The catalog ties each handler's input and output types to its public schema.
+pub trait OperationContract {
+    type Input;
+    type Output;
+    const NAME: &'static str;
+}
+
+// One catalog owns wire names, typed decoding, policies, CLI discovery and MCP schemas.
+macro_rules! operation_catalog {
+    ($($id:ident, $name:literal, $description:literal, $policy:expr, $cli:ident,
+       [$($mcp:literal),* $(; $($alias:literal : $alias_input:ty => $transform:ident),+)?], $input:ty, $output:ty $(, $execution:ident)?;)*) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum OperationId { $($id),* }
+        impl OperationId {
+            pub fn name(self) -> &'static str { match self { $(Self::$id => $name),* } }
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name { $($name => Some(Self::$id),)* _ => None }
+            }
+        }
+        pub mod operation_types {
+            use super::*;
+            $(pub struct $id;
+              impl OperationContract for $id {
+                type Input=$input; type Output=$output; const NAME:&'static str=$name;
+              })*
+        }
+        #[allow(non_snake_case)]
+        pub trait OperationHandler<C> {
+            $(fn $id(&self,params:$input,context:&C)->Result<$output,ProtocolError>;)*
+        }
+        /// Generated wire dispatch. Services supply business handlers, never a
+        /// second decoder, serializer, operation list, or authorization registry.
+        pub fn dispatch_operation<C,H:OperationHandler<C>>(handler:&H,id:OperationId,params:Value,context:&C)->Result<Value,ProtocolError> {
+            match id {$(OperationId::$id=>{
+                let input: $input=serde_json::from_value(params).map_err(|error|
+                    ProtocolError::new(ErrorCode::ParamsInvalid,"operation parameters are invalid").with_detail(error.to_string()))?;
+                let output: $output=handler.$id(input,context)?;
+                serde_json::to_value(output).map_err(|error|
+                    ProtocolError::new(ErrorCode::InternalError,"operation result cannot be encoded").with_detail(error.to_string()))
+            }),*}
+        }
+        pub static OPERATIONS: &[OperationDefinition] = &[$(OperationDefinition {
+            id: OperationId::$id, name: $name, description: $description, policy: $policy,
+            execution: execution_profile!($($execution)?),
+            cli_routes: &[CliRouteDefinition { route: concat!("call ", $name), dispatch: CliDispatch::$cli }],
+            cli_exclusion: None, mcp_names: &[$($mcp),*], mcp_exclusion: mcp_exclusion!($($mcp),*),
+            mcp_overrides: &[$($(McpToolOverride {
+                name:$alias,input_schema:schema_for::<$alias_input>,validate_params:validate_params::<$alias_input>,transform:McpArgumentTransform::$transform,
+            }),+)?], input_schema: schema_for::<$input>, output_schema: schema_for::<$output>,
+            validate_params: validate_params::<$input>,
+        }),*];
+    };
+}
+
+operation_catalog! {
+    Ping, "ping", "Report daemon, schema, protocol, source, and socket identity.", READ_PUBLIC, Protocol, [], EmptyParams, PingData;
+    StorageInventory, "storage.inventory", "List measured artifacts and evidence-backed deletion safety.", READ_SERVER_ADMIN, Protocol, ["storage_inventory"], storage::List, storage::Inventory;
+    AgentSettingsGet, "agent.settings.get", "Read the effective harness routing rules and capability freshness.", READ_SERVER_ADMIN, Protocol, ["agent_settings_get"], params::AgentSettingsGet, agent_routing::Settings;
+    AgentSettingsSave, "agent.settings.save", "Save global or repository harness routing rules with revision checks.", REVERSIBLE_SERVER_ADMIN, Protocol, ["agent_settings_save"], params::AgentSettingsSave, agent_routing::Settings;
+    AgentRolesSave, "agent.roles.save", "Create, rename, reorder, or retire agent work roles.", REVERSIBLE_SERVER_ADMIN, Protocol, ["agent_roles_save"], params::AgentRolesSave, results::AgentRolesSaved;
+    AgentCapabilitiesReport, "agent.capabilities.report", "Report the current model and effort capabilities of one harness.", APPEND_SELF, Protocol, ["agent_capabilities_report"], params::AgentCapabilitiesReport, agent_routing::Capabilities;
+    AgentInstructionCurrent, "agent.instruction.current", "Return concise current ownership and spawn guidance for this harness.", READ_SERVER_ADMIN, Protocol, ["agent_instruction_current"], params::AgentInstructionCurrent, results::AgentInstruction;
+    StorageArtifactGet, "storage.artifact.get", "Inspect one tracked artifact and its protection reasons.", READ_SERVER_ADMIN, Protocol, ["storage_artifact_get"], storage::Reference, storage::Artifact;
+    StorageScan, "storage.scan", "Queue storage discovery and return a durable job.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, ["storage_scan"], storage::Scan, storage::Job;
+    StorageRegister, "storage.register", "Record a disposal decision for an exact discovered artifact.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_register"], storage::Register, storage::Artifact;
+    StorageLegacyRegister, "storage.legacy.register", "Queue cleanup-only ownership verification of a legacy group.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_legacy_register"], storage::LegacyRegister, storage::Job;
+    StorageProtectionSet, "storage.protection.set", "Protect an artifact or remove its explicit protection.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_protection_set"], storage::Protection, storage::Artifact;
+    StoragePolicyGet, "storage.policy.get", "Read the effective automatic cleanup policy.", READ_SERVER_ADMIN, Protocol, ["storage_policy_get"], storage::Scope, storage::Policy;
+    StoragePolicySet, "storage.policy.set", "Change a revision of an automatic cleanup policy.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_policy_set"], storage::PolicySet, storage::Policy;
+    StorageRootsList, "storage.roots.list", "List shared discovery roots without private paths.", READ_SERVER_ADMIN, Protocol, ["storage_roots_list"], EmptyParams, storage::Roots;
+    StorageRootsSet, "storage.roots.set", "Configure an exact shared discovery root.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_roots_set"], storage::RootSet, storage::Root;
+    StorageCleanupPlan, "storage.cleanup.plan", "Resolve removal dependencies and blockers without deleting data.", APPEND_SERVER_ADMIN, Protocol, ["storage_cleanup_plan"], storage::PlanRequest, storage::CleanupPlan;
+    StorageCleanupStart, "storage.cleanup.start", "Start an identity-bound cleanup plan.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["storage_cleanup_start"], storage::Start, storage::Job;
+    StorageJobStatus, "storage.job.status", "Read cleanup progress and exact artifact receipts.", READ_SERVER_ADMIN, Protocol, ["storage_job_status"], storage::JobReference, storage::Job;
+    StorageJobCancel, "storage.job.cancel", "Cancel pending steps without undoing completed deletions.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_job_cancel"], storage::JobReference, storage::Job;
+    StorageHistory, "storage.history", "Read bounded permanent cleanup history.", READ_SERVER_ADMIN, Protocol, ["storage_history"], storage::HistoryRequest, storage::History;
+    StorageLeaseSet, "storage.lease.set", "Register or renew an active-use lease.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_lease_set"], storage::LeaseSet, storage::Lease;
+    StorageLeaseRelease, "storage.lease.release", "Release an active-use lease without bypassing usage checks.", REVERSIBLE_SERVER_ADMIN, Protocol, ["storage_lease_release"], storage::LeaseRelease, storage::Lease;
+    TicketRequest, "ticket.request", "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.", EXTERNAL_SELF, Protocol, ["ticket_request"], tickets::Request, tickets::Reply;
+    TicketSettings, "ticket.settings", "Read the feature request upstream, default vr.ae, and prior ticket destinations.", READ_SELF, Protocol, ["ticket_settings"], EmptyParams, tickets::Settings;
+    TicketConfigure, "ticket.configure", "Set the feature request upstream without moving existing tickets; local uses this server.", REVERSIBLE_SERVER_ADMIN, Protocol, ["ticket_configure"], tickets::Configure, tickets::Settings;
+    TicketRemote, "ticket.remote", "Dedicated federation adapter. Public reads and credential-bound originating-server writes; no inherited administrator authority.", OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::External, false), Protocol, [], tickets::RemoteRequest, tickets::Reply;
+    UserWhoami, "user.whoami", "Show the current public identity and grants.", READ_PUBLIC, Protocol, [], params::Empty, results::WhoAmI;
+    UserAcceptInvitation, "user.accept_invitation", "Accept an invitation for the edge-authenticated identity.", APPEND_SELF, Protocol, [], params::AcceptInvitation, results::AcceptedInvitation;
+    UserList, "user.list", "List public Console users and invitations.", READ_SERVER_ADMIN, Protocol, [], params::Empty, results::UserList;
+    UserInvite, "user.invite", "Invite a public Console user.", APPEND_SERVER_ADMIN, Protocol, [], params::InviteUser, results::InvitedUser;
+    UserRemove, "user.remove", "Remove one public Console user.", DESTRUCTIVE_SERVER_ADMIN, Protocol, [], params::EmailOnly, results::RemovedUser;
+    GrantSet, "grant.set", "Set one deployment access role.", IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN, Protocol, [], params::SetGrant, results::GrantSet;
+    GrantRemove, "grant.remove", "Remove one deployment access grant.", DESTRUCTIVE_DEPLOYMENT_ADMIN, Protocol, [], params::RemoveGrant, results::GrantRemoved;
+    RepositoryRegister, "repository.register", "Register the repository containing a path.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, [], params::PathOnly, results::RegisteredRepository;
+    RepositoryList, "repository.list", "List registered repositories.", READ_SERVER_ADMIN, Protocol, ["repository_list"], params::RepositoryList, results::RepositoryList;
+    RepositoryStatus, "repository.status", "Show one registered repository.", READ_REPOSITORY_ADMIN, Protocol, [], params::PathOnly, results::RepositoryStatus;
+    RepositoryPresentationUpdate, "repository.presentation.update", "Choose a repository's Console name and icon without changing its identity.", IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN, Protocol, [], params::RepositoryPresentationUpdate, results::RepositoryPresentation;
+    RepositoryArchive, "repository.archive", "Archive a repository after its blockers are cleared.", REVERSIBLE_SERVER_ADMIN, Protocol, ["repository_archive"], params::ArchiveRepository, results::Repository;
+    RepositoryUnarchive, "repository.unarchive", "Restore one archived repository.", REVERSIBLE_SERVER_ADMIN, Protocol, ["repository_unarchive"], params::UnarchiveRepository, results::Repository;
+    RepositoryRetire, "repository.retire", "Remove one exact repository and its linked worktrees while retaining a compact Coordinator receipt.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["repository_retire"], params::RetireRepository, results::RetiredRepository;
+    ServerRegister, "server.register", "Adopt one systemd-supervised local listener into the server inventory.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, [], params::ServerRegister, results::ServerRow;
+    ServerList, "server.list", "List exact systemd-supervised local listener registrations.", READ_SERVER_ADMIN, Protocol, [], params::ServerList, results::ServerList;
+    ServerStop, "server.stop", "Mark one systemd-supervised listener registration as stopping.", REVERSIBLE_SERVER_ADMIN, Protocol, [], params::ServerStop, results::ServerRow;
+    TestStart, "test.start", "Attach to or replace one governed validation run.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_start"], params::StartTest, results::TestStarted, Finite;
+    TestContainerCreate, "test.container.create", "Create one daemon-owned temporary container for a running governed check.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_container_create"], test_containers::ContainerCreate, test_containers::ContainerOperationResult;
+    TestContainerStart, "test.container.start", "Start one exact daemon-owned temporary test container.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_container_start"], test_containers::ContainerReference, test_containers::ContainerOperationResult;
+    TestContainerInspect, "test.container.inspect", "Inspect one exact daemon-owned temporary test container.", READ_REPOSITORY_ADMIN, Protocol, ["test_container_inspect"], test_containers::ContainerReference, test_containers::ContainerOperationResult;
+    TestContainerDiagnostic, "test.container.diagnostic", "Read one bounded verified diagnostic from an exact owned test container.", READ_REPOSITORY_ADMIN, Protocol, ["test_container_diagnostic"], test_containers::ContainerDiagnosticRequest, test_containers::ContainerDiagnosticContent;
+    TestContainerRemove, "test.container.remove", "Force-remove one exact daemon-owned temporary test container and verify absence.", IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_container_remove"], test_containers::ContainerReference, test_containers::ContainerOperationResult;
+    TestContainerRetry, "test.container.retry", "Retry cleanup for one exact daemon-owned temporary test container.", IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_container_retry"], test_containers::ContainerReference, test_containers::ContainerOperationResult;
+    TestAdmissionStatus, "test.admission.status", "Explain whether governed test admission is open or draining.", READ_SERVER_ADMIN, Protocol, ["test_admission_status"], params::TestAdmissionStatus, results::TestAdmissionStatus;
+    TestAdmissionWait, "test.admission.wait", "Wait until governed test admission reopens or a deadline expires.", READ_SERVER_ADMIN, Protocol, ["test_admission_wait"], params::TestAdmissionWait, results::TestAdmissionStatus, PassiveWait;
+    TestWait, "test.wait", "Wait for one governed validation run to reach a terminal state.", READ_REPOSITORY_ADMIN, Protocol, ["test_wait"], params::TestWait, results::TestWaitResult, PassiveWait;
+    TestRetry, "test.retry", "Retry one failed check from a completed run.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_retry"], params::RetryTest, results::TestStarted, Finite;
+    TestStatus, "test.status", "Show the current governed validation result.", READ_REPOSITORY_ADMIN, Protocol, ["test_status"], params::PathOnly, results::TestSummary, Extended;
+    TestLogCatalog, "test.log.catalog", "List retained log metadata without content.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_catalog"], params::LogCatalog, results::LogCatalog, Extended;
+    TestLogTail, "test.log.tail", "Read a bounded final-line log slice.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_tail"], params::LogTail, results::LogContent, Extended;
+    TestLogSearch, "test.log.search", "Search one retained stream literally.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_search"], params::LogSearch, results::LogSearch, Extended;
+    TestLogRange, "test.log.range", "Read one exact bounded log range.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_range"], params::LogRange, results::LogContent, Extended;
+    TestLogFailureContext, "test.log.failure_context", "Read deterministic bounded failure context.", READ_REPOSITORY_ADMIN, Protocol, ["test_log_failure_context"], params::LogFailureContext, results::LogFailureContext, Extended;
+    TestLogRetentionGet, "test.log.retention.get", "Show governed-log retention settings.", READ_SERVER_ADMIN, Protocol, ["test_log_retention_show"], params::Empty, results::Retention;
+    TestLogRetentionSet, "test.log.retention.set", "Change governed-log retention settings.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["test_log_retention_set"], params::SetRetention, results::Retention;
+    TestEvidenceGet, "test.evidence.get", "List retained journey evidence.", READ_REPOSITORY_ADMIN, Protocol, ["test_evidence_get"], params::EvidenceReference, results::EvidenceGet;
+    TestEvidenceImage, "test.evidence.image", "Read one verified screenshot chunk.", READ_REPOSITORY_ADMIN, Protocol, ["test_evidence_image"], params::EvidenceImage, results::ImageChunk;
+    TestArtifactCatalog, "test.artifact.catalog", "List retained artifact-tree metadata.", READ_REPOSITORY_ADMIN, Protocol, ["test_artifact_catalog"], params::ArtifactCatalog, results::ArtifactCatalog;
+    TestArtifactFile, "test.artifact.file", "Read one verified retained artifact chunk.", READ_REPOSITORY_ADMIN, Protocol, ["test_artifact_file"], params::ArtifactFile, results::ArtifactChunk;
+    TestEvidenceFeedbackCreate, "test.evidence.feedback.create", "Create screenshot-anchored project feedback.", APPEND_REPOSITORY_ADMIN, Protocol, ["test_evidence_feedback_create"], params::CreateFeedback, results::FeedbackCreated;
+    TestEvidenceLookup, "test.evidence.lookup", "Open an exact retained screenshot run without relying on the latest-runs list.", READ_SERVER_ADMIN, Protocol, ["test_evidence_lookup"], params::EvidenceLookup, results::EvidenceLookup;
+    TestEvidenceFeedbackReply, "test.evidence.feedback.reply", "Reply to screenshot-anchored feedback.", APPEND_REPOSITORY_ADMIN, Protocol, ["test_evidence_feedback_reply"], params::FeedbackReply, results::FeedbackMutation;
+    TestEvidenceFeedbackEdit, "test.evidence.feedback.edit", "Edit the caller's feedback comment.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["test_evidence_feedback_edit"], params::FeedbackEdit, results::FeedbackMutation;
+    TestEvidenceFeedbackState, "test.evidence.feedback.state", "Resolve or reopen screenshot feedback.", IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["test_evidence_feedback_state"], params::FeedbackStateChange, results::FeedbackMutation;
+    TestEvidenceFeedbackDelete, "test.evidence.feedback.delete", "Delete the caller's screenshot annotation.", IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_evidence_feedback_delete"], params::FeedbackDelete, results::FeedbackMutation;
+    TestStop, "test.stop", "Cancel the current governed run.", IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["test_stop"], params::StopTest, results::StopTest;
+    TestHistory, "test.history", "List bounded run history without logs or file contents.", READ_REPOSITORY_ADMIN, Protocol, ["test_history"], params::TestHistory, results::TestHistory;
+    TestList, "test.list", "List current governed runs.", READ_SERVER_ADMIN, Protocol, ["test_list"], params::TestList, results::TestList;
+    TestCapacityGet, "test.capacity.get", "Show host-wide validation capacity.", READ_SERVER_ADMIN, Protocol, ["test_capacity_show"], params::Empty, results::Capacity;
+    TestCapacitySet, "test.capacity.set", "Set or clear the validation capacity cap.", REVERSIBLE_SERVER_ADMIN, Protocol, ["test_capacity_set"; "test_capacity_clear": params::Empty => ClearCapacity], params::SetCapacity, results::Capacity;
+    ConfigGet, "config.get", "Inspect live configuration revisions and bounded change history without exposing private settings.", READ_SERVER_ADMIN, Protocol, ["config_get"], EmptyParams, configuration::Snapshot;
+    ConfigEnvSet, "config.env.set", "Grant or revoke one declared repository environment-file authorization and activate it without restart.", REVERSIBLE_SERVER_ADMIN, Protocol, ["config_env_set"], params::SetComposeEnvAuthorization, configuration::Snapshot;
+    ConfigReload, "config.reload", "Validate and activate reloadable private settings, retaining the last working state on failure.", REVERSIBLE_SERVER_ADMIN, Protocol, ["config_reload"], configuration::Revision, configuration::Snapshot;
+    DeploymentPreflight, "deployment.preflight", "Check declared deployment prerequisites without registering or changing runtime resources.", READ_DEPLOYMENT_ADMIN, Protocol, ["deployment_preflight"], params::DeploymentPreflight, results::DeploymentPreflight;
+    DeploymentList, "deployment.list", "List visible deployments.", READ_DEPLOYMENT_VIEWER, Protocol, ["deployment_list"], params::DeploymentList, results::DeploymentList;
+    DeploymentStatus, "deployment.status", "Show one deployment.", READ_DEPLOYMENT_VIEWER, Protocol, ["deployment_status"], params::DeploymentReference, results::DeploymentStatus;
+    DeploymentWait, "deployment.wait", "Wait for a deployment state or source transition.", READ_DEPLOYMENT_VIEWER, Protocol, ["deployment_wait"], params::DeploymentWait, results::DeploymentWaitResult, PassiveWait;
+    DeploymentLogs, "deployment.logs", "Read bounded deployment logs.", READ_DEPLOYMENT_VIEWER, Protocol, ["deployment_logs"], params::DeploymentLogs, results::DeploymentLog;
+    DeploymentApply, "deployment.apply", "Apply a declared deployment.", REVERSIBLE_DEPLOYMENT_ADMIN, Protocol, ["deployment_apply"], params::DeploymentApply, results::DeploymentStatus, Finite;
+    DeploymentRollback, "deployment.rollback", "Roll back to the prior generation.", REVERSIBLE_DEPLOYMENT_ADMIN, Protocol, ["deployment_rollback"], params::DeploymentReference, results::DeploymentStatus, Finite;
+    DeploymentStart, "deployment.start", "Start a deployment or selected service.", IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR, Protocol, ["deployment_start"], params::DeploymentControl, results::DeploymentStatus, Finite;
+    DeploymentStop, "deployment.stop", "Stop a deployment or selected service.", IDEMPOTENT_REVERSIBLE_DEPLOYMENT_OPERATOR, Protocol, ["deployment_stop"], params::DeploymentControl, results::DeploymentStatus, Finite;
+    DeploymentRestart, "deployment.restart", "Restart a deployment or selected service.", REVERSIBLE_DEPLOYMENT_OPERATOR, Protocol, ["deployment_restart"], params::DeploymentControl, results::DeploymentStatus, Finite;
+    DeploymentSetDomain, "deployment.set_domain", "Set or clear a deployment route.", IDEMPOTENT_REVERSIBLE_DEPLOYMENT_ADMIN, Protocol, ["deployment_set_domain"], params::SetDomain, results::DomainChanged;
+    DeploymentRemove, "deployment.remove", "Remove a deployment with an explicit data outcome.", DESTRUCTIVE_DEPLOYMENT_ADMIN, Protocol, [], params::RemoveDeployment, results::DeploymentRemoved, Finite;
+    HealthSummary, "health.summary", "Show host health and active alerts.", READ_SERVER_ADMIN, Protocol, ["health_summary"], params::Empty, results::HealthSummary, Extended;
+    HealthIncidents, "health.incidents", "List escalated incidents, dismissed occurrences, or all observations for agent triage.", READ_SERVER_ADMIN, Protocol, ["health_incidents"], incidents::IncidentListParams, incidents::IncidentList;
+    HealthIncidentUpdate, "health.incident.update", "Record handling, non-reporting, escalation or dismissal for one exact incident occurrence.", REVERSIBLE_SERVER_ADMIN, Protocol, ["health_incident_update"], incidents::IncidentUpdate, incidents::Incident;
+    HealthRepositories, "health.repositories", "Show visible per-repository resource use.", READ_REPOSITORY_VIEWER, Protocol, ["health_repositories"], params::Empty, results::HealthRepositories;
+    HealthRepository, "health.repository", "Show one repository's resource use.", READ_REPOSITORY_VIEWER, Protocol, ["health_repository"], params::PathOnly, results::HealthRepository;
+    HealthHistory, "health.history", "Show bounded resource history.", READ_REPOSITORY_VIEWER, Protocol, [], params::HealthHistory, results::HealthHistory;
+    HealthContainers, "health.containers", "List every container with truthful attribution.", READ_SERVER_ADMIN, Protocol, ["health_containers"], params::Empty, results::ContainerList;
+    HealthContainerRemove, "health.container_remove", "Remove one exact unmanaged container.", DESTRUCTIVE_SERVER_ADMIN, Protocol, [], params::RemoveContainer, results::RemovedContainer;
+    GlossaryList, "glossary.list", "Browse shared or effective project terminology; never application messages.", READ_REPOSITORY_VIEWER, Protocol, ["glossary_list"], glossary::List, glossary::Page;
+    GlossaryResolve, "glossary.resolve", "Read the effective glossary before UI work, with pinned shared revision and provenance. Follow the project's own localization mechanism; paginate all needed concepts.", READ_REPOSITORY_VIEWER, Protocol, ["glossary_resolve"], glossary::List, glossary::Page;
+    GlossaryGet, "glossary.get", "Read one multilingual concept, optionally at a historical scope revision.", READ_REPOSITORY_VIEWER, Protocol, ["glossary_get"], glossary::Get, glossary::Detail;
+    GlossarySave, "glossary.save", "Create or revise a concept using an exact expected scope revision. Mandatory inherited concepts cannot be overridden.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["glossary_save"], glossary::Save, glossary::Mutation;
+    GlossaryConfigure, "glossary.configure", "Revise glossary languages and guidance or explicitly adopt a shared revision; this does not change localization files.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["glossary_configure"], glossary::Configure, glossary::Mutation;
+    GlossaryInherit, "glossary.inherit", "Remove a project specialization and return to its pinned shared concept, preserving history.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["glossary_inherit"], glossary::Inherit, glossary::Mutation;
+    GlossaryHistory, "glossary.history", "Read bounded permanent glossary revision history.", READ_REPOSITORY_VIEWER, Protocol, ["glossary_history"], glossary::History, glossary::HistoryPage;
+    GlossaryCheck, "glossary.check", "Check explicitly identified concept usages against approved localized terms. This is not a general prose or translation-quality detector.", READ_REPOSITORY_VIEWER, Protocol, ["glossary_check"], glossary::Check, glossary::CheckResult;
+    GlossaryImpact, "glossary.impact", "Inspect which projects have adopted shared glossary revisions.", READ_SERVER_ADMIN, Protocol, ["glossary_impact"], glossary::ImpactRequest, glossary::Impact;
+    DeploymentRecovery, "deployment.recovery", "Prepare or recover one saved deployment with exact ownership checks and a private database backup.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, ["deployment_recovery"], runtime_recovery::Request, runtime_recovery::Receipt, Finite;
+    PlanRecovery, "plan.recovery", "Prepare or atomically recover one repository's saved planning history without replacing live authority.", IDEMPOTENT_APPEND_SERVER_ADMIN, Protocol, ["plan_recovery"], recovery::Request, recovery::Receipt, Finite;
+    PlanOverview, "plan.overview", "Show releases and the active completion plan.", READ_REPOSITORY_VIEWER, Protocol, ["plan_overview"], params::PlanReference, results::PlanOverview;
+    CompletionCheck, "completion.check", "Check a hash-bound capability inventory against the repository's open outcomes and evidence contract.", READ_REPOSITORY_VIEWER, Protocol, ["completion_check"], params::CompletionCheck, completion::CheckResult;
+    TaskSearch, "task.search", "Search all task states, including dropped history, without changing the active plan.", READ_REPOSITORY_VIEWER, Protocol, ["task_search"], params::TaskSearch, results::TaskSearch;
+    TaskHistory, "task.history", "Show one task and its permanent history.", READ_REPOSITORY_VIEWER, Protocol, ["task_history"], params::TaskHistory, results::TaskHistory;
+    TaskCreate, "task.create", "Create one completion-ledger task.", APPEND_REPOSITORY_ADMIN, Protocol, ["task_create"], params::TaskCreate, results::TaskCreated;
+    TaskUpdate, "task.update", "Append a task state or wording change.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, ["task_update"], params::TaskUpdate, results::TaskMutation;
+    ReleaseCreate, "release.create", "Create a planned release.", APPEND_REPOSITORY_ADMIN, Protocol, ["release_create"], params::ReleaseCreate, results::ReleaseMutation;
+    ReleaseUpdate, "release.update", "Change a planned release.", DESTRUCTIVE_REPOSITORY_ADMIN, Protocol, [], params::ReleaseUpdate, results::ReleaseMutation;
+    ReleaseRequest, "release.request", "Request a preview deployment.", APPEND_REPOSITORY_ADMIN, Protocol, [], params::ReleaseRequest, results::ReleaseMutation;
+    ReleaseDeliver, "release.deliver", "Record deployment metadata for a release; this does not create a qualified delivery receipt or satisfy a delivery clock.", APPEND_REPOSITORY_ADMIN, Protocol, ["release_deliver"], params::ReleaseDeliver, results::ReleaseDelivered;
+    DecisionTail, "decision.tail", "Read the rolling decision summary and latest decisions.", READ_REPOSITORY_VIEWER, Protocol, ["decision_tail"], params::DecisionTail, results::DecisionTail;
+    PerformanceOverview, "performance.overview", "Read repository performance overview without changing accounting or reviews.", READ_REPOSITORY_ADMIN, Protocol, ["performance_overview"], performance::Overview, performance::OverviewResult, Extended;
+    PerformanceReviews, "performance.reviews", "Read repository performance reviews without changing accounting or reviews.", READ_REPOSITORY_ADMIN, Protocol, ["performance_reviews"], performance::Reviews, performance::ReviewPage;
+    PerformanceReview, "performance.review", "Read repository performance review without changing accounting or reviews.", READ_REPOSITORY_ADMIN, Protocol, ["performance_review"], performance::Review, performance::ReviewResult, Extended;
+    ReviewDeliveryPending, "review.delivery.pending", "Reconcile outstanding native reminders after a cursor gap.", READ_SERVER_ADMIN, Protocol, ["review_delivery_pending"], review_policy::PendingRequest, review_policy::Pending;
+    ReviewPolicySet, "review.policy.set", "Set a continuing repository/workstream review schedule.", APPEND_REPOSITORY_ADMIN, Protocol, ["review_policy_set"], review_policy::Set, review_policy::Policy;
+    ReviewPolicyStatus, "review.policy.status", "Read review obligation and delivery route.", READ_REPOSITORY_ADMIN, Protocol, ["review_policy_status"], review_policy::Scope, Option<review_policy::Policy>;
+    ReviewDeliveryRegister, "review.delivery.register", "Register a leased native alarm delivery capability.", APPEND_REPOSITORY_ADMIN, Protocol, ["review_delivery_register"], review_policy::Register, review_policy::Policy;
+    ReviewPrepare, "review.prepare", "Prepare bounded canonical usage and outcome evidence without scheduling work.", READ_REPOSITORY_ADMIN, Protocol, ["review_prepare"], review::Prepare, review::Prepared, Extended;
+    ReviewRecord, "review.record", "Append an evidence-backed review revision with optimistic concurrency.", APPEND_REPOSITORY_ADMIN, Protocol, ["review_record"], review::Record, review::Revision, Extended;
+    ReviewShow, "review.show", "Read bounded immutable review revisions.", READ_REPOSITORY_ADMIN, Protocol, ["review_show"], review::Show, review::Page;
+    ReviewReceipt, "review.receipt", "Read one exact immutable structured review revision.", READ_REPOSITORY_ADMIN, Protocol, ["review_receipt"], review::Reference, review::Revision;
+    ReleaseEvidence, "release.evidence", "Read an exact delivery receipt; qualification and verification time are server-derived.", READ_REPOSITORY_ADMIN, Protocol, ["release_evidence"], review::Reference, delivery::Receipt;
+    ReleaseDeliverEvidence, "release.deliver_evidence", "Create a server-derived delivery receipt from retained artifact proof; use a qualified receipt ID for the delivery clock.", APPEND_REPOSITORY_ADMIN, Protocol, ["release_deliver_evidence"], delivery::Deliver, delivery::Receipt;
+    ReleaseEvidenceShow, "release.evidence_show", "Read bounded immutable delivery evidence receipts.", READ_REPOSITORY_ADMIN, Protocol, ["release_evidence_show"], delivery::Show, delivery::Page;
+    DecisionSearch, "decision.search", "Search permanent repository decisions.", READ_REPOSITORY_VIEWER, Protocol, ["decision_search"], params::DecisionSearch, results::DecisionSearch;
+    DecisionRecord, "decision.record", "Record a permanent repository decision.", APPEND_REPOSITORY_ADMIN, Protocol, ["decision_record"], params::DecisionRecord, results::DecisionRecorded;
+    DecisionSummarize, "decision.summarize", "Store a new rolling decision summary.", APPEND_REPOSITORY_ADMIN, Protocol, ["decision_summarize"], params::DecisionSummarize, results::DecisionSummarized;
+    UsageRepositories, "usage.repositories", "Show privacy-preserving usage across visible repositories.", READ_REPOSITORY_OPERATOR, Protocol, [], params::UsageRepositories, results::UsageRepositories;
+    UsageRepository, "usage.repository", "Show privacy-preserving usage for one repository.", READ_REPOSITORY_OPERATOR, Protocol, [], params::UsageRepository, results::UsageRepository;
+    UsageRateCardList, "usage.rate_card.list", "List administrator-managed API-equivalent pricing cards.", READ_SERVER_ADMIN, Protocol, [], rate_card::List, rate_card::Page;
+    UsageRateCardSet, "usage.rate_card.set", "Append one immutable API-equivalent pricing-card version.", DESTRUCTIVE_SERVER_ADMIN, Protocol, [], rate_card::Set, rate_card::Mutation;
+    ProgressRepositories, "progress.repositories", "Show delivery progress across visible repositories.", READ_REPOSITORY_OPERATOR, Protocol, [], params::Empty, results::ProgressRepositories;
+    ProgressRepository, "progress.repository", "Show delivery progress for one repository.", READ_REPOSITORY_OPERATOR, Protocol, [], params::ProgressRepository, results::ProgressRepository;
+    TelegramLink, "telegram.link", "Link one Telegram chat to an identity.", EXTERNAL_SELF, Protocol, [], params::TelegramLink, results::TelegramLinked;
+    TelegramSubscribe, "telegram.subscribe", "Subscribe one linked chat to notices.", EXTERNAL_SELF, Protocol, [], params::TelegramSubscription, results::TelegramSubscription;
+    TelegramUnsubscribe, "telegram.unsubscribe", "Remove one notice subscription.", IDEMPOTENT_EXTERNAL_SELF, Protocol, [], params::TelegramSubscription, results::TelegramSubscription;
+    TelegramList, "telegram.list", "List the caller's linked chats and subscriptions.", READ_SELF, Protocol, [], params::Empty, results::TelegramList;
+    EventWait, "event.wait", "Wait for authorized owned-state events or per-filter heartbeat deadlines.", READ_SELF, Protocol, ["event_wait"], params::EventWait, results::EventWaitResult, PassiveWait;
+    DesignSketchPublish, "design.sketch.publish", "Retain a project-scoped batch of generated sketches and its generation record.", APPEND_REPOSITORY_ADMIN, Protocol, ["design_sketch_publish"], params::SketchPublish, results::SketchBatch;
+    DesignSketchList, "design.sketch.list", "List retained project sketches and their current decisions.", READ_REPOSITORY_ADMIN, Protocol, ["design_sketch_list"], params::SketchList, results::SketchListResult;
+    DesignSketchSearch, "design.sketch.search", "Search retained sketch descriptions, decisions, and lineage context.", READ_REPOSITORY_ADMIN, Protocol, ["design_sketch_search"], params::SketchSearch, results::SketchListResult;
+    DesignSketchStory, "design.sketch.story", "Read one surface's mockup history graph and current heads.", READ_REPOSITORY_ADMIN, Protocol, ["design_sketch_story"], params::SketchStory, results::SketchStoryResult;
+    DesignSketchResolve, "design.sketch.resolve", "Resolve the explicit current mockup head for one surface.", READ_REPOSITORY_ADMIN, Protocol, ["design_sketch_resolve"], params::SketchResolve, results::SketchResolveResult;
+    DesignSketchGet, "design.sketch.get", "Open one retained project sketch with decision history and annotations.", READ_REPOSITORY_ADMIN, Protocol, ["design_sketch_get"], params::SketchReference, results::SketchDetail;
+    DesignSketchImage, "design.sketch.image", "Read one verified retained sketch image chunk.", READ_REPOSITORY_ADMIN, Protocol, ["design_sketch_image"], params::SketchImage, results::SketchChunk;
+    DesignSketchRecord, "design.sketch.record", "Read one verified retained generation record chunk.", READ_REPOSITORY_ADMIN, Protocol, ["design_sketch_record"], params::SketchReference, results::SketchRecordChunk;
+    DesignSketchDecision, "design.sketch.decision", "Change a sketch decision with an expected revision and rationale.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["design_sketch_decision"], params::SketchDecisionChange, results::SketchDecisionResult;
+    DesignSketchActivate, "design.sketch.activate", "Record the explicit current continuation set for one surface.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["design_sketch_activate"], params::SketchActivate, results::SketchActivationResult;
+    DesignSketchDescription, "design.sketch.description", "Append a revised mockup description and context revision.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["design_sketch_description"], params::SketchDescriptionChange, results::SketchDescriptionResult;
+    DesignSketchAnnotationCreate, "design.sketch.annotation.create", "Save a marked-up sketch annotation.", APPEND_REPOSITORY_ADMIN, Protocol, ["design_sketch_annotation_create"], params::SketchAnnotationCreate, results::SketchAnnotationMutation;
+    AgentHubRegister, "agent.hub.register", "Register an agent in the private or opt-in public hub space and issue its lease token.", EXTERNAL_SELF, Protocol, ["agent_hub_register"], agent_hub::Register, agent_hub::RegisterResult;
+    AgentHubHeartbeat, "agent.hub.heartbeat", "Renew one agent's 90-second lease.", IDEMPOTENT_EXTERNAL_SELF, Protocol, ["agent_hub_heartbeat"], agent_hub::Heartbeat, agent_hub::AgentProfile;
+    AgentHubUnregister, "agent.hub.unregister", "Remove one agent from the hub and its room memberships.", DESTRUCTIVE_SELF, Protocol, ["agent_hub_unregister"], agent_hub::Unregister, agent_hub::AgentProfile;
+    AgentHubDirectory, "agent.hub.directory", "List opaque agent profiles in one isolated hub space.", READ_SELF, Protocol, ["agent_hub_directory"], agent_hub::Directory, agent_hub::DirectoryResult;
+    AgentHubRoomCreate, "agent.hub.room.create", "Create a direct or group room in one hub space.", APPEND_SELF, Protocol, ["agent_hub_room_create"], agent_hub::RoomCreate, agent_hub::Room;
+    AgentHubRoomList, "agent.hub.room.list", "List rooms visible to one registered agent.", READ_SELF, Protocol, ["agent_hub_room_list"], agent_hub::RoomList, agent_hub::RoomListResult;
+    AgentHubRoomMemberAdd, "agent.hub.room.member.add", "Add one registered agent to a room.", REVERSIBLE_SELF, Protocol, ["agent_hub_room_member_add"], agent_hub::RoomMemberChange, agent_hub::Room;
+    AgentHubRoomMemberRemove, "agent.hub.room.member.remove", "Remove one registered agent from a room.", REVERSIBLE_SELF, Protocol, ["agent_hub_room_member_remove"], agent_hub::RoomMemberChange, agent_hub::Room;
+    AgentHubSend, "agent.hub.send", "Send a durable message with bounded attachments to a room.", APPEND_SELF, Protocol, ["agent_hub_send"], agent_hub::Send, agent_hub::Message;
+    AgentHubReceive, "agent.hub.receive", "Read at-least-once deliveries for one agent.", READ_SELF, Protocol, ["agent_hub_receive"], agent_hub::Receive, agent_hub::ReceiveResult;
+    AgentHubAck, "agent.hub.ack", "Acknowledge one or more durable deliveries.", IDEMPOTENT_APPEND_SELF, Protocol, ["agent_hub_ack"], agent_hub::Ack, agent_hub::ReceiveResult;
+    AgentHubUploadStart, "agent.hub.upload.start", "Start a resumable bounded attachment upload.", APPEND_SELF, Protocol, ["agent_hub_upload_start"], agent_hub::UploadStart, agent_hub::UploadStartResult;
+    AgentHubUploadChunk, "agent.hub.upload.chunk", "Append one base64 attachment chunk at its exact offset.", IDEMPOTENT_APPEND_SELF, Protocol, ["agent_hub_upload_chunk"], agent_hub::UploadChunk, agent_hub::UploadChunkResult;
+    AgentHubUploadFile, "agent.hub.upload.file", "Read one bounded attachment chunk.", READ_SELF, Protocol, ["agent_hub_upload_file"], agent_hub::UploadFile, agent_hub::FileChunk;
+    AgentHubUploadRemove, "agent.hub.upload.remove", "Remove one private incomplete upload.", DESTRUCTIVE_SELF, Protocol, ["agent_hub_upload_remove"], agent_hub::UploadRemove, agent_hub::Settings;
+    AgentHubSettingsGet, "agent.hub.settings.get", "Read private/public hub controls and callback queue status.", READ_SERVER_ADMIN, Protocol, ["agent_hub_settings_get"], EmptyParams, agent_hub::Settings;
+    AgentHubConsoleDirectory, "agent.hub.console.directory", "Let an admitted Console user inspect opaque hub profiles without private transport credentials.", READ_SERVER_VIEWER, Protocol, ["agent_hub_console_directory"], agent_hub::ConsoleDirectory, agent_hub::DirectoryResult;
+    AgentHubConsoleReceive, "agent.hub.console.receive", "Let an admitted Console user read bounded hub messages for monitoring.", READ_SERVER_VIEWER, Protocol, ["agent_hub_console_receive"], agent_hub::ConsoleReceive, agent_hub::ReceiveResult;
+    AgentHubConsoleSend, "agent.hub.console.send", "Let an admitted Console user reply in a visible hub room.", APPEND_SERVER_VIEWER, Protocol, ["agent_hub_console_send"], agent_hub::ConsoleSend, agent_hub::Message;
+    AgentHubAdminAgentRemove, "agent.hub.admin.agent.remove", "Remove an agent and its room memberships from the hub.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["agent_hub_admin_agent_remove"], agent_hub::AgentRemove, agent_hub::RemovalResult;
+    AgentHubAdminRoomRemove, "agent.hub.admin.room.remove", "Remove a room, its messages, and its attachments.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["agent_hub_admin_room_remove"], agent_hub::RoomRemove, agent_hub::RemovalResult;
+    AgentHubAdminMessageRemove, "agent.hub.admin.message.remove", "Remove one message and its attachments from the hub.", DESTRUCTIVE_SERVER_ADMIN, Protocol, ["agent_hub_admin_message_remove"], agent_hub::MessageRemove, agent_hub::RemovalResult;
+    AgentHubSettingsSet, "agent.hub.settings.set", "Enable or pause the isolated public hub space.", REVERSIBLE_SERVER_ADMIN, Protocol, ["agent_hub_settings_set"], agent_hub::SettingsSet, agent_hub::Settings;
+    AgentHubKeyRotate, "agent.hub.key.rotate", "Rotate the instance bearer key with seven-day overlap.", REVERSIBLE_SERVER_ADMIN, Protocol, ["agent_hub_key_rotate"], agent_hub::KeyRotate, agent_hub::KeyRotateResult;
+    AgentHubActivity, "agent.hub.activity", "Read bounded aggregate hub activity without agent identity or message content.", READ_SERVER_ADMIN, Protocol, ["agent_hub_activity"], agent_hub::Activity, agent_hub::ActivityResult;
+    AgentHubRemote, "agent.hub.remote", "Dedicated remote adapter for the agent hub; only the edge allowlist may invoke it.", OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::External, false), Protocol, [], agent_hub::RemoteRequest, serde_json::Value;
+    AgentMessagePoll, "agent.message.poll", "Read pending repository messages for an agent.", READ_REPOSITORY_ADMIN, Protocol, ["agent_message_poll"], params::AgentMessagePoll, results::AgentMessageList;
+    AgentMessageClaim, "agent.message.claim", "Claim one repository message for the current agent.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["agent_message_claim"], params::AgentMessageClaim, results::AgentMessageMutation;
+    AgentMessageAck, "agent.message.ack", "Acknowledge one claimed repository message.", REVERSIBLE_REPOSITORY_ADMIN, Protocol, ["agent_message_ack"], params::AgentMessageAck, results::AgentMessageMutation;
+    BugReport, "bug.report", "Report or count a Coordinator defect while the daemon may be unavailable.", APPEND_SELF, Local, ["bug_report"], params::BugReport, results::BugRecord;
+    BugList, "bug.list", "List open Coordinator defects.", READ_SELF, Local, ["bug_list"], params::Empty, results::BugList;
+    BugClose, "bug.close", "Close one Coordinator defect.", DESTRUCTIVE_SELF, Local, ["bug_close"], params::BugClose, results::BugClosed;
+}
 
 pub fn operation(name: &str) -> Option<&'static OperationDefinition> {
     OPERATIONS.iter().find(|definition| definition.name == name)
+}
+
+/// Small discovery response; full schemas are retrieved for one chosen operation.
+pub fn catalog_summary(prefix: &str) -> Value {
+    serde_json::json!({"protocol":PROTOCOL_VERSION,"operations":OPERATIONS.iter()
+        .filter(|op|op.name.starts_with(prefix)).map(|op|serde_json::json!({
+            "name":op.name,"description":op.description,"read_only":op.policy.read_only()
+        })).collect::<Vec<_>>()})
+}
+
+pub fn operation_schema(name: &str) -> Option<Value> {
+    operation(name).map(|op| {
+        serde_json::json!({"protocol":PROTOCOL_VERSION,"name":op.name,
+        "description":op.description,"policy":op.policy,"inputSchema":(op.input_schema)(),
+        "outputSchema":(op.output_schema)()})
+    })
 }
 
 pub fn operation_for_cli_route(
@@ -2348,7 +1088,7 @@ pub fn parse_request(raw: &[u8]) -> Result<RequestEnvelope, ProtocolError> {
         return Err(ProtocolError::new(
             ErrorCode::ProtocolUnsupported,
             format!(
-                "protocol {} is not supported; install a protocol-2 client",
+                "protocol {} is not supported; install a protocol-3 client",
                 protocol.map_or_else(|| "missing".to_owned(), |v| v.to_string())
             ),
         ));
@@ -2433,6 +1173,11 @@ pub fn contract_document() -> Value {
             "name": definition.name,
             "description": definition.description,
             "policy": definition.policy,
+            "transport": {
+                "passiveWait": definition.passive_wait(),
+                "longRunning": definition.long_running(),
+                "responseTimeoutSeconds": definition.response_timeout_seconds(),
+            },
             "cli": {
                 "routes": definition.cli_routes.iter().map(|route| serde_json::json!({
                     "route": route.route,
@@ -2459,19 +1204,37 @@ pub fn contract_document() -> Value {
     })
 }
 
+/// Compact generated metadata consumed by the JavaScript edge transport.
+pub fn edge_operation_metadata() -> Value {
+    let operations: serde_json::Map<String, Value> = OPERATIONS
+        .iter()
+        .map(|definition| {
+            (
+                definition.name.to_owned(),
+                serde_json::json!({
+                    "passiveWait":definition.passive_wait(),
+                    "responseTimeoutSeconds":definition.response_timeout_seconds(),
+                    "policy":definition.policy,
+                }),
+            )
+        })
+        .collect();
+    serde_json::json!({"protocol":PROTOCOL_VERSION,"operations":operations})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn protocol_two_round_trip_is_strict() {
-        let request = br#"{"protocol":2,"id":"abc","operation":"ping","params":{},"client":{"kind":"codex"}}"#;
+    fn protocol_three_round_trip_is_strict() {
+        let request = br#"{"protocol":3,"id":"abc","operation":"ping","params":{},"client":{"kind":"codex"}}"#;
         let parsed = parse_request(request).expect("valid request");
         assert_eq!(parsed.operation, "ping");
         assert_eq!(parsed.client.kind, ClientKind::Codex);
 
         let unknown =
-            br#"{"protocol":2,"id":"abc","operation":"ping","params":{},"client":{},"extra":true}"#;
+            br#"{"protocol":3,"id":"abc","operation":"ping","params":{},"client":{},"extra":true}"#;
         assert_eq!(
             parse_request(unknown).unwrap_err().code,
             ErrorCode::ProtocolInvalid
@@ -2487,18 +1250,18 @@ mod tests {
 
     #[test]
     fn operation_parameters_reject_unknown_fields_before_dispatch() {
-        let request = br#"{"protocol":2,"id":"abc","operation":"user.whoami","params":{"extra":true},"client":{}}"#;
+        let request = br#"{"protocol":3,"id":"abc","operation":"user.whoami","params":{"extra":true},"client":{}}"#;
         assert_eq!(
             parse_request(request).unwrap_err().code,
             ErrorCode::ParamsInvalid
         );
 
-        let evidence = br#"{"protocol":2,"id":"abc","operation":"test.evidence.get","params":{"path":"/repo","run_id":"run","extra":true},"client":{}}"#;
+        let evidence = br#"{"protocol":3,"id":"abc","operation":"test.evidence.get","params":{"path":"/repo","run_id":"run","extra":true},"client":{}}"#;
         assert_eq!(
             parse_request(evidence).unwrap_err().code,
             ErrorCode::ParamsInvalid
         );
-        let mark = br##"{"protocol":2,"id":"abc","operation":"test.evidence.feedback.create","params":{"path":"/repo","run_id":"run","image_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","body":"change this","marks":[{"type":"pin","id":"mark-1","color":"#ef4444","x":0.5,"y":0.5,"extra":true}]},"client":{}}"##;
+        let mark = br##"{"protocol":3,"id":"abc","operation":"test.evidence.feedback.create","params":{"path":"/repo","run_id":"run","image_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","body":"change this","marks":[{"type":"pin","id":"mark-1","color":"#ef4444","x":0.5,"y":0.5,"extra":true}]},"client":{}}"##;
         assert_eq!(
             parse_request(mark).unwrap_err().code,
             ErrorCode::ParamsInvalid
@@ -2508,7 +1271,7 @@ mod tests {
     #[test]
     fn contract_has_one_typed_ping_definition() {
         let document = contract_document();
-        assert_eq!(document["protocol"], 2);
+        assert_eq!(document["protocol"], 3);
         assert_eq!(document["operations"][0]["name"], "ping");
         assert!(document["operations"][0]["inputSchema"].is_object());
         assert!(document["operations"][0]["outputSchema"].is_object());
@@ -2571,9 +1334,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 194);
-        assert_eq!(tools.len(), 164);
-        assert_eq!(cli_routes.len(), 133);
+        assert_eq!(OPERATIONS.len(), 195);
+        assert_eq!(tools.len(), 165);
+        assert_eq!(cli_routes.len(), OPERATIONS.len());
     }
 
     #[test]
@@ -2626,6 +1389,43 @@ mod tests {
             serde_json::json!({"cap": null})
         );
         assert_eq!(clear.operation.name, "test.capacity.set");
+        let contract = contract_document();
+        let exported = contract["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|op| op["name"] == "test.capacity.set")
+            .unwrap();
+        assert!(
+            exported["mcpTools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "test_capacity_clear"
+                    && tool["transform"] == "clear_capacity")
+        );
+    }
+
+    #[test]
+    fn governed_test_operations_use_finite_and_extended_execution_profiles() {
+        for name in ["test.start", "test.retry"] {
+            let definition = operation(name).expect("test operation");
+            assert!(definition.long_running(), "{name} must be finite work");
+            assert_eq!(definition.response_timeout_seconds(), None);
+        }
+        for name in [
+            "test.status",
+            "test.log.catalog",
+            "test.log.tail",
+            "test.log.search",
+            "test.log.range",
+            "test.log.failure_context",
+            "health.summary",
+        ] {
+            let definition = operation(name).expect("read operation");
+            assert!(!definition.long_running(), "{name} must remain a read");
+            assert_eq!(definition.response_timeout_seconds(), Some(20));
+        }
     }
 
     #[test]

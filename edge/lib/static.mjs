@@ -4,11 +4,12 @@
 // fixed MIME map (html/css/js/svg/png/ico/json/txt); ETag from mtime+size;
 // traversal-proof (resolve + prefix check); GET/HEAD only; 404 otherwise.
 
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { createReadStream, constants as fsConstants } from 'node:fs';
+import { open, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { createBrotliCompress, createGzip, constants as zlibConstants } from 'node:zlib';
+import { promisify } from 'node:util';
+import { brotliCompress, gzip, createBrotliCompress, createGzip, constants as zlibConstants } from 'node:zlib';
 
 const MIME = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -29,6 +30,15 @@ const MIME = new Map([
 
 const COMPRESSIBLE = new Set(['.html', '.css', '.js', '.mjs', '.svg', '.json', '.txt']);
 const MIN_COMPRESSION_BYTES = 1024;
+const MAX_PREPARED_INDEX_BYTES = 64 * 1024;
+const compressBrotli = promisify(brotliCompress);
+const compressGzip = promisify(gzip);
+
+function sameFile(a, b) {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size
+    && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs
+    && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid;
+}
 
 function acceptedEncoding(header) {
   const choices = new Map();
@@ -48,6 +58,45 @@ function acceptedEncoding(header) {
 export function createStaticServer({ dir, log, sourceRevision = '' } = {}) {
   if (!dir) throw new TypeError('createStaticServer: dir is required');
   const root = path.resolve(dir);
+  const index = path.join(root, 'index.html');
+  let preparedIndex = null;
+  let preparation;
+
+  // Only the small entry document is prepared. Every request still checks its
+  // identity; a source replacement falls back to the ordinary streaming path.
+  function prepare() {
+    return preparation ??= (async () => {
+      let file;
+      try {
+        const directory = await stat(root);
+        file = await open(index, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+        const before = await file.stat();
+        if (!before.isFile() || before.size > MAX_PREPARED_INDEX_BYTES) return;
+        const buffer = Buffer.alloc(MAX_PREPARED_INDEX_BYTES + 1);
+        let length = 0;
+        while (length < buffer.length) {
+          const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+          if (!bytesRead) break;
+          length += bytesRead;
+        }
+        if (length !== before.size || length > MAX_PREPARED_INDEX_BYTES || !sameFile(before, await file.stat())) return;
+        const body = Buffer.from(buffer.subarray(0, length));
+        const variants = { identity: body };
+        if (length >= MIN_COMPRESSION_BYTES) {
+          [variants.br, variants.gzip] = await Promise.all([
+            compressBrotli(body, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }),
+            compressGzip(body, { level: 6 }),
+          ]);
+        }
+        if (Object.values(variants).reduce((total, value) => total + value.length, 0) > 3 * MAX_PREPARED_INDEX_BYTES) return;
+        preparedIndex = { directory, file: before, variants };
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) throw error;
+      } finally {
+        await file?.close();
+      }
+    })();
+  }
 
   function sendText(res, status, body, extraHeaders = {}) {
     const buf = Buffer.from(body, 'utf8');
@@ -117,6 +166,17 @@ export function createStaticServer({ dir, log, sourceRevision = '' } = {}) {
         return;
       }
 
+      let prepared = null;
+      if (abs === index && preparedIndex) {
+        const directory = await stat(root);
+        if (sameFile(st, preparedIndex.file)
+            && directory.dev === preparedIndex.directory.dev && directory.ino === preparedIndex.directory.ino) {
+          prepared = preparedIndex;
+        } else {
+          preparedIndex = null;
+        }
+      }
+
       const encoding = COMPRESSIBLE.has(ext) && st.size >= MIN_COMPRESSION_BYTES
         ? acceptedEncoding(req.headers['accept-encoding'])
         : null;
@@ -150,6 +210,10 @@ export function createStaticServer({ dir, log, sourceRevision = '' } = {}) {
       }
 
       res.writeHead(200, headers);
+      if (prepared) {
+        res.end(prepared.variants[encoding || 'identity']);
+        return;
+      }
       const stream = createReadStream(abs);
       if (encoding === 'br') {
         await pipeline(stream, createBrotliCompress({
@@ -167,5 +231,5 @@ export function createStaticServer({ dir, log, sourceRevision = '' } = {}) {
     }
   }
 
-  return { handle };
+  return { handle, prepare };
 }

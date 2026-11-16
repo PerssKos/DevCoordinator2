@@ -558,12 +558,16 @@ pub struct RepositoryListRow {
     pub archive_note: Option<String>,
     pub merged_into_repository_id: Option<String>,
     pub worktrees: Vec<Worktree>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_worktree_id: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryList {
     pub repositories: Vec<RepositoryListRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_repository_id: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1738,6 +1742,62 @@ pub struct DeploymentLog {
     pub log_path: Option<String>,
     pub container_id: Option<String>,
     pub observed_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_log: Option<ProcessLogInfo>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessLogState {
+    Available,
+    Empty,
+    Unavailable,
+    Legacy,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessLogInfo {
+    pub generation: Option<u32>,
+    pub attempt: Option<u32>,
+    pub state: ProcessLogState,
+    #[schemars(length(max = 8))]
+    pub retained_generations: Vec<u32>,
+    #[schemars(length(max = 8))]
+    pub retained_attempts: Vec<u32>,
+    pub max_generations: u8,
+    pub max_attempts_per_generation: u8,
+}
+
+#[cfg(test)]
+mod process_log_compatibility {
+    use super::*;
+
+    #[test]
+    fn old_log_responses_and_new_identity_metadata_round_trip() {
+        let old = serde_json::json!({"deployment_id":"d1","component":"api","tail":"output",
+            "truncated_before_tail":false,"log_path":null,"container_id":null,"observed_only":false});
+        let mut log: DeploymentLog = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&log).unwrap(), old);
+        log.process_log = Some(ProcessLogInfo {
+            generation: Some(7),
+            attempt: Some(19),
+            state: ProcessLogState::Available,
+            retained_generations: vec![7],
+            retained_attempts: vec![19],
+            max_generations: 8,
+            max_attempts_per_generation: 8,
+        });
+        let encoded = serde_json::to_value(&log).unwrap();
+        assert_eq!(encoded["tail"], old["tail"]);
+        assert_eq!(
+            serde_json::from_value::<DeploymentLog>(encoded.clone()).unwrap(),
+            log
+        );
+        let mut invalid = encoded;
+        invalid["process_log"]["state"] = serde_json::json!("unknown");
+        assert!(serde_json::from_value::<DeploymentLog>(invalid).is_err());
+    }
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2060,6 +2120,28 @@ pub struct PlanRepositoryRow {
 #[serde(deny_unknown_fields)]
 pub struct PlanCollection {
     pub repositories: Vec<PlanRepositoryRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_repository_id: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanRepositoryHeader {
+    pub repository_id: String,
+    pub display_name: String,
+    pub root_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_source: Option<TestRepositorySource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<RepositoryPresentation>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanHeaderCollection {
+    pub headers: Vec<PlanRepositoryHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_repository_id: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2118,23 +2200,31 @@ pub struct DecisionState {
 pub struct PlanDetail {
     pub repository_id: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_source: Option<TestRepositorySource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<RepositoryPresentation>,
     pub archived: bool,
     pub merged_into_repository_id: Option<String>,
     pub releases: Vec<PlanRelease>,
     pub tasks: Vec<PlanTask>,
     pub tasks_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_sequence: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_release_sequence: Option<u32>,
     pub elaboration_requests: Vec<ElaborationRequest>,
     pub preview_requested: Vec<PreviewRequest>,
     pub decisions: DecisionState,
     pub revision: String,
-    pub next_offset: Option<u32>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PlanOverview {
     Collection(PlanCollection),
-    Detail(PlanDetail),
+    Headers(PlanHeaderCollection),
+    Detail(Box<PlanDetail>),
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2243,8 +2333,12 @@ pub enum CoverageState {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageCoverage {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<UsageSourceSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<UsageSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loading: Option<UsageLoading>,
     pub state: CoverageState,
     pub has_gaps: bool,
     pub configured_collectors: u32,
@@ -2256,6 +2350,44 @@ pub struct UsageCoverage {
     pub unavailable_reasons: BTreeMap<String, u64>,
     pub database_schemas: Vec<u32>,
     pub taxonomy_versions: Vec<u32>,
+}
+
+/// Bounded progress metadata for an owned usage-source read. An estimate is
+/// absent until comparable completed reads exist; it is never inferred from
+/// the source deadline or publication backlog.
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageLoading {
+    pub state: String,
+    pub elapsed_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_remaining_ms: Option<u64>,
+    #[serde(default)]
+    pub estimate_samples: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate_basis: Option<String>,
+}
+
+/// A privacy-safe source label and the exact producer frontiers used by a report.
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageSourceSnapshot {
+    pub source: String,
+    pub contract_version: u32,
+    pub format_version: u32,
+    pub source_watermark: String,
+    pub generated_at_ms: u64,
+    pub generation: u64,
+    pub watermark: u64,
+    pub journal_watermark: u64,
+    pub watermark_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub freshness: String,
+    pub pending_entries: u64,
+    pub pending_corrections: u64,
+    pub refresh_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_execution_interval_sum_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

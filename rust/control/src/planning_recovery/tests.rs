@@ -1,5 +1,5 @@
 use super::*;
-use crate::plan::{PlanService, SqliteDeploymentEvidence};
+use crate::plan::{PlanService, PostgresDeploymentEvidence};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
@@ -15,6 +15,8 @@ struct Fixture {
     _root: tempfile::TempDir,
     live: Database,
     request: Request,
+    // Drop the pools before stopping a dedicated archive round-trip cluster.
+    cluster: Option<devcoordinator2_persistence::fixture::FixtureCluster>,
 }
 
 fn seed_repositories(database: &Database) {
@@ -28,12 +30,30 @@ fn seed_repositories(database: &Database) {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_cluster(None)
+    }
+
+    fn isolated() -> Self {
+        Self::with_cluster(Some(
+            devcoordinator2_persistence::fixture::FixtureCluster::start().unwrap(),
+        ))
+    }
+
+    fn with_cluster(cluster: Option<devcoordinator2_persistence::fixture::FixtureCluster>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let transaction = root.path().join("saved");
         fs::create_dir(&transaction).unwrap();
-        let source = Database::open(root.path().join("source.sqlite3")).unwrap();
-        seed_repositories(&source);
-        source.call(|c| {
+        // This is an actual legacy snapshot fixture. The live authority below
+        // is PostgreSQL; only the historical migration input uses SQLite.
+        let backup = transaction.join("authority-before.sqlite3");
+        let source = rusqlite::Connection::open(&backup).unwrap();
+        source
+            .execute_batch(include_str!(
+                "../../../persistence/tests/fixtures/sqlite-schema-34/schema.sql"
+            ))
+            .unwrap();
+        source.execute_batch("INSERT INTO meta(key,value) VALUES('schema_version','34'); INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES ('r1111111111111111','/tmp/recovery-project','Project','2026-09-01T00:00:00Z',1000,'2026-09-01T00:00:00Z'), ('r9999999999999999','/tmp/recovery-other','Other','2026-09-01T00:00:00Z',1000,'2026-09-01T00:00:00Z');").unwrap();
+        (|| -> rusqlite::Result<()> { let c = &source;
             c.execute_batch("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,requested_at,created_at,created_by,updated_at) VALUES
               ('v1111111111111111','r1111111111111111',1,'Historical preview','preview','requested','2026-09-02T00:00:00Z','2026-09-02T00:00:00Z','old-owner','2026-09-02T00:00:00Z');
               INSERT INTO tasks(task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,kind,status,estimated_loc,created_at,created_by,updated_at) VALUES
@@ -59,10 +79,9 @@ impl Fixture {
               ('feedback-old','created','comment-old','old-owner','2026-09-03T00:00:00Z');
               UPDATE meta SET value='20' WHERE key='schema_version';")?;
             Ok(())
-        }).unwrap();
-        let backup = transaction.join("authority-before.sqlite3");
-        source.backup(backup.clone()).unwrap();
-        source.close().unwrap();
+        })().unwrap();
+        drop(source);
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o600)).unwrap();
         let header = transaction.join("installation-snapshot.json");
         fs::write(
             &header,
@@ -73,7 +92,12 @@ impl Fixture {
         )
         .unwrap();
         fs::set_permissions(header, fs::Permissions::from_mode(0o600)).unwrap();
-        let live = Database::open(root.path().join("live.sqlite3")).unwrap();
+        let live = match &cluster {
+            Some(cluster) => {
+                Database::connect(&cluster.create_database("planning_live").unwrap()).unwrap()
+            }
+            None => Database::open(root.path().join("live.sqlite3")).unwrap(),
+        };
         seed_repositories(&live);
         live.call(|c| {
             c.execute_batch("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at,delivered_at) VALUES
@@ -99,6 +123,15 @@ impl Fixture {
             _root: root,
             live,
             request,
+            cluster,
+        }
+    }
+
+    fn finish(self) {
+        let Self { live, cluster, .. } = self;
+        drop(live);
+        if let Some(cluster) = cluster {
+            cluster.stop().unwrap();
         }
     }
 
@@ -114,7 +147,7 @@ impl Fixture {
     fn plan(&self) -> PlanService {
         PlanService::new(
             self.live.clone(),
-            Arc::new(SqliteDeploymentEvidence::new(
+            Arc::new(PostgresDeploymentEvidence::new(
                 self.live.clone(),
                 "example.test",
             )),
@@ -122,7 +155,7 @@ impl Fixture {
     }
     fn mutate_backup(&mut self, sql: &str) {
         let path = PathBuf::from(&self.request.transaction_dir).join("authority-before.sqlite3");
-        let connection = Connection::open(&path).unwrap();
+        let connection = rusqlite::Connection::open(&path).unwrap();
         // Only this disposable backup fixture is intentionally made inconsistent.
         connection
             .execute_batch("PRAGMA foreign_keys=OFF;")
@@ -135,10 +168,11 @@ impl Fixture {
     fn copy_saved_into_live(&self) {
         let path = PathBuf::from(&self.request.transaction_dir).join("authority-before.sqlite3");
         let source =
-            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-        let tables = read_tables(&source, REPO).unwrap();
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let tables = read_legacy_tables(&source, REPO).unwrap();
         self.live.transaction(move |connection| {
-            connection.execute_batch("PRAGMA defer_foreign_keys=ON; UPDATE tasks SET seq=100 WHERE repository_id='r1111111111111111'; UPDATE releases SET seq=100 WHERE repository_id='r1111111111111111'; UPDATE decisions SET seq=100 WHERE repository_id='r1111111111111111';")?;
+            connection.execute_batch("SET CONSTRAINTS ALL DEFERRED; UPDATE tasks SET seq=100 WHERE repository_id='r1111111111111111'; UPDATE releases SET seq=100 WHERE repository_id='r1111111111111111'; UPDATE decisions SET seq=100 WHERE repository_id='r1111111111111111';")?;
             for &(table, _) in TABLES {
                 if table == "decision_summaries" {
                     continue;
@@ -149,6 +183,38 @@ impl Fixture {
             }
             Ok(())
         }).unwrap();
+    }
+
+    fn use_native_snapshot(&mut self) {
+        let transaction = PathBuf::from(&self.request.transaction_dir);
+        let legacy = rusqlite::Connection::open_with_flags(
+            transaction.join("authority-before.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let tables = read_legacy_tables(&legacy, REPO).unwrap();
+        let source = match &self.cluster {
+            Some(cluster) => {
+                Database::connect(&cluster.create_database("planning_source").unwrap()).unwrap()
+            }
+            None => Database::open(self._root.path().join("native-source")).unwrap(),
+        };
+        seed_repositories(&source);
+        source
+            .transaction(|connection| {
+                for &(table, _) in TABLES {
+                    for row in &tables[table] {
+                        insert_row(connection, table, row)?;
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let archive = transaction.join("authority-before.pgdump");
+        source.backup(archive.clone()).unwrap();
+        let archive_hash = digest(fs::read(&archive).unwrap());
+        fs::write(transaction.join("installation-snapshot.json"),serde_json::to_vec(&serde_json::json!({"schema":3,"status":"committed","transaction_dir":transaction,"backup_sha256":archive_hash})).unwrap()).unwrap();
+        self.request.backup_sha256 = archive_hash;
     }
 }
 
@@ -196,7 +262,7 @@ fn differing_overlap_reports_private_conflicts_and_blocks_application() {
         .live
         .call(|connection| {
             connection.execute(
-                "UPDATE tasks SET title='PRIVATE_LIVE_VALUE',status='planned' WHERE task_id=?1",
+                "UPDATE tasks SET title='PRIVATE_LIVE_VALUE',status='planned' WHERE task_id=$1",
                 [OLD],
             )?;
             Ok(())
@@ -254,7 +320,7 @@ fn missing_child_is_restored_without_reimporting_its_existing_parent_or_events()
     fixture
         .live
         .call(|connection| {
-            connection.execute("DELETE FROM tasks WHERE task_id=?1", [CHILD])?;
+            connection.execute("DELETE FROM tasks WHERE task_id=$1", [CHILD])?;
             Ok(())
         })
         .unwrap();
@@ -305,8 +371,8 @@ fn task_conflict_fixture() -> Fixture {
     let fixture = Fixture::new();
     fixture.copy_saved_into_live();
     fixture.live.call(|connection| {
-        connection.execute("UPDATE tasks SET status='planned',updated_at='2026-09-14T00:00:00Z',position=7 WHERE task_id=?1", [OLD])?;
-        connection.execute("DELETE FROM tasks WHERE task_id=?1", [CHILD])?;
+        connection.execute("UPDATE tasks SET status='planned',updated_at='2026-09-14T00:00:00Z',position=7 WHERE task_id=$1", [OLD])?;
+        connection.execute("DELETE FROM tasks WHERE task_id=$1", [CHILD])?;
         Ok(())
     }).unwrap();
     fixture
@@ -337,8 +403,8 @@ fn explicit_task_conflict_review_preserves_both_versions_and_restores_missing_ch
         Some(OLD)
     );
     fixture.live.call(|connection| {
-        let saved: String = connection.query_row("SELECT original_json FROM planning_recovery_records WHERE record_kind='conflict_saved:tasks' AND record_id=?1", [OLD], |r| r.get(0))?;
-        let prior: String = connection.query_row("SELECT original_json FROM planning_recovery_records WHERE record_kind='conflict_live:tasks' AND record_id=?1", [OLD], |r| r.get(0))?;
+        let saved: String = connection.query_row("SELECT original_json FROM planning_recovery_records WHERE record_kind='conflict_saved:tasks' AND record_id=$1", [OLD], |r| r.get(0))?;
+        let prior: String = connection.query_row("SELECT original_json FROM planning_recovery_records WHERE record_kind='conflict_live:tasks' AND record_id=$1", [OLD], |r| r.get(0))?;
         assert_ne!(saved, prior);
         assert_eq!(serde_json::from_str::<Value>(&prior).unwrap()["status"], "planned");
         assert_eq!(serde_json::from_str::<Value>(&prior).unwrap()["position"], 7);
@@ -380,7 +446,7 @@ fn task_conflict_review_rejects_stale_hashes_missing_choices_and_unreviewed_cont
         .live
         .call(|c| {
             c.execute(
-                "UPDATE tasks SET title='PRIVATE_NEW_TEXT' WHERE task_id=?1",
+                "UPDATE tasks SET title='PRIVATE_NEW_TEXT' WHERE task_id=$1",
                 [OLD],
             )?;
             Ok(())
@@ -397,7 +463,7 @@ fn reviewed_conflict_provenance_and_import_roll_back_together_on_failure() {
     let fixture = task_conflict_fixture();
     let mut request = reviewed_task_request(&fixture);
     request.apply = true;
-    fixture.live.call(|c| {c.execute_batch("CREATE TRIGGER fail_provenance BEFORE INSERT ON planning_recovery_records WHEN new.record_kind='conflict_live:tasks' BEGIN SELECT RAISE(ABORT,'fixture provenance failure'); END;")?;Ok(())}).unwrap();
+    fixture.live.call(|c| {c.execute_batch("CREATE FUNCTION fixture_fail_provenance() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.record_kind='conflict_live:tasks' THEN RAISE EXCEPTION 'fixture provenance failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_provenance BEFORE INSERT ON planning_recovery_records FOR EACH ROW EXECUTE FUNCTION fixture_fail_provenance();")?;Ok(())}).unwrap();
     let before = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
     assert!(recover(&fixture.live, request, "owner", DATE).is_err());
     assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), before);
@@ -484,56 +550,64 @@ fn dry_run_is_private_scoped_and_does_not_change_either_database() {
 
 #[test]
 fn apply_preserves_identity_history_newer_state_and_current_release_and_is_repeatable() {
-    let fixture = Fixture::new();
-    let before = fixture.plan().task_history(LIVE).unwrap();
-    let other = fixture.live.call(|c| fingerprint(c, OTHER)).unwrap();
-    let request = fixture.application();
-    let receipt = recover(&fixture.live, request.clone(), "new-owner", DATE).unwrap();
-    assert_eq!(receipt.status, "applied");
-    let goal = fixture.plan().task_history(OLD).unwrap();
-    let child = fixture.plan().task_history(CHILD).unwrap();
-    assert_eq!(goal.task.seq, 2);
-    assert_eq!(child.task.seq, 3);
-    assert_eq!(child.task.parent_task_id.as_deref(), Some(OLD));
-    assert_eq!(
-        child.task.status,
-        devcoordinator2_api::params::TaskStatus::Done
-    );
-    assert_eq!(child.events[0].at, "2026-09-03T00:00:00Z");
-    assert_eq!(fixture.plan().task_history(LIVE).unwrap(), before);
-    assert_eq!(fixture.live.call(|c| fingerprint(c, OTHER)).unwrap(), other);
-    let collection = serde_json::to_value(fixture.plan().overview(None).unwrap()).unwrap();
-    let project = collection["repositories"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["repository_id"] == REPO)
-        .unwrap();
-    assert_eq!(
-        project["current_release"]["name"],
-        "Current working preview"
-    );
-    assert_eq!(project["preview_requested"], false);
-    fixture.live.call(|c| {
-        assert_eq!(c.query_row("SELECT body FROM decision_summaries WHERE repository_id=?1",[REPO],|r|r.get::<_,String>(0))?,"CURRENT_SUMMARY");
+    for native in [false, true] {
+        // Native inspection drops owned scratch databases and PostgreSQL must
+        // checkpoint the entire cluster for each DROP. Keep the real source
+        // and live authority together, without unrelated tests' hundreds of
+        // retained per-path databases participating in those checkpoints.
+        let mut fixture = Fixture::isolated();
+        if native {
+            fixture.use_native_snapshot();
+        }
+        let before = fixture.plan().task_history(LIVE).unwrap();
+        let other = fixture.live.call(|c| fingerprint(c, OTHER)).unwrap();
+        let request = fixture.application();
+        let receipt = recover(&fixture.live, request.clone(), "new-owner", DATE).unwrap();
+        assert_eq!(receipt.status, "applied");
+        let goal = fixture.plan().task_history(OLD).unwrap();
+        let child = fixture.plan().task_history(CHILD).unwrap();
+        assert_eq!(goal.task.seq, 2);
+        assert_eq!(child.task.seq, 3);
+        assert_eq!(child.task.parent_task_id.as_deref(), Some(OLD));
+        assert_eq!(
+            child.task.status,
+            devcoordinator2_api::params::TaskStatus::Done
+        );
+        assert_eq!(child.events[0].at, "2026-09-03T00:00:00Z");
+        assert_eq!(fixture.plan().task_history(LIVE).unwrap(), before);
+        assert_eq!(fixture.live.call(|c| fingerprint(c, OTHER)).unwrap(), other);
+        let collection = serde_json::to_value(fixture.plan().overview(None).unwrap()).unwrap();
+        let project = collection["repositories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["repository_id"] == REPO)
+            .unwrap();
+        assert_eq!(
+            project["current_release"]["name"],
+            "Current working preview"
+        );
+        assert_eq!(project["preview_requested"], false);
+        fixture.live.call(|c| {
+        assert_eq!(c.query_row("SELECT body FROM decision_summaries WHERE repository_id=$1",[REPO],|r|r.get::<_,String>(0))?,"CURRENT_SUMMARY");
         assert_eq!(c.query_row("SELECT superseded_by FROM decisions WHERE decision_id='n1111111111111111'",[],|r|r.get::<_,String>(0))?,"n2222222222222222");
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM decisions_fts WHERE decisions_fts MATCH 'rendered'",[],|r|r.get::<_,i64>(0))?,1);
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM release_evidence WHERE repository_id=?1",[REPO],|r|r.get::<_,i64>(0))?,2);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM decisions WHERE search_vector @@ plainto_tsquery('simple','rendered')",[],|r|r.get::<_,i64>(0))?,1);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM release_evidence WHERE repository_id=$1",[REPO],|r|r.get::<_,i64>(0))?,2);
         assert_eq!(c.query_row("SELECT COUNT(*) FROM planning_recovery_records WHERE record_kind='decision_summaries'",[],|r|r.get::<_,i64>(0))?,1);
         Ok(())
     }).unwrap();
-    fixture
-        .live
-        .call(|c| {
-            assert_eq!(
-                c.query_row(
-                    "SELECT body FROM visual_feedback_comments WHERE comment_id='comment-old'",
-                    [],
-                    |row| row.get::<_, String>(0)
-                )?,
-                "Original owner correction"
-            );
-            assert_eq!(
+        fixture
+            .live
+            .call(|c| {
+                assert_eq!(
+                    c.query_row(
+                        "SELECT body FROM visual_feedback_comments WHERE comment_id='comment-old'",
+                        [],
+                        |row| row.get::<_, String>(0)
+                    )?,
+                    "Original owner correction"
+                );
+                assert_eq!(
                 c.query_row(
                     "SELECT COUNT(*) FROM visual_feedback_events WHERE feedback_id='feedback-old'",
                     [],
@@ -541,17 +615,19 @@ fn apply_preserves_identity_history_newer_state_and_current_release_and_is_repea
                 )?,
                 1
             );
-            Ok(())
-        })
-        .unwrap();
-    let post = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
-    assert_eq!(
-        recover(&fixture.live, request, "new-owner", DATE)
-            .unwrap()
-            .status,
-        "already_applied"
-    );
-    assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), post);
+                Ok(())
+            })
+            .unwrap();
+        let post = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
+        assert_eq!(
+            recover(&fixture.live, request, "new-owner", DATE)
+                .unwrap()
+                .status,
+            "already_applied"
+        );
+        assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), post);
+        fixture.finish();
+    }
 }
 
 #[test]
@@ -562,7 +638,7 @@ fn concurrent_edit_rejects_stale_application_without_overwriting_it() {
         .live
         .call(|c| {
             c.execute(
-                "UPDATE tasks SET title='New concurrent user edit' WHERE task_id=?1",
+                "UPDATE tasks SET title='New concurrent user edit' WHERE task_id=$1",
                 [LIVE],
             )?;
             Ok(())
@@ -580,7 +656,7 @@ fn concurrent_edit_rejects_stale_application_without_overwriting_it() {
 fn failure_after_inserts_rolls_back_every_recovered_row_and_receipt() {
     let fixture = Fixture::new();
     let request = fixture.application();
-    fixture.live.call(|c| { c.execute_batch("CREATE TRIGGER fail_recovery BEFORE INSERT ON decisions WHEN new.ref='CORRECTION' BEGIN SELECT RAISE(ABORT,'fixture failure after task import'); END;")?; Ok(()) }).unwrap();
+    fixture.live.call(|c| { c.execute_batch("CREATE FUNCTION fixture_fail_recovery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.ref='CORRECTION' THEN RAISE EXCEPTION 'fixture failure after task import'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_recovery BEFORE INSERT ON decisions FOR EACH ROW EXECUTE FUNCTION fixture_fail_recovery();")?; Ok(()) }).unwrap();
     let before = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
     assert!(recover(&fixture.live, request, "owner", DATE).is_err());
     assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), before);
@@ -616,7 +692,7 @@ fn duplicate_identity_in_another_repository_is_not_reassigned() {
         .live
         .call(|c| {
             c.execute(
-                "UPDATE tasks SET task_id=?1 WHERE task_id='p8888888888888888'",
+                "UPDATE tasks SET task_id=$1 WHERE task_id='p8888888888888888'",
                 [OLD],
             )?;
             Ok(())
@@ -649,7 +725,7 @@ fn colliding_decision_reference_is_rejected_before_import() {
         .live
         .call(|c| {
             c.execute(
-                "UPDATE decisions SET ref='ORIGINAL-DIRECTION' WHERE repository_id=?1",
+                "UPDATE decisions SET ref='ORIGINAL-DIRECTION' WHERE repository_id=$1",
                 [REPO],
             )?;
             Ok(())
@@ -671,7 +747,7 @@ fn normal_protocol_dispatch_handles_identical_overlap_and_missing_child() {
     fixture
         .live
         .call(|connection| {
-            connection.execute("DELETE FROM tasks WHERE task_id=?1", [CHILD])?;
+            connection.execute("DELETE FROM tasks WHERE task_id=$1", [CHILD])?;
             Ok(())
         })
         .unwrap();

@@ -2,6 +2,7 @@
 members = [
     "rust/api",
     "rust/control",
+    "rust/persistence",
     "rust/tooling",
     "rust/executor-protocol",
     "rust/executor-core",
@@ -42,6 +43,9 @@ tracing-subscriber = { version = "=0.3.20", features = ["env-filter", "fmt"] }
 tree-sitter = "=0.27.0"
 tree-sitter-python = "=0.25.0"
 unicode-normalization = "=0.1.25"
+postgres = { version = "=0.19.14", features = ["with-serde_json-1", "with-time-0_3"] }
+r2d2 = "=0.8.10"
+r2d2_postgres = "=0.18.2"
 
 [profile.release]
 lto = "thin"

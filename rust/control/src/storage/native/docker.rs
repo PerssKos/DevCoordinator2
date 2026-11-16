@@ -1,4 +1,5 @@
 use super::{HostBackend, candidate, processes_reference};
+use crate::database::OptionalExtension;
 use crate::docker::DockerInvocation;
 use crate::storage::{
     blocked, fs,
@@ -6,7 +7,6 @@ use crate::storage::{
     unavailable,
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
-use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -208,8 +208,21 @@ impl HostBackend {
         let output = self
             .docker
             .invoke(request)
-            .map_err(|_| unavailable("docker_unavailable"))?;
+            .map_err(|error| {
+                tracing::error!(failure_category = ?error.kind(), "native Docker observation invocation failed");
+                unavailable("docker_unavailable")
+            })?;
         if !output.success() || output.stdout_truncated {
+            let category = if output.stdout_truncated {
+                "stdout_truncated"
+            } else {
+                "command_failed"
+            };
+            tracing::error!(
+                failure_category = category,
+                exit_code = output.exit_code,
+                "native Docker observation output failed"
+            );
             return Err(unavailable("docker_observation_incomplete"));
         }
         Ok(output.stdout)
@@ -375,7 +388,7 @@ impl HostBackend {
         }
         let volumes = volumes.into_iter().collect::<Vec<_>>();
         let mount_entries = self.mount_entries()?;
-        let prior = self.database.call(|c| {
+        let prior = self.database.read(|c| {
             let mut q=c.prepare("SELECT record_json FROM storage_artifacts WHERE kind IN ('volume','image') AND removed_at_ms IS NULL")?;
             Ok(q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
         }).map_err(crate::storage::db_error)?;
@@ -937,10 +950,10 @@ impl HostBackend {
                 // directory. Accept only that recorded transition, while the
                 // exact backing inode still exists and the mount receipt passed.
                 let dependencies = r.artifact.dependencies.clone();
-                let mounts = self.database.call(move |c| {
+                let mounts = self.database.read(move |c| {
                     let mut records = Vec::new();
                     for id in dependencies {
-                        let value = c.query_row("SELECT record_json FROM storage_artifacts WHERE artifact_id=?1 AND removed_at_ms IS NOT NULL AND EXISTS(SELECT 1 FROM storage_item_receipts WHERE artifact_id=?1 AND json_extract(receipt_json,'$.status')='removed')",[id],|r|r.get::<_,String>(0)).optional()?;
+                        let value = c.query_row("SELECT record_json FROM storage_artifacts WHERE artifact_id=$1 AND removed_at_ms IS NOT NULL AND EXISTS(SELECT 1 FROM storage_item_receipts WHERE artifact_id=$1 AND (receipt_json::jsonb->>'status')='removed')",[id],|r|r.get::<_,String>(0)).optional()?;
                         if let Some(value) = value { records.push(value); }
                     }
                     Ok(records)

@@ -61,6 +61,7 @@ impl CodexUsage {
         });
         let mut reports = Vec::new();
         let mut failures = BTreeMap::new();
+        let mut loading = None;
         let mut groups = Groups::default();
         for (index, result) in results.into_iter().enumerate() {
             match result {
@@ -68,7 +69,32 @@ impl CodexUsage {
                     groups.merge(source_groups, index).map_err(source_error)?;
                     reports.push((uid, report));
                 }
-                Ok((_, Err(reason))) | Err(reason) => increment(&mut failures, &reason),
+                Ok((_, Err(reason))) | Err(reason) => {
+                    if loading.is_none()
+                        && super::collector_api::is_pending(&reason)
+                        && let Some(source) = self.config.codex_usage_sources.get(index)
+                        && let Ok(key) = self.repository_key(source, repository, now_ms, false)
+                        && let Ok(contexts) = crate::usage_context::read(
+                            &self.authority,
+                            source.uid,
+                            &repository.repository_id,
+                            start_ms,
+                            end_ms,
+                        )
+                    {
+                        loading = self.api.loading_for(
+                            source,
+                            Some(&key),
+                            None,
+                            true,
+                            workstream,
+                            &contexts.bindings,
+                            start_ms,
+                            end_ms,
+                        );
+                    }
+                    increment(&mut failures, &reason)
+                }
             }
         }
         let outcomes = groups
@@ -83,6 +109,7 @@ impl CodexUsage {
             1,
             &reports,
             failures,
+            loading,
             self.config.codex_usage_sources.len(),
         );
         let usage = ReviewUsage {
@@ -110,97 +137,54 @@ impl CodexUsage {
         projection: Projection,
         rates: &[devcoordinator2_api::rate_card::RateCard],
     ) -> Result<(SourceReport, Groups), String> {
-        for attempt in 0..2 {
-            if Instant::now() >= deadline {
-                return Err("query_budget_exhausted".into());
-            }
+        if super::has_usage_v2_manifest(source) {
             let key = self
-                // A former identity may still exist; existence alone cannot validate a link.
-                // The identity-only probe is bounded by this review's shared deadline.
                 .repository_key_until(source, repository, now_ms, true, deadline)
                 .map_err(|error| error.message)?;
-            let connection = open_source_until(source, deadline)?;
-            connection
-                .execute_batch("BEGIN")
-                .map_err(|_| "source_unavailable")?;
-            let schema = maximum_version(&connection, "_sqlx_migrations")?;
-            let taxonomy = maximum_version(&connection, "taxonomy_versions")?;
-            if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema) || taxonomy != SUPPORTED_TAXONOMY {
-                return Err("schema_unsupported".into());
+            let contexts = crate::usage_context::read(
+                &self.authority,
+                source.uid,
+                &repository.repository_id,
+                start_ms,
+                end_ms,
+            )?;
+            let summary = self.api.summary_with_workstream(
+                source,
+                Some(&key),
+                None,
+                true,
+                workstream,
+                &contexts.bindings,
+                start_ms,
+                end_ms,
+                deadline.min(Instant::now() + super::collector_api::API_BUDGET),
+            )?;
+            let mut report = summary.source_report(Some(&key), 1, None, true);
+            let mut groups = summary
+                .review
+                .as_ref()
+                .map(|review| super::review_aggregate::from_api(&review.outcomes))
+                .ok_or("api_contract_unsupported")?;
+            if self.binding_capture_failed(source.uid, &repository.repository_id) {
+                groups.gap("work_context_capture_failed", 1);
+                increment(&mut report.coverage_events, "partial");
             }
-            let canonical = canonical_repository(&connection, &key)?;
-            let family = repository_family(&connection, &canonical)?;
-            if !repository_exists(&connection, &family)? {
-                if attempt == 0 {
-                    self.delete_link(source.uid, &repository.repository_id)
-                        .map_err(|error| error.message)?;
-                    continue;
+            if contexts.truncated || contexts.rejected > 0 {
+                increment(&mut report.coverage_events, "partial");
+                if contexts.truncated {
+                    groups.gap("work_context_bindings_truncated", 1);
                 }
-                return Err("mapping_unavailable".into());
+                if contexts.rejected > 0 {
+                    groups.gap("work_context_binding_conflict", contexts.rejected);
+                }
             }
-            // Schema-7+ collectors expose a bounded total-token projection
-            // backed by the repository/time indexes. Use it for review reads
-            // as well as the Performance view so a large historical timing
-            // join is not attempted for the shared review budget. The
-            // projection keeps repository/outcome attribution and leaves
-            // timing dimensions explicitly unknown.
-            if schema >= 7
-                && let Some(mut facts) = (if projection == Projection::Tokens {
-                    super::performance::read(&connection, &family, start_ms, end_ms)?
-                } else {
-                    super::performance::read_fast(&connection, &family, start_ms, end_ms)?
-                })
-            {
-                facts.rates = rates.to_vec();
-                let result = super::review_aggregate::display(
-                    &connection,
-                    facts,
-                    workstream,
-                    start_ms,
-                    end_ms,
-                );
-                return if Instant::now() >= deadline {
-                    Err("query_budget_exhausted".into())
-                } else {
-                    result
-                };
-            }
-            let result = if schema >= 7 {
-                super::review_facts::read(&connection, &family, start_ms, end_ms).and_then(
-                    |mut facts| {
-                        facts.rates = rates.to_vec();
-                        super::review_aggregate::aggregate(
-                            &connection,
-                            facts,
-                            workstream,
-                            start_ms,
-                            end_ms,
-                        )
-                    },
-                )
-            } else {
-                source_report(
-                    &connection,
-                    &family,
-                    schema,
-                    taxonomy,
-                    start_ms,
-                    end_ms,
-                    end_ms - start_ms,
-                    1,
-                    rates,
-                )
-                .map(|report| {
-                    let groups = Groups::legacy(&report);
-                    (report, groups)
-                })
-            };
+            let _ = (projection, rates);
             return if Instant::now() >= deadline {
                 Err("query_budget_exhausted".into())
             } else {
-                result
+                Ok((report, groups))
             };
         }
-        Err("mapping_unavailable".into())
+        Err("legacy_source_unsupported".into())
     }
 }

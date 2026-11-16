@@ -1,7 +1,8 @@
 //! Commit-stamped release build and installation planning.
 //!
-//! The canonical checkout remains the only source and binary tree. This
-//! module proves a clean `main`, builds all release executables as the
+//! New releases build only from the clean canonical checkout. Exact historical
+//! linked checkouts supply the matching edge during pre-admission rollback.
+//! This module proves a clean `main`, builds all release executables as the
 //! checkout owner, verifies their embedded commit, records hashes in one
 //! private manifest, and renders direct unit/link targets. Host mutation is
 //! kept behind explicit command and filesystem boundaries for cutover tests.
@@ -22,6 +23,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+#[path = "install/edge_source.rs"]
+pub mod edge_source;
+#[path = "install/postgres.rs"]
+pub mod postgres;
+
 const OUTPUT_CAP: usize = 64 * 1024;
 const TEMPLATE_CAP: u64 = 256 * 1024;
 const MANIFEST_SCHEMA: u8 = 1;
@@ -29,6 +35,7 @@ const BINARY_NAMES: &[&str] = &[
     "devcoordinator2",
     "devcoordinator2-executor",
     "devcoordinator2-tooling",
+    "devcoordinator2-migrate-authority",
 ];
 
 const SELFTEST_BINARY_NAMES: &[&str] = &[
@@ -60,6 +67,11 @@ pub struct CommandOutput {
 
 pub trait CommandRunner: Send + Sync {
     fn run(&self, request: &CommandRequest) -> Result<CommandOutput, String>;
+    /// Git object metadata for a bounded edge/Console tree may exceed ordinary
+    /// command output. This never widens private command stderr retention.
+    fn source_catalog(&self, request: &CommandRequest) -> Result<CommandOutput, String> {
+        self.run(request)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -67,46 +79,58 @@ pub struct HostRunner;
 
 impl CommandRunner for HostRunner {
     fn run(&self, request: &CommandRequest) -> Result<CommandOutput, String> {
-        let mut command = Command::new(&request.program);
-        command
-            .args(&request.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if request.clear_environment {
-            command.env_clear();
-        }
-        command.envs(&request.environment);
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("cannot run {}: {error}", request.program.display()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "command stdout was not captured".to_owned())?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "command stderr was not captured".to_owned())?;
-        let stdout = std::thread::spawn(move || read_bounded_stream(stdout));
-        let stderr = std::thread::spawn(move || read_bounded_stream(stderr));
-        let status = child
-            .wait()
-            .map_err(|error| format!("cannot wait for {}: {error}", request.program.display()))?;
-        let (stdout, stdout_truncated) = stdout
-            .join()
-            .map_err(|_| "command stdout reader failed".to_owned())??;
-        let (stderr, stderr_truncated) = stderr
-            .join()
-            .map_err(|_| "command stderr reader failed".to_owned())??;
-        Ok(CommandOutput {
-            success: status.success(),
-            stdout,
-            stderr,
-            stdout_truncated,
-            stderr_truncated,
-        })
+        run_host_command(request, OUTPUT_CAP)
     }
+    fn source_catalog(&self, request: &CommandRequest) -> Result<CommandOutput, String> {
+        if request.program != Path::new("/usr/bin/git")
+            || request.args.get(4).is_none_or(|arg| arg != "ls-tree")
+        {
+            return Err("extended source catalog capture is limited to Git tree metadata".into());
+        }
+        run_host_command(request, 1024 * 1024)
+    }
+}
+
+fn run_host_command(request: &CommandRequest, stdout_cap: usize) -> Result<CommandOutput, String> {
+    let mut command = Command::new(&request.program);
+    command
+        .args(&request.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if request.clear_environment {
+        command.env_clear();
+    }
+    command.envs(&request.environment);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("cannot run {}: {error}", request.program.display()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "command stdout was not captured".to_owned())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "command stderr was not captured".to_owned())?;
+    let stdout = std::thread::spawn(move || read_bounded_stream(stdout, stdout_cap));
+    let stderr = std::thread::spawn(move || read_bounded_stream(stderr, OUTPUT_CAP));
+    let status = child
+        .wait()
+        .map_err(|error| format!("cannot wait for {}: {error}", request.program.display()))?;
+    let (stdout, stdout_truncated) = stdout
+        .join()
+        .map_err(|_| "command stdout reader failed".to_owned())??;
+    let (stderr, stderr_truncated) = stderr
+        .join()
+        .map_err(|_| "command stderr reader failed".to_owned())??;
+    Ok(CommandOutput {
+        success: status.success(),
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -501,8 +525,16 @@ pub fn verify_manifest_binaries<R: CommandRunner + ?Sized>(
     manifest: &InstallManifest,
     runner: &R,
 ) -> Result<Vec<BinaryReceipt>, String> {
-    if manifest.binaries.len() != BINARY_NAMES.len()
-        || BINARY_NAMES
+    verify_manifest_binary_set(manifest, BINARY_NAMES, runner)
+}
+
+fn verify_manifest_binary_set<R: CommandRunner + ?Sized>(
+    manifest: &InstallManifest,
+    names: &[&str],
+    runner: &R,
+) -> Result<Vec<BinaryReceipt>, String> {
+    if manifest.binaries.len() != names.len()
+        || names
             .iter()
             .any(|name| !manifest.binaries.iter().any(|binary| binary.name == *name))
     {
@@ -590,6 +622,25 @@ pub fn read_and_verify_manifest_owned<R: CommandRunner + ?Sized>(
     runner: &R,
     expected_uid: u32,
 ) -> Result<InstallManifest, String> {
+    read_manifest_owned(path, runner, expected_uid, false)
+}
+
+/// Only the prior side of a migration/edge repair may use the historical
+/// three-binary manifest. Candidate installation still requires all four.
+pub fn read_and_verify_prior_manifest_owned<R: CommandRunner + ?Sized>(
+    path: &Path,
+    runner: &R,
+    expected_uid: u32,
+) -> Result<InstallManifest, String> {
+    read_manifest_owned(path, runner, expected_uid, true)
+}
+
+fn read_manifest_owned<R: CommandRunner + ?Sized>(
+    path: &Path,
+    runner: &R,
+    expected_uid: u32,
+    allow_prior: bool,
+) -> Result<InstallManifest, String> {
     let file = unix_open(
         path,
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
@@ -617,11 +668,18 @@ pub fn read_and_verify_manifest_owned<R: CommandRunner + ?Sized>(
         .map_err(|error| format!("installation manifest is invalid: {error}"))?;
     if manifest.schema != MANIFEST_SCHEMA
         || manifest.product != "devcoordinator2"
-        || manifest.package_version != env!("CARGO_PKG_VERSION")
+        || (manifest.package_version != env!("CARGO_PKG_VERSION") && !allow_prior)
+        || manifest.package_version.is_empty()
     {
         return Err("installation manifest identity is unsupported".to_owned());
     }
-    let verified = verify_manifest_binaries(&manifest, runner)?;
+    validate_commit(&manifest.source_commit)?;
+    let names = if allow_prior && manifest.binaries.len() == 3 {
+        &BINARY_NAMES[..3]
+    } else {
+        BINARY_NAMES
+    };
+    let verified = verify_manifest_binary_set(&manifest, names, runner)?;
     if verified != manifest.binaries {
         return Err("installed release binaries no longer match their manifest".to_owned());
     }
@@ -700,6 +758,38 @@ pub fn validate_registered_repository_configs(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("cannot inventory registered repository configs: {error}"))?;
     drop(statement);
+    validate_registered_repository_paths(worktrees, control_binary, runner)
+}
+
+pub fn validate_native_registered_repository_configs<R: CommandRunner + ?Sized>(
+    config_path: &Path,
+    control_binary: &Path,
+    runner: &R,
+) -> Result<Vec<RepositoryConfigReceipt>, String> {
+    let config = devcoordinator2_control::config::Config::read_postgres_config(config_path)
+        .map_err(|_| "private PostgreSQL configuration is unavailable for repository preflight")?;
+    let database = devcoordinator2_control::database::Database::connect_existing(&config)
+        .map_err(|_| "PostgreSQL authority is unavailable for repository preflight")?;
+    let paths = database
+        .read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT root_path FROM repositories WHERE archived_at IS NULL ORDER BY root_path",
+            )?;
+            Ok(statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<devcoordinator2_control::database::Result<Vec<_>>>()?)
+        })
+        .map_err(|_| "registered PostgreSQL repository inventory is unavailable")?;
+    validate_registered_repository_paths(paths, control_binary, runner)
+}
+
+fn validate_registered_repository_paths<R: CommandRunner + ?Sized>(
+    worktrees: Vec<String>,
+    control_binary: &Path,
+    runner: &R,
+) -> Result<Vec<RepositoryConfigReceipt>, String> {
+    validate_regular(control_binary, true)
+        .map_err(|error| format!("Rust control binary is unavailable: {error}"))?;
     let mut receipts = Vec::new();
     for worktree in worktrees {
         let worktree = PathBuf::from(worktree);
@@ -956,6 +1046,19 @@ pub fn configure_edge_source_revision(
         path,
         "EDGE_UI_SOURCE_REVISION",
         &format!("git:{source_commit}"),
+        expected_uid,
+    )
+}
+
+pub fn configure_edge_console_source(
+    path: &Path,
+    source_root: &Path,
+    expected_uid: u32,
+) -> Result<bool, String> {
+    set_owned_edge_env_value(
+        path,
+        "EDGE_CONSOLE_DIR",
+        &path_text(&source_root.join("console"))?,
         expected_uid,
     )
 }
@@ -1460,10 +1563,11 @@ pub(crate) fn prepare_state_directory(path: &Path, owner: (u32, u32)) -> Result<
             }
             "cutover"
             | "recovery"
-            | "install-transactions"
             | "sketches"
             | "storage-mount-jobs"
-            | "storage-recovery" => private.push((open(&entry.path(), true)?, 0o700)),
+            | "storage-recovery"
+            | "install-transactions" => private.push((open(&entry.path(), true)?, 0o700)),
+            "authority-current.json" => private.push((open(&entry.path(), false)?, 0o600)),
             name if name == "authority.sqlite3"
                 || name.starts_with("authority.sqlite3-")
                 || name.starts_with("authority.sqlite3.") =>
@@ -1518,7 +1622,7 @@ pub(crate) fn state_tmpfiles(source_root: &Path, installed: &Path) -> Result<Str
     Ok(result)
 }
 
-pub fn ensure_edge_source_access<R: CommandRunner>(
+pub fn ensure_edge_source_access<R: CommandRunner + ?Sized>(
     source_root: &Path,
     edge_account: &str,
     runner: &R,
@@ -1723,7 +1827,7 @@ fn group_by_name(name: &str) -> Result<Option<u32>, String> {
     Ok(None)
 }
 
-fn run_required<R: CommandRunner>(
+fn run_required<R: CommandRunner + ?Sized>(
     runner: &R,
     program: &Path,
     arguments: &[&str],
@@ -1886,7 +1990,7 @@ fn validate_tool(path: &Path, name: &str) -> Result<(), String> {
         .map_err(|error| format!("required {name} tool is unavailable: {error}"))
 }
 
-fn validate_regular(path: &Path, executable: bool) -> Result<std::fs::Metadata, String> {
+pub(crate) fn validate_regular(path: &Path, executable: bool) -> Result<std::fs::Metadata, String> {
     let metadata = path
         .symlink_metadata()
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
@@ -2063,7 +2167,7 @@ fn file_identity(metadata: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64,
     )
 }
 
-fn read_bounded_stream(mut stream: impl Read) -> Result<(String, bool), String> {
+fn read_bounded_stream(mut stream: impl Read, cap: usize) -> Result<(String, bool), String> {
     let mut retained = Vec::new();
     let mut truncated = false;
     let mut block = [0u8; 16 * 1024];
@@ -2075,9 +2179,9 @@ fn read_bounded_stream(mut stream: impl Read) -> Result<(String, bool), String> 
             break;
         }
         retained.extend_from_slice(&block[..count]);
-        if retained.len() > OUTPUT_CAP {
+        if retained.len() > cap {
             truncated = true;
-            let excess = retained.len() - OUTPUT_CAP;
+            let excess = retained.len() - cap;
             retained.drain(..excess);
         }
     }
@@ -2219,8 +2323,20 @@ mod tests {
             );
         }
         std::fs::write(root.join("tracked.txt"), "one\n").unwrap();
+        std::fs::create_dir(root.join("edge")).unwrap();
+        std::fs::create_dir(root.join("console")).unwrap();
+        std::fs::write(root.join("edge/devcoordinator2-edge.mjs"), "prior edge\n").unwrap();
+        std::fs::write(root.join("console/index.html"), "prior Console\n").unwrap();
+        for index in 0..1300 {
+            std::fs::write(
+                root.join("console")
+                    .join(format!("asset-{index:04}-{}.js", "fixture".repeat(12))),
+                "fixture asset\n",
+            )
+            .unwrap();
+        }
         for args in [
-            vec!["add", "tracked.txt"],
+            vec!["add", "tracked.txt", "edge", "console"],
             vec!["commit", "-q", "-m", "initial"],
             vec!["branch", "-M", "main"],
             vec!["remote", "add", "origin", remote.to_str().unwrap()],
@@ -2238,6 +2354,163 @@ mod tests {
         }
         let head = validate_live_checkout(&root, true, &HostRunner).unwrap();
         assert!(matches!(head.len(), 40 | 64));
+        let mut binaries = Vec::new();
+        for name in &BINARY_NAMES[..3] {
+            let path = temporary.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", head)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            binaries.push(BinaryReceipt {
+                name: (*name).into(),
+                path: path_text(&path).unwrap(),
+                sha256: hash_file(&path).unwrap(),
+                bytes: std::fs::metadata(&path).unwrap().len(),
+                source_commit: head.clone(),
+            });
+        }
+        let prior = InstallManifest {
+            schema: 1,
+            product: "devcoordinator2".into(),
+            package_version: env!("CARGO_PKG_VERSION").into(),
+            source_root: path_text(&root).unwrap(),
+            source_commit: head.clone(),
+            built_at: "fixture".into(),
+            binaries,
+        };
+        std::fs::write(
+            root.join("edge/devcoordinator2-edge.mjs"),
+            "candidate edge\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("console/index.html"), "candidate Console\n").unwrap();
+        for args in [
+            vec!["add", "edge", "console"],
+            vec!["commit", "-q", "-m", "candidate"],
+            vec!["push", "-q", "origin", "main"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let candidate = validate_live_checkout(&root, false, &HostRunner).unwrap();
+        assert_ne!(candidate, head);
+        let owner = (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        );
+        let manifest_path = temporary.path().join("install-manifest.json");
+        write_manifest(&manifest_path, &prior, owner).unwrap();
+        let edge_env = temporary.path().join("edge.env");
+        atomic_file(
+            &edge_env,
+            b"UNRELATED=private-fixture-kept\n",
+            0o640,
+            Some(owner),
+        )
+        .unwrap();
+        let unit = temporary.path().join("edge.service");
+        atomic_file(&unit,format!("[Service]\nExecStart=/usr/bin/node {}/edge/devcoordinator2-edge.mjs\nReadOnlyPaths={}\n",root.display(),root.display()).as_bytes(),0o644,Some(owner)).unwrap();
+        struct EdgeRunner(Mutex<Vec<CommandRequest>>);
+        impl CommandRunner for EdgeRunner {
+            fn source_catalog(&self, request: &CommandRequest) -> Result<CommandOutput, String> {
+                self.0.lock().unwrap().push(request.clone());
+                let output = HostRunner.source_catalog(request)?;
+                assert!(
+                    output.stdout.len() > OUTPUT_CAP,
+                    "fixture must cover the real large source catalog boundary"
+                );
+                Ok(output)
+            }
+            fn run(&self, request: &CommandRequest) -> Result<CommandOutput, String> {
+                self.0.lock().unwrap().push(request.clone());
+                if request.program == Path::new("/usr/bin/git")
+                    || request.args == [OsString::from("--source-commit")]
+                {
+                    return HostRunner.run(request);
+                }
+                assert!(
+                    request.program == Path::new("/usr/bin/setfacl")
+                        || request.program == Path::new("/fixture/systemctl")
+                );
+                Ok(CommandOutput {
+                    success: true,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                })
+            }
+        }
+        let runner = EdgeRunner(Mutex::new(Vec::new()));
+        let config = edge_source::RepairConfig {
+            installed_manifest: manifest_path,
+            cache_root: temporary.path().join("source-cache"),
+            edge_env: edge_env.clone(),
+            edge_unit_path: unit.clone(),
+            edge_unit: "fixture-edge.service".into(),
+            edge_account: "fixture-edge".into(),
+            runtime_dir: temporary.path().join("runtime"),
+            systemctl: "/fixture/systemctl".into(),
+        };
+        let repaired = edge_source::repair_host(&config, &runner, owner).unwrap();
+        assert_eq!(repaired.source_commit, head);
+        assert_eq!(
+            std::fs::read_to_string(repaired.source_checkout.join("console/index.html")).unwrap(),
+            "prior Console\n"
+        );
+        assert_eq!(
+            validate_live_checkout(&root, false, &HostRunner).unwrap(),
+            candidate
+        );
+        assert!(
+            std::fs::read_to_string(&edge_env)
+                .unwrap()
+                .contains("UNRELATED=private-fixture-kept")
+        );
+        assert!(
+            std::fs::read_to_string(&edge_env)
+                .unwrap()
+                .contains(&format!("EDGE_UI_SOURCE_REVISION=git:{head}"))
+        );
+        assert!(std::fs::read_to_string(&unit).unwrap().contains(&format!(
+            "ExecStart=/usr/bin/node {}/edge/devcoordinator2-edge.mjs",
+            repaired.source_checkout.display()
+        )));
+        let commands = runner.0.lock().unwrap();
+        let service_calls = commands
+            .iter()
+            .filter(|request| request.program == config.systemctl)
+            .map(|request| request.args.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            service_calls,
+            vec![
+                vec!["daemon-reload"],
+                vec!["restart", "fixture-edge.service"],
+                vec!["is-active", "--quiet", "fixture-edge.service"]
+            ]
+            .into_iter()
+            .map(|args| args.into_iter().map(OsString::from).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+        );
+        drop(commands);
+        let pinned = edge_source::prepare(&prior, &config.cache_root, owner, &runner).unwrap();
+        std::fs::write(
+            pinned.checkout.join("console/index.html"),
+            "unexpected source",
+        )
+        .unwrap();
+        assert!(edge_source::verify(&pinned, &runner).is_err());
+        std::fs::write(
+            pinned.checkout.join("console/index.html"),
+            "prior Console\n",
+        )
+        .unwrap();
         std::fs::write(root.join("dirty.txt"), "dirty").unwrap();
         assert!(
             validate_live_checkout(&root, false, &HostRunner)
@@ -2698,7 +2971,9 @@ mod tests {
         let database = temporary.path().join("authority.sqlite3");
         let connection = Connection::open(&database).unwrap();
         connection
-            .execute_batch(include_str!("../../control/src/schema.sql"))
+            .execute_batch(include_str!(
+                "../../persistence/tests/fixtures/sqlite-schema-34/schema.sql"
+            ))
             .unwrap();
         connection
             .execute(
@@ -2734,15 +3009,38 @@ mod tests {
                 deployments: vec!["web".to_owned()],
             }]
         );
-        let request = &runner.requests.lock().unwrap()[0];
-        assert_eq!(request.program, binary);
+        let requests = runner.requests.lock().unwrap();
+        assert_eq!(requests[0].program, binary);
         assert_eq!(
-            request.args,
+            requests[0].args,
             [
                 OsString::from("--validate-repository-config"),
                 worktree.as_os_str().to_owned()
             ]
         );
+        drop(requests);
+        let native = devcoordinator2_control::database::Database::open(
+            temporary.path().join("native-preflight-fixture"),
+        )
+        .unwrap();
+        native.call(|connection|{
+            connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1',$1,'repo','t',1,'t')",[worktree.to_string_lossy()])?;
+            connection.execute("INSERT INTO worktrees VALUES('w1','r1',$1,'t','t'),('w2','r1',$2,'t','t')",devcoordinator2_control::database::params![worktree.to_string_lossy(),retired.to_string_lossy()])?;
+            Ok(())
+        }).unwrap();
+        let config = temporary.path().join("postgres.json");
+        let fixture = native.fixture().unwrap();
+        atomic_file(&config,&serde_json::to_vec(&serde_json::json!({"schema":1,"connection":fixture.config.url,"data_directory":fixture.config.data_directory})).unwrap(),0o600,Some((rustix::process::getuid().as_raw(),rustix::process::getgid().as_raw()))).unwrap();
+        std::fs::remove_file(&database).unwrap();
+        let native_runner = FakeRunner::with_outputs(vec![success(
+            "{\"schema\":2,\"tests\":[\"unit\",\"release\"],\"deployments\":[\"web\"]}\n",
+        )]);
+        assert_eq!(
+            validate_native_registered_repository_configs(&config, &binary, &native_runner)
+                .unwrap(),
+            receipts
+        );
+        assert_eq!(native_runner.requests.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -2916,6 +3214,7 @@ mod tests {
             "sketches",
             "storage-mount-jobs",
             "storage-recovery",
+            "install-transactions",
         ] {
             std::fs::create_dir(root.join(name)).unwrap();
             std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o755))
@@ -2927,6 +3226,7 @@ mod tests {
             "authority.sqlite3-wal",
             "authority.sqlite3-shm",
             "authority.sqlite3.pre-schema7.bak",
+            "authority-current.json",
         ] {
             std::fs::write(root.join(name), "preserved").unwrap();
             std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o644))
@@ -2942,6 +3242,7 @@ mod tests {
                 "authority.sqlite3-wal",
                 "authority.sqlite3-shm",
                 "authority.sqlite3.pre-schema7.bak",
+                "authority-current.json",
             ] {
                 let metadata = std::fs::metadata(root.join(name)).unwrap();
                 assert_eq!(metadata.mode() & 0o777, 0o600);
@@ -2961,6 +3262,7 @@ mod tests {
                 "sketches",
                 "storage-mount-jobs",
                 "storage-recovery",
+                "install-transactions",
             ] {
                 assert_eq!(
                     std::fs::metadata(root.join(name)).unwrap().mode() & 0o777,
@@ -3004,6 +3306,21 @@ mod tests {
         assert_eq!(std::fs::metadata(&authority).unwrap().mode() & 0o777, 0o644);
         assert_eq!(std::fs::metadata(&root).unwrap().mode() & 0o777, 0o750);
         std::fs::remove_file(root.join("authority.sqlite3-wal")).unwrap();
+        for name in ["install-transactions", "authority-current.json"] {
+            symlink(&authority, root.join(name)).unwrap();
+            assert!(prepare_state_directory(&root, owner).is_err());
+            assert_eq!(std::fs::metadata(&authority).unwrap().mode() & 0o777, 0o644);
+            assert_eq!(std::fs::metadata(&root).unwrap().mode() & 0o777, 0o750);
+            std::fs::remove_file(root.join(name)).unwrap();
+        }
+        std::fs::write(
+            root.join("authority-current.json.unrecognized"),
+            "preserved",
+        )
+        .unwrap();
+        assert!(prepare_state_directory(&root, owner).is_err());
+        assert_eq!(std::fs::metadata(&authority).unwrap().mode() & 0o777, 0o644);
+        std::fs::remove_file(root.join("authority-current.json.unrecognized")).unwrap();
         std::fs::write(root.join("unclassified"), "preserved").unwrap();
         assert!(prepare_state_directory(&root, owner).is_err());
         assert!(prepare_state_directory(&root, (owner.0 + 1, owner.1)).is_err());

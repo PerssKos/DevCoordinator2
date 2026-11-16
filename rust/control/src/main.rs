@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use devcoordinator2_api::params::{BugCorrelations, BugReport};
 use devcoordinator2_api::results::BugList;
 use devcoordinator2_api::{ErrorCode, ProtocolError, ResponseEnvelope};
 use devcoordinator2_control::artifact_materialize::{self, MaterializeRequest};
@@ -24,6 +23,15 @@ type JoinedService = Result<ServiceResult, tokio::task::JoinError>;
 async fn main() -> ExitCode {
     if source_commit_requested() {
         println!("{}", devcoordinator2_control::SOURCE_COMMIT);
+        return ExitCode::SUCCESS;
+    }
+    if std::env::args_os().skip(1).collect::<Vec<_>>()
+        == [std::ffi::OsString::from("--build-identity")]
+    {
+        println!(
+            "{}",
+            serde_json::json!({"schema":1,"source_commit":devcoordinator2_control::SOURCE_COMMIT,"protocol_version":devcoordinator2_api::PROTOCOL_VERSION,"root_acceptance":cfg!(feature="root-acceptance")})
+        );
         return ExitCode::SUCCESS;
     }
     if let Some(path) = repository_config_validation_requested() {
@@ -66,7 +74,13 @@ async fn main() -> ExitCode {
     }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(
+                "devcoordinator2.agent_tool=info"
+                    .parse()
+                    .expect("agent tool log directive is valid"),
+            ),
+        )
         .init();
     let cli = Cli::parse();
     let format = cli.format;
@@ -84,6 +98,10 @@ async fn main() -> ExitCode {
         }
     };
     match invocation {
+        Invocation::Inspect(value) => {
+            println!("{value}");
+            ExitCode::SUCCESS
+        }
         Invocation::Daemon => match Config::load_for_daemon() {
             Ok(config) => run_daemon(&config).await,
             Err(error) => configuration_error(format, &error.to_string()),
@@ -102,19 +120,20 @@ async fn main() -> ExitCode {
             Err(error) => configuration_error(format, &error.to_string()),
         },
         Invocation::Remote { operation, params } => match Config::load() {
-            Ok(config) => match client::call(&config.socket_path, operation, params, context).await
-            {
-                Ok(response) => render_response(response, format, Some(operation)),
-                Err(error) => {
-                    let response = ResponseEnvelope::failure("", error);
-                    let _ = devcoordinator2_control::cli::render_response(
-                        &response,
-                        format,
-                        Some(operation),
-                    );
-                    ExitCode::from(2)
+            Ok(config) => {
+                match client::call(&config.socket_path, operation.clone(), params, context).await {
+                    Ok(response) => render_response(response, format, Some(operation.as_str())),
+                    Err(error) => {
+                        let response = ResponseEnvelope::failure("", error);
+                        let _ = devcoordinator2_control::cli::render_response(
+                            &response,
+                            format,
+                            Some(operation.as_str()),
+                        );
+                        ExitCode::from(2)
+                    }
                 }
-            },
+            }
             Err(error) => configuration_error(format, &error.to_string()),
         },
         Invocation::OfflineBug { action } => run_offline_bug(action, format),
@@ -224,29 +243,7 @@ fn run_offline_bug(action: OfflineBugAction, format: OutputFormat) -> ExitCode {
     let directory = bugs::bugs_dir();
     let reporter = format!("uid:{}", rustix::process::getuid().as_raw());
     let (operation, result) = match action {
-        OfflineBugAction::Report {
-            component,
-            summary,
-            expected,
-            actual,
-            steps,
-            run_id,
-            deployment_id,
-        } => {
-            let request = BugReport {
-                component,
-                summary,
-                expected,
-                actual,
-                steps,
-                correlations: BugCorrelations {
-                    run_id,
-                    deployment_id,
-                    component: None,
-                    repository_id: None,
-                    call_id: None,
-                },
-            };
+        OfflineBugAction::Report(request) => {
             let result = bugs::report(&directory, &request, &reporter).map(|mut record| {
                 record.notified = Some(false);
                 serde_json::to_value(record)
@@ -294,26 +291,54 @@ async fn run_daemon(config: &Config) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let database = match Database::open(config.database_path()) {
-        Ok(database) => database,
+    let pg_config = match config.postgres_config() {
+        Ok(value) => value,
         Err(error) => {
-            eprintln!("daemon database failed: {error}");
+            eprintln!("daemon database configuration failed: {error}");
             return ExitCode::from(1);
         }
     };
+    let installation_fence = config.socket_path.with_file_name("daemon.pre-cutover.sock");
+    let recovery_deferred = installation_fence.try_exists().unwrap_or(true);
     let plane_config = config.clone();
     let initializer = match std::thread::Builder::new()
         .name("devcoordinator2-initialize".to_owned())
-        .spawn(move || ControlPlane::new(plane_config, database))
-    {
+        .spawn(move || -> Result<_, String> {
+            let database =
+                Database::connect(&pg_config).map_err(|_| "PostgreSQL authority unavailable")?;
+            devcoordinator2_control::routes::initialize_empty_projection(
+                &database,
+                &plane_config.routes_path(),
+                &plane_config.base_domain,
+            )
+            .map_err(|_| "initial empty route projection unavailable")?;
+            let plane = ControlPlane::new(plane_config, database.clone())
+                .map_err(|error| error.to_string())?;
+            if !recovery_deferred && let Err(error) = plane.recover_tests() {
+                tracing::error!(code=%error.code,"governed-test recovery incomplete");
+            }
+            // One controlled observation seeds candidate read-only health checks.
+            // Recurring jobs and external deliveries wait for activation commit.
+            // Seed the cache before serving. Health reads never run probes themselves.
+            if let Err(error) = plane.health().sampler().tick() {
+                tracing::warn!(code=%error.code,"initial health sample unavailable");
+            }
+            let scheduler = Arc::new(devcoordinator2_control::maintenance::Scheduler::new(
+                database, 2, 32,
+            )?);
+            plane
+                .storage()
+                .set_maintenance_scheduler(Arc::downgrade(&scheduler));
+            Ok((plane, scheduler))
+        }) {
         Ok(initializer) => initializer,
         Err(error) => {
             eprintln!("daemon initialization thread failed: {error}");
             return ExitCode::from(1);
         }
     };
-    let plane = match initializer.join() {
-        Ok(Ok(plane)) => plane,
+    let (plane, scheduler) = match initializer.join() {
+        Ok(Ok(initialized)) => initialized,
         Ok(Err(error)) => {
             eprintln!("daemon initialization failed: {error}");
             return ExitCode::from(1);
@@ -323,19 +348,13 @@ async fn run_daemon(config: &Config) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if let Err(error) = plane.recover_tests() {
-        eprintln!("governed-test recovery failed: {error}");
-    }
     let app = Arc::new(
         daemon::App::with_executor(config.edge_uid, Arc::new(plane.clone()))
             .with_installation_fence(config.socket_path.clone()),
     );
     let capacity = plane.capacity().clone();
-    let logs = plane.logs().clone();
     let metrics = plane.health().sampler().clone();
-    let expiry_plane = plane.clone();
     let telegram_service = plane.telegram().clone();
-    let telegram = telegram_service.start();
     let _ = telegram_service.enqueue_event(&TelegramEvent::new("coordinator.started"));
     let _ = plane
         .events()
@@ -358,7 +377,13 @@ async fn run_daemon(config: &Config) -> ExitCode {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_shutdown = shutdown_tx.clone();
     let signal = tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        if let Ok(mut terminate) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+        } else {
+            let _ = tokio::signal::ctrl_c().await;
+        }
         let _ = signal_shutdown.send(true);
     });
     let mut services = JoinSet::new();
@@ -381,16 +406,12 @@ async fn run_daemon(config: &Config) -> ExitCode {
             serve_sandbox_bridge(bridge_app, bridge_directory, bridge_shutdown).await,
         )
     });
-    let test_reconciliation = plane.tests().clone();
-    let test_reconciliation_shutdown = shutdown_rx.clone();
+    let mut capacity_shutdown = shutdown_rx.clone();
+    let capacity_fence = installation_fence.clone();
     services.spawn(async move {
-        test_reconciliation
-            .serve_reconciliation(test_reconciliation_shutdown)
-            .await;
-        ("test lifecycle reconciliation", Ok(()))
-    });
-    let capacity_shutdown = shutdown_rx.clone();
-    services.spawn(async move {
+        if !wait_for_activation(&capacity_fence, &mut capacity_shutdown).await {
+            return ("capacity broker", Ok(()));
+        }
         (
             "capacity broker",
             capacity
@@ -399,52 +420,37 @@ async fn run_daemon(config: &Config) -> ExitCode {
                 .map_err(|error| error.to_string()),
         )
     });
-    let mut expiry_shutdown = shutdown_rx.clone();
     let storage = plane.storage().clone();
-    let storage_shutdown = shutdown_rx.clone();
+    let mut storage_shutdown = shutdown_rx.clone();
+    let storage_fence = installation_fence.clone();
     services.spawn(async move {
+        if !wait_for_activation(&storage_fence, &mut storage_shutdown).await {
+            return ("storage maintenance", Ok(()));
+        }
         storage.serve(storage_shutdown).await;
         ("storage maintenance", Ok(()))
     });
-    let metrics_shutdown = shutdown_rx.clone();
+    let periodic = devcoordinator2_control::maintenance::jobs::periodic(&plane);
+    let periodic_scheduler = scheduler.clone();
+    let recovery_plane = plane.clone();
     services.spawn(async move {
-        logs.serve_maintenance(shutdown_rx).await;
-        ("log maintenance", Ok(()))
-    });
-    services.spawn(async move {
-        metrics.serve(metrics_shutdown).await;
-        ("metric sampler", Ok(()))
-    });
-    services.spawn(async move {
-        let mut next_expiry = tokio::time::Instant::now() + Duration::from_secs(60);
-        loop {
-            tokio::select! {
-                changed = expiry_shutdown.changed() => {
-                    if changed.is_err() || *expiry_shutdown.borrow() {
-                        break;
-                    }
-                }
-                () = tokio::time::sleep(Duration::from_millis(100)) => {
-                    if tokio::time::Instant::now() >= next_expiry {
-                        let plane = expiry_plane.clone();
-                        match tokio::task::spawn_blocking(move || {
-                            let expired = plane.expire_previews();
-                            if let Err(error) = plane.deliver_review_reminders() { tracing::error!(code=%error.code, "review reminders unavailable"); }
-                            if let Err(error) = plane.reconcile_routes() { tracing::error!(code=%error.code, "route reconciliation incomplete"); }
-                            if let Err(error) = plane.refresh_agent_capabilities() { tracing::error!(code=%error.code, "agent capability refresh unavailable"); }
-                            if let Err(error) = plane.deliver_hub_callbacks() { tracing::error!(code=%error.code, "agent hub callbacks unavailable"); }
-                            expired
-                        }).await {
-                            Ok(Ok(_)) => {}
-                            Ok(Err(error)) => tracing::error!(%error, "preview expiry failed"),
-                            Err(error) => tracing::error!(%error, "preview expiry worker failed"),
-                        }
-                        next_expiry = tokio::time::Instant::now() + Duration::from_secs(60);
-                    }
-                }
+        let mut shutdown = shutdown_rx;
+        if !wait_for_activation(&installation_fence, &mut shutdown).await {
+            return ("maintenance scheduler", Ok(()));
+        }
+        if recovery_deferred {
+            let recovery = tokio::task::spawn_blocking(move || {
+                devcoordinator2_control::database::maintenance_context(|| {
+                    recovery_plane.recover_tests()
+                })
+            })
+            .await;
+            if !matches!(recovery, Ok(Ok(()))) {
+                tracing::error!("deferred governed-test recovery incomplete");
             }
         }
-        ("preview expiry", Ok(()))
+        periodic_scheduler.serve(periodic, shutdown).await;
+        ("maintenance scheduler", Ok(()))
     });
     let first = services.join_next().await;
     let _ = shutdown_tx.send(true);
@@ -452,13 +458,38 @@ async fn run_daemon(config: &Config) -> ExitCode {
     while let Some(result) = services.join_next().await {
         failure = failure.or_else(|| service_failure(Some(result)));
     }
-    telegram.shutdown().await;
+    // Join accepted maintenance before the final metric flush and process exit.
+    let _ = tokio::task::spawn_blocking(move || {
+        scheduler.shutdown_and_join();
+        let result = devcoordinator2_control::database::maintenance_context(|| metrics.flush());
+        drop(plane);
+        result
+    })
+    .await;
     signal.abort();
     match failure {
         None => ExitCode::SUCCESS,
         Some((surface, error)) => {
             eprintln!("{surface} failed: {error}");
             ExitCode::from(1)
+        }
+    }
+}
+
+async fn wait_for_activation(
+    fence: &std::path::Path,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    loop {
+        if *shutdown.borrow() {
+            return false;
+        }
+        if !fence.try_exists().unwrap_or(true) {
+            return true;
+        }
+        tokio::select! {
+            result=shutdown.changed()=>{if result.is_err()||*shutdown.borrow(){return false;}},
+            _=tokio::time::sleep(Duration::from_millis(250))=>{},
         }
     }
 }

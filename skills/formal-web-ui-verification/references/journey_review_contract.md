@@ -92,6 +92,50 @@ must also match the prior receipt. A missing or changed
 identity, source fingerprint, observed source, route/state, intent, theme, or viewport requires
 fresh visual review.
 
+## Post-capture UI cleanup
+
+A target or interaction state may declare `cleanup`. A state's declaration
+overrides its target's declaration. Omit it to retain context-close-only
+behavior. Cleanup uses the same bounded declarative actions and readiness waits
+as interaction setup; it cannot execute JavaScript or shell commands.
+
+```json
+{
+  "cleanup": {
+    "actions": [{"action": "click", "selector": "button:text-is('Close text editor')"}],
+    "waitFor": {
+      "responseUrl": "**/fields/body/lease/release",
+      "responseStatus": 204,
+      "timeoutMs": 5000
+    }
+  }
+}
+```
+
+The response wait is armed before the first cleanup action. `responseStatus`
+requires `responseUrl` and checks the actual response status; seeing a request or
+a different status is insufficient. Cleanup has at most 32 actions, each with a
+positive timeout no greater than 30 seconds. Its wait deadlines have the same
+bound. Conditional action ownership is not supported in cleanup.
+
+Cleanup runs after both screenshot attempts and all measurements, before the
+context closes. It also runs in `finally` when navigation, state readiness,
+measurement, or screenshot capture fails. `cleanup.postCapture` records whether
+the declared actions completed, failed, or could not apply because no page was
+created; it retains action/wait timings and actual response status, never action
+values or response bodies. Context close is still attempted after cleanup fails.
+A failed declared cleanup blocks the formal result and readiness; it cannot
+turn failed capture into success. Auth-setup failures, skipped cells and cache
+hits do not execute cleanup and remain explicitly unverified for that lifecycle.
+
+Declare an editable field in readiness with an actual editable selector such as
+`textarea:not([readonly])`. Connected transport and focus alone do not prove a
+lease. Closing a browser context does not prove that an application released its
+server-side lease; use the application's real close action and release response.
+The cleanup declaration participates in config, intent and cache fingerprints;
+do not alter it after sealing a run or substitute conflict captures for the
+declared editable state.
+
 ## Required Coverage Cells
 
 Top-level `requiredCoverage` declares cells that must exist in the full

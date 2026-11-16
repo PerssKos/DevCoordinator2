@@ -1,10 +1,19 @@
-use super::{subtract, union_ms};
+#[cfg(test)]
+use super::subtract;
+use super::union_ms;
 use devcoordinator2_api::outcomes::OutcomeEffort;
 use devcoordinator2_api::outcomes::OutcomeMeasurement;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Default)]
 pub(super) struct Effort {
+    pub(super) supplied_cost: Option<devcoordinator2_api::results::UsageCost>,
+    pub(super) aggregate_sources: u64,
+    pub(super) inexact_tokens: bool,
+    pub(super) inexact_active: bool,
+    pub(super) inexact_elapsed: bool,
+    pub(super) inexact_waits: bool,
+    pub(super) inexact_activities: BTreeSet<String>,
     pub(super) cost: super::CostBuckets,
     pub(super) activities: BTreeMap<String, (u64, u64)>,
     pub(super) operations: u64,
@@ -18,10 +27,30 @@ pub(super) struct Effort {
     pub(super) unknown_active: u64,
     pub(super) unknown_elapsed: u64,
     pub(super) unknown_waits: u64,
+    /// Pre-aggregated measurements supplied by a fresh producer projection.
+    /// They are kept separate from intervals because an aggregate duration is
+    /// not an interval and must never be unioned with an invented range.
+    pub(super) aggregate_active_ms: u64,
+    pub(super) aggregate_elapsed_ms: u64,
+    pub(super) aggregate_wait_ms: u64,
 }
 
 impl Effort {
     pub(super) fn merge(&mut self, other: Self, source: usize) -> Result<(), String> {
+        self.inexact_tokens |= other.inexact_tokens;
+        self.inexact_active |= other.inexact_active;
+        self.inexact_elapsed |=
+            other.inexact_elapsed || (self.aggregate_sources > 0 && other.aggregate_sources > 0);
+        self.inexact_waits |=
+            other.inexact_waits || (self.aggregate_sources > 0 && other.aggregate_sources > 0);
+        self.inexact_activities.extend(other.inexact_activities);
+        self.aggregate_sources += other.aggregate_sources;
+        if let Some(cost) = other.supplied_cost {
+            self.supplied_cost = Some(match self.supplied_cost.take() {
+                Some(previous) => super::collector_api::merge_costs(&[previous, cost], false),
+                None => cost,
+            });
+        }
         super::merge_cost_bucket(&mut self.cost, &other.cost);
         for (activity, (tokens, unknown)) in other.activities {
             let value = self.activities.entry(activity).or_default();
@@ -39,6 +68,17 @@ impl Effort {
         self.unknown_active += other.unknown_active;
         self.unknown_elapsed += other.unknown_elapsed;
         self.unknown_waits += other.unknown_waits;
+        self.aggregate_active_ms = self
+            .aggregate_active_ms
+            .saturating_add(other.aggregate_active_ms);
+        self.aggregate_elapsed_ms = self
+            .aggregate_elapsed_ms
+            .checked_add(other.aggregate_elapsed_ms)
+            .ok_or("usage_overflow")?;
+        self.aggregate_wait_ms = self
+            .aggregate_wait_ms
+            .checked_add(other.aggregate_wait_ms)
+            .ok_or("usage_overflow")?;
         self.elapsed.extend(other.elapsed);
         self.waits.extend(other.waits);
         for (agent, intervals) in other.active {
@@ -50,6 +90,7 @@ impl Effort {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn add_time(
         &mut self,
         operation: &super::review_facts::WorkOperation,
@@ -104,16 +145,41 @@ impl Effort {
             activities: self
                 .activities
                 .into_iter()
-                .map(|(key, (tokens, unknown))| (key, measurement(tokens, unknown)))
+                .map(|(key, (tokens, unknown))| {
+                    let exact = !self.inexact_activities.contains(&key);
+                    (key, measurement(tokens, unknown, exact))
+                })
                 .collect(),
             operations: self.operations,
             retry_operations: self.retries,
             rework_operations: self.rework,
-            provider_total_tokens: measurement(self.tokens, self.unknown_tokens),
-            active_agent_ms: measurement(active, self.unknown_active),
-            elapsed_execution_ms: measurement(union_ms(&self.elapsed), self.unknown_elapsed),
-            recorded_wait_ms: measurement(union_ms(&self.waits), self.unknown_waits),
-            cost: if self.cost.models.is_empty() {
+            provider_total_tokens: measurement(
+                self.tokens,
+                self.unknown_tokens,
+                !self.inexact_tokens,
+            ),
+            active_agent_ms: measurement(
+                active.saturating_add(self.aggregate_active_ms),
+                self.unknown_active,
+                !self.inexact_active,
+            ),
+            elapsed_execution_ms: measurement(
+                union_ms(&self.elapsed)
+                    .checked_add(self.aggregate_elapsed_ms)
+                    .ok_or("usage_overflow")?,
+                self.unknown_elapsed,
+                !self.inexact_elapsed,
+            ),
+            recorded_wait_ms: measurement(
+                union_ms(&self.waits)
+                    .checked_add(self.aggregate_wait_ms)
+                    .ok_or("usage_overflow")?,
+                self.unknown_waits,
+                !self.inexact_waits,
+            ),
+            cost: if let Some(cost) = self.supplied_cost {
+                cost
+            } else if self.cost.models.is_empty() {
                 Default::default()
             } else {
                 super::cost_from_buckets(&self.cost)
@@ -122,10 +188,10 @@ impl Effort {
     }
 }
 
-fn measurement(measured: u64, unknown: u64) -> OutcomeMeasurement {
+fn measurement(measured: u64, unknown: u64, exact: bool) -> OutcomeMeasurement {
     OutcomeMeasurement {
         measured,
-        exact: (unknown == 0).then_some(measured),
+        exact: (unknown == 0 && exact).then_some(measured),
         unknown,
     }
 }

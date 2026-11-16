@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use devcoordinator2_api::{
     ClientContext, ClientKind, McpToolDefinition, ProtocolError, ResponseEnvelope, mcp_tool,
-    mcp_tools,
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
@@ -15,6 +14,7 @@ use rmcp::service::{MaybeSendFuture, RequestContext};
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
 
+use crate::agent_request_log::McpToolObservation;
 use crate::client;
 
 #[derive(Clone, Debug)]
@@ -30,7 +30,111 @@ impl McpAdapter {
     }
 
     pub fn tools() -> Vec<Tool> {
-        mcp_tools().into_iter().map(tool_model).collect()
+        let definitions = [
+            (
+                "operations",
+                "Discover a bounded page of operation names. Fetch one schema before invoking it.",
+                serde_json::json!({"type":"object","properties":{"prefix":{"type":"string","maxLength":128},"after":{"type":"string","maxLength":128},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
+                true,
+            ),
+            (
+                "operation_schema",
+                "Read one typed operation contract, including authorization and result fields.",
+                serde_json::json!({"type":"object","properties":{"operation":{"type":"string","maxLength":128}},"required":["operation"],"additionalProperties":false}),
+                true,
+            ),
+            (
+                "call_operation",
+                "Invoke a discovered Coordinator operation with its typed parameters. The daemon enforces authorization, bounds and recovery semantics.",
+                serde_json::json!({"type":"object","properties":{"operation":{"type":"string","maxLength":128},"params":{"type":"object"}},"required":["operation","params"],"additionalProperties":false}),
+                false,
+            ),
+        ];
+        definitions
+            .into_iter()
+            .map(|(name, description, schema, read_only)| {
+                Tool::new(name, description, Arc::new(schema_object(schema))).with_annotations(
+                    ToolAnnotations::from_raw(
+                        None,
+                        Some(read_only),
+                        Some(!read_only),
+                        Some(read_only),
+                        Some(!read_only),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    fn discovery(
+        name: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Option<CallToolResult>, McpError> {
+        if name == "operations" {
+            if arguments
+                .keys()
+                .any(|key| !matches!(key.as_str(), "prefix" | "after" | "limit"))
+            {
+                return Err(McpError::invalid_params("Unknown discovery field", None));
+            }
+            let prefix = arguments
+                .get("prefix")
+                .map(|v| {
+                    v.as_str()
+                        .filter(|s| s.len() <= 128)
+                        .ok_or_else(|| McpError::invalid_params("Invalid prefix", None))
+                })
+                .transpose()?
+                .unwrap_or("");
+            let after = arguments
+                .get("after")
+                .map(|v| {
+                    v.as_str()
+                        .filter(|s| s.len() <= 128)
+                        .ok_or_else(|| McpError::invalid_params("Invalid cursor", None))
+                })
+                .transpose()?
+                .unwrap_or("");
+            let limit = arguments
+                .get("limit")
+                .map(|v| {
+                    v.as_u64()
+                        .filter(|n| (1..=50).contains(n))
+                        .ok_or_else(|| McpError::invalid_params("Invalid page size", None))
+                })
+                .transpose()?
+                .unwrap_or(20) as usize;
+            let mut matches = devcoordinator2_api::OPERATIONS
+                .iter()
+                .filter(|op| {
+                    op.mcp_exclusion.is_none() && op.name.starts_with(prefix) && op.name > after
+                })
+                .collect::<Vec<_>>();
+            matches.sort_by_key(|op| op.name);
+            let next = (matches.len() > limit).then(|| matches[limit - 1].name);
+            return Ok(Some(CallToolResult::structured(
+                serde_json::json!({"protocol":devcoordinator2_api::PROTOCOL_VERSION,"operations":matches.iter().take(limit).map(|op|serde_json::json!({"name":op.name,"description":op.description,"read_only":op.policy.read_only()})).collect::<Vec<_>>(),"next":next}),
+            )));
+        }
+        if name == "operation_schema" {
+            if arguments.len() != 1 {
+                return Err(McpError::invalid_params("Choose one operation", None));
+            }
+            let name = arguments
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or_else(|| McpError::invalid_params("Operation name required", None))?;
+            if devcoordinator2_api::operation(name).is_none_or(|op| op.mcp_exclusion.is_some()) {
+                return Err(McpError::invalid_params(
+                    "Operation is not exposed through MCP",
+                    None,
+                ));
+            }
+            let schema = devcoordinator2_api::operation_schema(name)
+                .ok_or_else(|| McpError::invalid_params("Unknown operation", None))?;
+            return Ok(Some(CallToolResult::structured(schema)));
+        }
+        Ok(None)
     }
 
     async fn execute(
@@ -99,7 +203,10 @@ impl ServerHandler for McpAdapter {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        mcp_tool(name).map(tool_model)
+        Self::tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .or_else(|| mcp_tool(name).map(tool_model))
     }
 
     fn list_tools(
@@ -119,11 +226,52 @@ impl ServerHandler for McpAdapter {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let Some(tool) = mcp_tool(&request.name) else {
-            return Err(McpError::invalid_params(
-                format!("unknown tool: {}", request.name),
-                None,
-            ));
+        let mut observation = McpToolObservation::new(&request.name);
+        let arguments = request.arguments.unwrap_or_default();
+        if let Some(result) = Self::discovery(&request.name, &arguments)? {
+            observation.record_returned();
+            return Ok(result.into());
+        }
+        let (tool, arguments) = if request.name == "call_operation" {
+            if arguments
+                .keys()
+                .any(|key| !matches!(key.as_str(), "operation" | "params"))
+            {
+                return Err(McpError::invalid_params("Unknown call field", None));
+            }
+            let name = arguments
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or_else(|| McpError::invalid_params("Operation name required", None))?;
+            let definition = devcoordinator2_api::operation(name)
+                .ok_or_else(|| McpError::invalid_params("Unknown operation", None))?;
+            if definition.mcp_exclusion.is_some() {
+                return Err(McpError::invalid_params(
+                    "Operation is not exposed through MCP",
+                    None,
+                ));
+            }
+            let params = arguments
+                .get("params")
+                .and_then(Value::as_object)
+                .ok_or_else(|| McpError::invalid_params("Parameters must be an object", None))?
+                .clone();
+            (
+                McpToolDefinition {
+                    name: definition.name,
+                    operation: definition,
+                    input_schema: definition.input_schema,
+                    validate_params: definition.validate_params,
+                    transform: devcoordinator2_api::McpArgumentTransform::Identity,
+                },
+                params,
+            )
+        } else {
+            (
+                mcp_tool(&request.name)
+                    .ok_or_else(|| McpError::invalid_params("Unknown tool", None))?,
+                arguments,
+            )
         };
         let kind = context
             .client_info()
@@ -149,18 +297,15 @@ impl ServerHandler for McpAdapter {
             .get("devcoordinator/effort")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let execution = self.execute(
-            tool,
-            request.arguments.unwrap_or_default(),
-            kind,
-            work,
-            model,
-            effort,
-        );
-        tokio::select! {
+        let execution = self.execute(tool, arguments, kind, work, model, effort);
+        let result = tokio::select! {
             result = execution => Ok(result.into()),
             _ = context.ct.cancelled() => Err(McpError::internal_error("tool request cancelled", None)),
+        };
+        if result.is_ok() {
+            observation.record_returned();
         }
+        result
     }
 }
 
@@ -230,13 +375,20 @@ mod tests {
 
     #[test]
     fn tools_are_deterministic_typed_and_annotated() {
-        let tools = McpAdapter::tools();
+        assert_eq!(McpAdapter::tools().len(), 3);
+        let tools = devcoordinator2_api::mcp_tools()
+            .into_iter()
+            .map(tool_model)
+            .collect::<Vec<_>>();
         assert_eq!(
             tools
                 .iter()
                 .map(|tool| tool.name.as_ref())
                 .collect::<Vec<_>>(),
-            mcp_tools().iter().map(|tool| tool.name).collect::<Vec<_>>()
+            devcoordinator2_api::mcp_tools()
+                .iter()
+                .map(|tool| tool.name)
+                .collect::<Vec<_>>()
         );
         assert!(tools.windows(2).all(|pair| pair[0].name < pair[1].name));
         let ticket = tools

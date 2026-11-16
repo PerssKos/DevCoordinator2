@@ -4,54 +4,69 @@
 
 import net from 'node:net';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
+
+// Generated from the same typed catalog as daemon authorization and CLI validation.
+const catalog = JSON.parse(readFileSync(new URL('./operations.json', import.meta.url), 'utf8'));
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
 function responseEnvelope(value, requestId) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
-      || value.protocol !== 2 || value.id !== requestId || typeof value.ok !== 'boolean') {
-    throw new Error('invalid protocol-v2 daemon response');
+      || value.protocol !== 3 || value.id !== requestId || typeof value.ok !== 'boolean') {
+    throw new Error('invalid protocol-v3 daemon response');
   }
   const keys = Object.keys(value).sort().join(',');
   if (value.ok) {
     if (keys !== 'data,id,ok,protocol' || !value.data || typeof value.data !== 'object' || Array.isArray(value.data)) {
-      throw new Error('invalid protocol-v2 success response');
+      throw new Error('invalid protocol-v3 success response');
     }
   } else if (keys !== 'error,id,ok,protocol'
       || !value.error || typeof value.error !== 'object' || Array.isArray(value.error)
       || typeof value.error.code !== 'string' || typeof value.error.message !== 'string'
       || typeof value.error.detail !== 'string') {
-    throw new Error('invalid protocol-v2 error response');
+    throw new Error('invalid protocol-v3 error response');
   }
   return value;
 }
 
 export function createDaemonClient({ socketPath, connectTimeoutMs = 5000, timeoutMs = 10000 }) {
   function call(operation, params = {}, identity = null, { signal } = {}) {
+    const metadata = catalog.operations[operation];
+    if (!metadata) return Promise.reject(new Error('unknown operation'));
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(socketPath);
       const chunks = [];
       let bytes = 0;
       let settled = false;
+      let connected = false;
       const onAbort = () => { socket.destroy(); finish(reject, new Error('daemon request cancelled')); };
+      const onTimeout = () => {
+        socket.destroy();
+        finish(reject, new Error(connected ? 'daemon response timeout' : 'daemon connect timeout'));
+      };
       const finish = (fn, value) => {
         if (!settled) {
           settled = true;
+          socket.setTimeout(0);
+          socket.off('timeout', onTimeout);
           signal?.removeEventListener('abort', onAbort);
           fn(value);
         }
       };
       if (signal?.aborted) return onAbort();
       signal?.addEventListener('abort', onAbort, { once: true });
-      socket.setTimeout(connectTimeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon connect timeout')); });
+      socket.once('timeout', onTimeout);
+      socket.setTimeout(connectTimeoutMs);
       socket.on('error', (error) => finish(reject, error));
       socket.on('connect', () => {
-        const longOperation = operation === 'event.wait' || operation === 'plan.recovery' || /^deployment\.(apply|rollback|start|stop|restart|remove)$/.test(operation);
-        socket.setTimeout(longOperation ? 0 : /^(performance\.(overview|review)|review\.prepare)$/.test(operation) ? 20000 : timeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon response timeout')); });
+        connected = true;
+        const seconds = metadata.responseTimeoutSeconds;
+        socket.setTimeout(seconds === null ? 0 : seconds === 10 ? timeoutMs : seconds * 1000);
         const requestId = crypto.randomBytes(6).toString('hex');
         const request = {
-          protocol: 2,
+          protocol: catalog.protocol,
           id: requestId,
           operation,
           params,
@@ -63,7 +78,7 @@ export function createDaemonClient({ socketPath, connectTimeoutMs = 5000, timeou
           return;
         }
         socket.requestId = requestId;
-        if (operation === 'event.wait') socket.write(encoded);
+        if (metadata.passiveWait) socket.write(encoded);
         else socket.end(encoded);
       });
       socket.on('data', (chunk) => {

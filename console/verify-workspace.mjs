@@ -1,14 +1,103 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chooseRepository } from './verify-tests-pane.mjs';
+
+// Leave the old document and settle its fixture work before clearing call evidence.
+export async function isolateScenario(page, daemon, scenario) {
+  await page.goto('about:blank');
+  await daemon.drain();
+  daemon.setScenario(scenario);
+}
+
+export function currentDocumentRequest(request, page, url, operations = null) {
+  const requestUrl = new URL(request.url());
+  const operation = requestUrl.pathname.match(/^\/api\/v3\/([a-z.]+)$/)?.[1];
+  return requestUrl.origin === new URL(url).origin && request.frame() === page.mainFrame() && request.frame().url() === url && request.method() === 'POST'
+    && Boolean(operation) && (operations ? operations.includes(operation) : operation !== 'user.whoami');
+}
+
+export function relevantCalls(calls) {
+  const keys = ['repository_id', 'headers_only', 'after_repository_id', 'after_sequence', 'limit'];
+  return calls.filter(call => ['user.whoami', 'plan.overview', 'repository.list', 'test.list', 'decision.tail', 'test.evidence.get', 'test.evidence.lookup'].includes(call.operation))
+    .slice(-16).map(call => ({ operation: call.operation, params: Object.fromEntries(keys.filter(key => key in call.params).map(key => {
+      const value = call.params[key];
+      return [key, typeof value === 'string' ? value.slice(0, 80) : value === null || ['boolean', 'number'].includes(typeof value) ? value : '[omitted]'];
+    })) }));
+}
+
+export function planReadEvidence(calls) {
+  const headerPages = calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id && call.params.headers_only).length;
+  const aggregateReads = calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only).length;
+  const testsReads = calls.filter(call => call.operation === 'test.list').length;
+  return { headerPages, aggregateReads, testsReads, valid: headerPages === 1 && aggregateReads === 0 && testsReads === 0, calls: relevantCalls(calls) };
+}
+
+export async function documentEvidence(page) {
+  return page.evaluate(() => ({ pathname: location.pathname, route: location.hash.split('?')[0], readyState: document.readyState,
+    appReady: typeof window.render === 'function', workspaceReady: Boolean(window.DevCoordinatorWorkspace),
+    headingLinks: document.querySelectorAll('main h1 a.destination-link').length, skeletons: document.querySelectorAll('main .skeleton').length }));
+}
 
 export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, output, theme, viewport }) {
   const repositoryId = 'r0123456789abcdef';
   const verify = (name, condition, detail = '') => check(`workspace ${theme} ${viewport.width}: ${name}`, condition, detail);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  daemon.setScenario({ ...scenario, workspaceLongList: true, planPaged: true });
+  await page.addInitScript(() => {
+    window.workspaceTiming = { lcp: 0, longTasks: [] };
+    const ready = new MutationObserver(() => {
+      if (document.querySelectorAll('.plan-task-select').length !== 354) return;
+      ready.disconnect();
+      window.workspaceTiming.domReadyAt = performance.now();
+      requestAnimationFrame(() => requestAnimationFrame(() => { window.workspaceTiming.paintReadyAt = performance.now(); }));
+    });
+    ready.observe(document, { childList: true, subtree: true });
+    new PerformanceObserver((list) => { for (const entry of list.getEntries()) window.workspaceTiming.lcp = entry.startTime; }).observe({ type: 'largest-contentful-paint', buffered: true });
+    new PerformanceObserver((list) => { for (const entry of list.getEntries()) window.workspaceTiming.longTasks.push({ start: entry.startTime, duration: entry.duration }); }).observe({ type: 'longtask', buffered: true });
+  });
+  for (const [target, viewer] of [['rffffffffffffffff', false], ['rffffffffffffffff', true], ['release-clone', false]]) {
+    await isolateScenario(page, daemon, { ...scenario, admin: !viewer, workspacePaging: true, workspaceViewer: viewer });
+    await page.goto(`${baseUrl}#/plan/${target}`);
+    await page.locator('.plan-context').waitFor();
+    verify(`${viewer ? 'viewer' : 'administrator'} direct links beyond the first header page retain exact repository scope`, page.url().endsWith(target) && await page.locator('#workspace-heading').innerText() === (target === 'release-clone' ? 'repo-one' : 'Late repository') && daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === target) && await page.locator('.plan-task-select').count() === 0);
+    if (viewer) verify('viewer direct links use the authorized Plan point read', daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === target && call.params.limit === 1));
+    verify('direct route content does not request global Plan aggregates', !daemon.calls.some((call) => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only) && await page.locator('.plan-context').isVisible());
+    if (target === 'release-clone') verify('direct clone is grouped with its canonical source from first render', await page.locator('#repository-list .workspace-repository-name').allTextContents().then((names) => names.filter((name) => name === 'repo-one').length === 1 && !names.includes('0.1.3-generated')));
+    daemon.releaseDelayed();
+  }
+  if ([1440, 390].includes(viewport.width)) {
+    await isolateScenario(page, daemon, { ...scenario, workspaceLargePlan: true, workspaceDeepPlan: true, workspacePaging: true, workspaceHeaderPending: true });
+    await page.goto(`${baseUrl}#/plan/${repositoryId}`);
+    await page.waitForFunction(() => document.querySelectorAll('.plan-task-select').length === 354);
+    await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const timing = await page.evaluate(() => ({ ...window.workspaceTiming, readyAt: performance.now(), rows: document.querySelectorAll('.plan-task-select').length }));
+    verify('complete 354-task Plan renders all four scoped pages while catalogue continuation is held',
+      [0, 100, 200, 300].every((after) => daemon.calls.some((call) => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && (call.params.after_sequence || 0) === after && !call.params.limit))
+      && !daemon.calls.some((call) => call.operation === 'plan.overview' && !call.params.repository_id && !call.params.headers_only), JSON.stringify(timing));
+    verify('selected Plan traversal starts before metadata and is consumed once after metadata settles', daemon.calls.findIndex(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit) < daemon.calls.findIndex(call => call.operation === 'plan.overview' && call.params.headers_only) && daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length === 4 && await page.locator('.grow.grel').count() === 26 && await page.locator('.plan-preview-notice').isVisible());
+    await page.screenshot({ path: path.join(output, `workspace-large-current-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
+    await page.goto('about:blank');
+    daemon.releaseDelayed();
+  }
+  await isolateScenario(page, daemon, { ...scenario, workspaceLongList: true, workspaceDeepPlan: true, workspaceStableOptional: true, planPaged: true });
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.waitForSelector('.plan-context');
+  const initialHeading = await page.locator('#workspace-heading > span').elementHandle();
+  const initialAspect = await page.locator('#workspace-aspects a[aria-current]').elementHandle();
+  daemon.releaseDelayed();
+  await daemon.waitForCall('usage.repositories');
+  await daemon.waitForCall('progress.repositories');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  verify('unchanged optional totals retain navigation content and current aspect nodes', await initialHeading.evaluate(node => node.isConnected) && await initialAspect.evaluate(node => node.isConnected));
+  const planReads = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length;
+  const previousPlan = await page.locator('.plan-context').elementHandle();
+  const refreshUrl = page.url();
+  const [refreshRequest] = await Promise.all([
+    page.waitForRequest(request => currentDocumentRequest(request, page, refreshUrl, ['plan.overview']) && request.postDataJSON()?.repository_id === repositoryId),
+    page.evaluate(() => window.render()),
+  ]);
+  verify('refresh reads the current Plan again instead of reusing the consumed model', daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length === planReads + 1 && !await previousPlan.evaluate(node => node.isConnected));
   verify('direct plan links select the same repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
   verify('one shared selector replaces page-specific pickers', await page.locator('#repository-list').count() === 1 && await page.locator('[data-project-picker], .test-repository-list').count() === 0);
   const expectedAspects = [
@@ -21,9 +110,11 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   ];
   verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').evaluateAll((links) => links.map((link) => [link.textContent, link.getAttribute('href')])).then((links) => JSON.stringify(links) === JSON.stringify(expectedAspects)));
   verify('plan and progress are one destination with four views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage,Performance'));
-  verify('Plan uses one repository index and does not wait for Tests', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id).length === 1 && !daemon.calls.some(call => call.operation === 'test.list'));
-  const pages = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id);
-  verify('Plan loads every page of the same revision', pages.length > 1 && pages.slice(1).every(call => call.params.offset > 0 && /^[a-f0-9]{64}$/.test(call.params.expected_revision)));
+  const reads = planReadEvidence(daemon.calls);
+  verify('Plan reads one metadata header page without aggregate or Tests barriers', reads.valid,
+    reads.valid ? '' : JSON.stringify({ ...reads, triggerRequest: { operation: 'plan.overview', method: refreshRequest.method(), currentDocument: refreshRequest.frame() === page.mainFrame() && refreshRequest.frame().url() === refreshUrl }, document: await documentEvidence(page) }));
+  const pages = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id && !call.params.limit);
+  verify('Plan loads every page of the same revision', pages.length > 1 && pages.slice(1).every(call => (call.params.after_sequence > 0 || call.params.after_release_sequence > 0) && /^[a-f0-9]{64}$/.test(call.params.expected_revision)));
   verify('tasks on later pages remain available', await page.locator('[data-task-row="p1111111111111106"]').count() === 1);
   await page.locator('.plan-task-select[data-select-task="p1111111111111106"]').click();
   verify('a task from a later page can be selected', await page.locator('[data-task-row="p1111111111111106"]').evaluate(row => row.classList.contains('selected')));
@@ -34,10 +125,10 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     return [...heading.children].filter(child => child.getBoundingClientRect().width > 0)
       .every(child => { const box = child.getBoundingClientRect(); return box.left >= bounds.left - 1 && box.right <= bounds.right + 1; });
   }));
-  const planEndpoint = '**/api/v2/plan.overview';
+  const planEndpoint = '**/api/v3/plan.overview';
   let staleOnce = false;
   await page.route(planEndpoint, (route) => {
-    if (route.request().postDataJSON().offset && !staleOnce) {
+    if ((route.request().postDataJSON().after_sequence || route.request().postDataJSON().after_release_sequence) && !staleOnce) {
       staleOnce = true;
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'cursor_stale', message: 'Fixture plan edited during loading' } }) });
     }
@@ -49,7 +140,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.unroute(planEndpoint);
   let failedPage = false;
   await page.route(planEndpoint, (route) => {
-    if (route.request().postDataJSON().offset) {
+    if ((route.request().postDataJSON().after_sequence || route.request().postDataJSON().after_release_sequence)) {
       failedPage = true;
       return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture continuation unavailable' } }) });
     }
@@ -94,13 +185,20 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('blank names cannot be saved', await appearance.isVisible() && !daemon.calls.some((call) => call.operation === 'repository.presentation.update'));
   await appearance.locator('input[name=display_name]').fill('My project');
   await appearance.locator('input[value=rocket]').check();
-  await page.route('**/api/v2/repository.presentation.update', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture save unavailable' } }) }));
+  await page.route('**/api/v3/repository.presentation.update', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture save unavailable' } }) }));
   await appearance.locator('button[type=submit]').click();
   await appearance.locator('[role=alert]:not([hidden])').waitFor();
   verify('failed appearance save keeps entered name and icon', await appearance.locator('input[name=display_name]').inputValue() === 'My project' && await appearance.locator('input[value=rocket]').isChecked());
-  await page.unroute('**/api/v2/repository.presentation.update');
+  await page.unroute('**/api/v3/repository.presentation.update');
   await appearance.locator('button[type=submit]').click();
   await appearance.waitFor({ state: 'detached' });
+  if (viewport.width <= 760) await page.locator('#repository-toggle').click();
+  await page.locator('#workspace-checkouts > summary').click();
+  await daemon.waitForCall((call) => call.operation === 'repository.list' && call.params.after_worktree_id === 'wfeature');
+  await page.waitForFunction(() => document.querySelector('#workspace-checkouts')?.textContent.includes('/repo-one/.worktrees/release-candidate'));
+  verify('background checkout pages retain the just-saved name and icon', await page.locator('#workspace-heading').innerText() === 'My project' && await page.locator('.workspace-repository[aria-current]').getAttribute('data-repository-icon') === 'rocket');
+  await page.locator('#workspace-checkouts > summary').click();
+  if (viewport.width <= 760) await page.locator('#repository-close').click();
   await page.reload(); await page.locator('.plan-context').waitFor();
   verify('name and icon persist through reload without changing repository identity', await page.locator('#workspace-heading').innerText() === 'My project' && await page.locator('.workspace-repository[aria-current]').getAttribute('data-repository-icon') === 'rocket' && (await page.url()).endsWith(repositoryId));
   await page.locator('#repository-presentation').click();
@@ -109,11 +207,55 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await appearance.locator('button[type=submit]').click();
   await appearance.waitFor({ state: 'detached' });
   verify('Use defaults restores the original name and folder icon', await page.locator('#workspace-heading').innerText() === 'repo-one' && await page.locator('.workspace-repository[aria-current]').getAttribute('data-repository-icon') === 'folder');
+  await page.locator('.plan-task-meta > .badge:visible').first().waitFor();
+  const statusCounts = { releases: await page.locator('.plan-release-meta > .badge:visible').count(), tasks: await page.locator('.plan-task-meta > .badge:visible').count() };
+  verify('plan readability checks cover populated release and task statuses', statusCounts.releases > 0 && statusCounts.tasks > 0, JSON.stringify(statusCounts));
+  const feedback = page.locator('[data-task-row="p1111111111111106"] .plan-task-select');
+  verify('feedback fixture includes an estimate, work status and request status', await feedback.locator('.plan-task-meta > *').count() === 3 && /775.*1 not estimated/.test(await feedback.innerText()));
   const compressedTitles = await page.locator('.plan-task-title').evaluateAll((elements) => elements.filter((element) => {
     const lineHeight = parseFloat(getComputedStyle(element).lineHeight);
     return element.getBoundingClientRect().height + 1 < Math.min(element.scrollHeight, lineHeight * 2);
   }).length);
   verify('plan metadata does not compress task titles into partial lines', compressedTitles === 0);
+  const croppedEstimates = await page.locator('.plan-task-meta > span:first-child > span').evaluateAll((elements) => elements.flatMap((element) => {
+    if (!element.getClientRects().length) return [];
+    const clip = element.parentElement.getBoundingClientRect();
+    const range = document.createRange(); range.selectNodeContents(element);
+    const cut = [...range.getClientRects()].find(rect => rect.top < clip.top - .5 || rect.bottom > clip.bottom + .5);
+    return cut ? [{ clip: clip.toJSON(), fragment: cut.toJSON() }] : [];
+  }));
+  verify('estimate text fragments fit the metadata line without vertical cropping', croppedEstimates.length === 0, JSON.stringify(croppedEstimates));
+  const clippedStatuses = await page.locator('.plan-release-meta > .badge, .plan-task-meta > .badge').evaluateAll((badges) => badges.flatMap((badge) => {
+    if (!badge.getClientRects().length) return [];
+    const row = badge.closest('.grow');
+    const walker = document.createTreeWalker(badge, NodeFilter.SHOW_TEXT);
+    const fragments = [badge.getBoundingClientRect()];
+    while (walker.nextNode()) {
+      if (!walker.currentNode.textContent.trim()) continue;
+      const range = document.createRange(); range.selectNodeContents(walker.currentNode);
+      fragments.push(...range.getClientRects());
+    }
+    for (let ancestor = badge; ancestor && row?.contains(ancestor); ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor), rect = ancestor.getBoundingClientRect();
+      const clipsX = /hidden|clip/.test(style.overflowX), clipsY = /hidden|clip/.test(style.overflowY);
+      const clipped = fragments.find((fragment) => clipsX && (fragment.left < rect.left - 1 || fragment.right > rect.right + 1)
+        || clipsY && (fragment.top < rect.top - 1 || fragment.bottom > rect.bottom + 1));
+      if (clipped) return [{ row: row.className, status: badge.innerText.trim(), clip: ancestor.className, fragment: clipped.toJSON(), bounds: rect.toJSON() }];
+    }
+    return [];
+  }));
+  verify('release and task status badges remain readable inside their timeline rows', clippedStatuses.length === 0, JSON.stringify(clippedStatuses));
+  if (clippedStatuses.length) await page.screenshot({ path: path.join(output, `plan-status-clipping-${theme}-${viewport.width}.png`), fullPage: true });
+  const timelineScroll = await page.locator('[data-plan-viewport]').evaluate(element => ({ top: element.scrollTop, left: element.scrollLeft }));
+  await feedback.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(output, `plan-feedback-status-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
+  await page.locator('[data-plan-viewport]').evaluate((element, scroll) => { element.scrollTop = scroll.top; element.scrollLeft = scroll.left; }, timelineScroll);
+  const deepParent = page.locator('[data-collapse="p1111111111111200"]');
+  const deepChild = page.locator('[data-task-row="p1111111111111210"]');
+  await deepParent.click();
+  verify('deep task controls still collapse their descendants', await deepParent.getAttribute('aria-expanded') === 'false' && !await deepChild.isVisible());
+  await deepParent.click();
+  await deepChild.waitFor();
   const sidebar = await page.locator('#repository-sidebar').elementHandle();
   for (const [view, selector, operation] of [
     ['progress', '.progress-workspace', 'progress.repository'],
@@ -215,7 +357,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.locator('.plan-context').waitFor();
   await page.screenshot({ path: path.join(output, `workspace-${theme}-${viewport.width}.png`), fullPage: true });
-  await page.route('**/api/v2/test.list', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'internal_error', message: 'Fixture Tests unavailable' } }) }));
+  await page.route('**/api/v3/test.list', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'internal_error', message: 'Fixture Tests unavailable' } }) }));
   await page.goto(`${baseUrl}#/tests?repository=release-clone`);
   await page.reload();
   await page.locator('#workspace-aspects a').first().waitFor();
@@ -230,6 +372,53 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('search by an exact checkout root finds its source repository', await page.locator('#repository-list a').count() === 1 && await page.locator('#repository-list .workspace-repository-name').innerText() === 'repo-one');
   await page.locator('#repository-search').fill('');
   await page.screenshot({ path: path.join(output, `repository-roots-${theme}-${viewport.width}.png`), fullPage: true, mask: [page.locator('#who-email')] });
-  await page.unroute('**/api/v2/test.list');
+  await page.unroute('**/api/v3/test.list');
+  await isolateScenario(page, daemon, { ...scenario, delayMs: 1, delayOperations: ['plan.overview'] });
+  await page.goto(`${baseUrl}#/plan/${repositoryId}`);
+  await daemon.waitForCall('repository.list');
+  await page.goto(`${baseUrl}#/health`);
+  await page.locator('.hi-host').waitFor();
+  daemon.releaseDelayed();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  verify('navigation away aborts pending Plan data without overwriting the new route', page.url().endsWith('#/health') && await page.locator('.hi-host').isVisible() && await page.locator('.plan-context').count() === 0 && !await page.locator('#workspace-context').isVisible());
   verify('no uncaught browser errors', errors.length === 0, errors.join('; '));
+}
+
+// Non-browser guards for this existing acceptance harness; no installed daemon is used.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv.includes('--self-test')) {
+  const { default: test } = await import('node:test');
+  const { default: assert } = await import('node:assert/strict');
+  await test('scenario reset follows document departure and completed fixture drain', async () => {
+    const order = [], scenario = {};
+    let finishDrain;
+    const isolation = isolateScenario({ goto: async url => { order.push(url); } }, {
+      drain: () => new Promise(resolve => { order.push('drain'); finishDrain = resolve; }),
+      setScenario: value => { assert.equal(value, scenario); order.push('reset'); },
+    }, scenario);
+    await Promise.resolve();
+    assert.deepEqual(order, ['about:blank', 'drain']);
+    finishDrain(); await isolation;
+    assert.deepEqual(order, ['about:blank', 'drain', 'reset']);
+    await assert.rejects(isolateScenario({ goto: async () => {} }, { drain: async () => { throw new Error('not idle'); }, setScenario: () => assert.fail('reset after failed drain') }, scenario), /not idle/);
+  });
+  await test('loading admission accepts only the intended document, origin, method and operation', () => {
+    const url = 'http://console.example.test/#/tests/fixture', frame = { url: () => url }, page = { mainFrame: () => frame };
+    const request = { url: () => 'http://console.example.test/api/v3/test.evidence.lookup', frame: () => frame, method: () => 'POST' };
+    const accepts = value => currentDocumentRequest(value, page, url, ['test.evidence.get', 'test.evidence.lookup']);
+    assert.equal(accepts(request), true);
+    for (const wrong of [{ frame: () => ({ url: () => url }) }, { method: () => 'GET' }, { url: () => 'http://other.example.test/api/v3/test.evidence.lookup' }, { url: () => 'http://console.example.test/api/v3/plan.overview' }]) assert.equal(accepts({ ...request, ...wrong }), false);
+    assert.equal(currentDocumentRequest(request, page, url + '-old'), false);
+    assert.equal(currentDocumentRequest({ ...request, url: () => 'http://console.example.test/api/v3/user.whoami' }, page, url), false);
+  });
+  await test('Plan guards catch missing/duplicate headers, aggregate reads and Tests barriers without rejecting scoped reads', () => {
+    const header = { operation: 'plan.overview', params: { headers_only: true } };
+    const scoped = { operation: 'plan.overview', params: { repository_id: 'fixture', after_sequence: 100 } };
+    assert.equal(planReadEvidence([header, scoped, scoped]).valid, true);
+    for (const calls of [[], [header, header], [header, { operation: 'plan.overview', params: {} }], [header, { operation: 'test.list', params: {} }]]) assert.equal(planReadEvidence(calls).valid, false);
+    const safe = relevantCalls(Array.from({ length: 20 }, () => ({ ...header, client: { identity: 'private' }, params: { ...header.params, query: 'private', cookie: 'private' } })));
+    assert.equal(safe.length, 16);
+    assert.equal(JSON.stringify(safe).includes('private'), false);
+    assert.equal(relevantCalls([{ ...header, params: { repository_id: 'x'.repeat(500), headers_only: { private: true } } }])[0].params.repository_id.length, 80);
+    assert.equal(JSON.stringify(relevantCalls([{ ...header, params: { headers_only: { private: true } } }])).includes('private'), false);
+  });
 }

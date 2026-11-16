@@ -2,13 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{CStr, OsString};
-use std::fs::File;
 use std::io::{self, Read};
-use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -20,48 +18,50 @@ use devcoordinator2_api::params::{
 };
 use devcoordinator2_api::results::{
     CoverageState, MeasuredTime, PhaseTime, ToolFamily, ToolOutcome, UsageActivity, UsageCost,
-    UsageCoverage, UsageModelCost, UsageOutcome, UsageRepositories, UsageRepository,
+    UsageCoverage, UsageLoading, UsageModelCost, UsageOutcome, UsageRepositories, UsageRepository,
     UsageRepositoryRow, UsageSemantics, UsageSeriesPoint, UsageSnapshot, UsageTime, UsageTools,
     UsageTotals, UsageWorktree, UsageWorktreeScope,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
-use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, params_from_iter, types::Value as SqlValue,
-};
-use rustix::fs::{FileType, Mode, OFlags, fstat, open};
+#[cfg(test)]
+use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::config::{CodexUsageSource, Config};
-use crate::database::{Database, DatabaseError};
+use crate::database::{Database, DatabaseError, OptionalExtension as _};
 use crate::platform::{Clock, HostClock};
 use crate::rate_card::RateCardSnapshot;
 use crate::repository::Registry;
 
 #[path = "usage_cost.rs"]
 mod cost;
-use cost::{CostBuckets, RequestTokens, aggregate_cost, cost_from_buckets, merge_cost_bucket};
+use cost::{CostBuckets, cost_from_buckets, merge_cost_bucket};
+#[cfg(test)]
+use cost::{RequestTokens, aggregate_cost};
 
 #[path = "usage_cache.rs"]
 mod cache;
 #[path = "usage_api.rs"]
 mod collector_api;
+#[cfg(test)]
 #[path = "usage_performance.rs"]
 mod performance;
 #[path = "usage_review.rs"]
 mod review;
 #[path = "usage_review_aggregate.rs"]
 mod review_aggregate;
+#[cfg(test)]
 #[path = "usage_review_facts.rs"]
 mod review_facts;
 #[path = "usage_review_math.rs"]
 mod review_math;
+#[cfg(test)]
 #[path = "usage_review_query.rs"]
 mod review_query;
 #[cfg(test)]
 #[path = "usage_review_tests.rs"]
 mod review_tests;
 
-const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5, 6, 7, 8, 9];
 const SUPPORTED_TAXONOMY: u32 = 1;
 
 #[derive(Clone, Copy, Debug)]
@@ -70,10 +70,9 @@ enum Projection {
     Tokens,
     PerformanceFast,
 }
-const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
-const SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
+#[cfg(test)]
 const SQLITE_VARIABLE_CHUNK: usize = 20_000;
 const PHASES: &[&str] = &[
     "planning",
@@ -103,23 +102,30 @@ const TOKEN_CATEGORIES: &[(&str, TokenField)] = &[
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
+/// A source is fresh when its v2 manifest is present. The existence check is
+/// deliberately metadata-only; it never opens the retired SQLite database.
+fn has_usage_v2_manifest(source: &CodexUsageSource) -> bool {
+    source
+        .codex_home
+        .join("usage-v2/manifest.json")
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file())
+}
+
 #[derive(Clone)]
 pub struct UsageService {
     registry: Registry,
     usage: CodexUsage,
 }
 
-type WorktreeKeyCache = BTreeMap<(u32, PathBuf), (Instant, Option<String>)>;
-
 #[derive(Clone)]
 pub struct CodexUsage {
     config: Arc<Config>,
     authority: Database,
     clock: Arc<dyn Clock>,
-    probe: Arc<dyn RepositoryProbe>,
     cache: cache::UsageCache,
     api: collector_api::CollectorApi,
-    worktree_keys: Arc<Mutex<WorktreeKeyCache>>,
+    binding_failures: Arc<Mutex<BTreeSet<(u32, String)>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -137,45 +143,6 @@ pub(crate) struct WorktreeSelection {
     unavailable_sources: BTreeSet<u32>,
 }
 
-pub trait RepositoryProbe: Send + Sync + 'static {
-    fn probe(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        now_ms: u64,
-    ) -> Result<(String, u32, u32), String>;
-
-    /// Resolve a producer worktree key when the collector supports the
-    /// identity-only command. Legacy probes remain valid for consolidated use.
-    fn probe_worktree(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        now_ms: u64,
-        deadline: Instant,
-    ) -> Result<(String, u32, u32, Option<String>), String> {
-        self.probe_until(source, repository, now_ms, deadline)
-            .map(|(key, schema, taxonomy)| (key, schema, taxonomy, None))
-    }
-
-    /// Immediate probes may use this default; blocking implementations must honor the deadline.
-    fn probe_until(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        now_ms: u64,
-        deadline: Instant,
-    ) -> Result<(String, u32, u32), String> {
-        if Instant::now() >= deadline {
-            return Err("query_budget_exhausted".into());
-        }
-        self.probe(source, repository, now_ms)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct HostRepositoryProbe;
-
 #[derive(Clone, Copy, Debug)]
 enum TokenField {
     Total,
@@ -188,6 +155,8 @@ enum TokenField {
 
 #[derive(Default)]
 struct SourceReport {
+    loading: Option<UsageLoading>,
+    source_snapshot: Option<devcoordinator2_api::results::UsageSourceSnapshot>,
     supplied_cost: Option<UsageCost>,
     snapshot: Option<devcoordinator2_api::results::UsageSnapshot>,
     database_schema: u32,
@@ -221,6 +190,7 @@ struct SourceReport {
 }
 
 #[derive(Default)]
+#[cfg(test)]
 struct CachedCostAggregate {
     values: BTreeMap<String, u64>,
     observations: u64,
@@ -229,24 +199,40 @@ struct CachedCostAggregate {
 }
 
 #[derive(Clone)]
+#[cfg(test)]
 struct Operation {
     id: String,
     kind: String,
+    #[allow(dead_code)] // Historical SQL conformance fixture metadata.
     agent_id: Option<String>,
     started_at_ms: u64,
+    #[allow(dead_code)] // Historical SQL conformance fixture metadata.
     finished_at_ms: Option<u64>,
     phase: String,
     activity: String,
+    #[allow(dead_code)] // Historical SQL conformance fixture metadata.
     activity_state: String,
     provenance: String,
     terminal_event: Option<String>,
     tool_family: Option<String>,
     provider_kind: Option<String>,
     model: Option<String>,
+    #[allow(dead_code)] // Historical SQL conformance fixture metadata.
     outcome_id: Option<String>,
 }
 
 impl UsageService {
+    pub(crate) fn binding_failed(&self, uid: u32, repository: String) {
+        if let Ok(mut failures) = self.usage.binding_failures.lock() {
+            failures.insert((uid, repository));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn binding_capture_failed(&self, uid: u32, repository: &str) -> bool {
+        self.usage.binding_capture_failed(uid, repository)
+    }
+
     pub fn new(config: Config, database: Database, registry: Registry) -> Self {
         Self::with_clock(config, database, registry, Arc::new(HostClock))
     }
@@ -259,12 +245,22 @@ impl UsageService {
     ) -> Self {
         Self {
             registry,
-            usage: CodexUsage::with_probe(config, database, clock, Arc::new(HostRepositoryProbe)),
+            usage: CodexUsage::with_clock(config, database, clock),
         }
     }
 
     pub fn usage(&self) -> &CodexUsage {
         &self.usage
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expire_collector_cache(&self) {
+        self.usage.api.expire();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_for_collector_refresh(&self, deadline: Instant) -> bool {
+        self.usage.api.wait_until_idle(deadline)
     }
 
     pub fn repositories(
@@ -274,6 +270,16 @@ impl UsageService {
         let records = self.records()?;
         let report = self.usage.repositories(&records, params.range.clone())?;
         if params.wait_for_refresh {
+            if report.repositories.iter().all(|row| {
+                row.coverage.available_collectors > 0
+                    && !row
+                        .coverage
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.refreshing)
+            }) {
+                return Ok(report);
+            }
             self.usage.wait_for_refresh(None);
             return self.usage.repositories_tokens(&records, params.range);
         }
@@ -393,12 +399,12 @@ impl UsageService {
         let titles = self
             .usage
             .authority
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT task_id,title FROM tasks WHERE repository_id=?1 AND task_id IN (SELECT value FROM json_each(?2))",
+                    "SELECT task_id,title FROM tasks WHERE repository_id=$1 AND task_id IN (SELECT jsonb_array_elements_text($2::jsonb))",
                 )?;
                 let rows = statement
-                    .query_map(rusqlite::params![repository_id, ids], |row| {
+                    .query_map(crate::database::params![repository_id, ids], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                     })?
                     .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -441,78 +447,6 @@ impl UsageService {
         )
     }
 
-    /// Fast token/cost projection used by the Performance overview. It uses
-    /// the same bounded repository cache as Usage, so the page can paint the
-    /// saved snapshot immediately while the indexed refresh runs in a worker.
-    pub(crate) fn performance_snapshot(
-        &self,
-        repository: &RepositoryRecord,
-        start: u64,
-        end: u64,
-        wait_for_refresh: bool,
-    ) -> Result<UsageRepository, ProtocolError> {
-        let now_ms = self.usage.now_ms()?;
-        let rate_cards = self.usage.rate_cards()?;
-        // Performance reads are an exact overview period, rather than the
-        // multi-bucket Usage chart. Keeping one bucket selects the indexed
-        // Performance reader for every requested period, including 7d/30d,
-        // so cost components and token totals share one bounded snapshot.
-        let range = UsageRange::Hours24;
-        let cached_start = start;
-        let cached_end = end;
-        let bucket = end.saturating_sub(start).max(1);
-        let count = 1;
-        let projection = Projection::Tokens;
-        let mut report = if wait_for_refresh {
-            // Start the cost-capable refresh before waiting. The fast and
-            // complete projections have separate cache keys, so waiting on
-            // the fast key first would return before cost enrichment starts.
-            self.usage.cached_window(
-                repository,
-                range.clone(),
-                now_ms,
-                cached_start,
-                cached_end,
-                bucket,
-                count,
-                false,
-                Projection::Tokens,
-                rate_cards,
-                None,
-            )?;
-            self.usage.wait_for_refresh(Some(&repository.repository_id));
-            self.usage.cached_window(
-                repository,
-                range,
-                now_ms,
-                cached_start,
-                cached_end,
-                bucket,
-                count,
-                false,
-                Projection::Tokens,
-                self.usage.rate_cards()?,
-                None,
-            )?
-        } else {
-            self.usage.cached_window(
-                repository,
-                range,
-                now_ms,
-                cached_start,
-                cached_end,
-                bucket,
-                count,
-                false,
-                projection,
-                rate_cards,
-                None,
-            )?
-        };
-        self.attach_outcome_titles(&mut report)?;
-        Ok(report)
-    }
-
     pub(crate) fn performance_tokens(
         &self,
         repository: &RepositoryRecord,
@@ -553,32 +487,25 @@ impl UsageService {
 }
 
 impl CodexUsage {
-    pub fn new(config: Config, authority: Database) -> Self {
-        Self::with_probe(
-            config,
-            authority,
-            Arc::new(HostClock),
-            Arc::new(HostRepositoryProbe),
-        )
+    pub(crate) fn binding_capture_failed(&self, uid: u32, repository: &str) -> bool {
+        self.binding_failures.lock().map_or(true, |failures| {
+            failures.contains(&(uid, repository.to_owned()))
+        })
     }
 
-    pub fn with_probe(
-        config: Config,
-        authority: Database,
-        clock: Arc<dyn Clock>,
-        probe: Arc<dyn RepositoryProbe>,
-    ) -> Self {
+    pub fn new(config: Config, authority: Database) -> Self {
+        Self::with_clock(config, authority, Arc::new(HostClock))
+    }
+    pub fn with_clock(config: Config, authority: Database, clock: Arc<dyn Clock>) -> Self {
         Self {
             config: Arc::new(config),
             authority,
             clock,
-            probe,
             cache: cache::UsageCache::default(),
             api: collector_api::CollectorApi::default(),
-            worktree_keys: Arc::new(Mutex::new(BTreeMap::new())),
+            binding_failures: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
-
     pub fn repositories(
         &self,
         repositories: &[RepositoryRecord],
@@ -618,7 +545,10 @@ impl CodexUsage {
         let now_ms = self.now_ms()?;
         let mut rows = Vec::new();
         for repository in repositories {
-            let report = self.repository_tokens(repository, range.clone())?;
+            // Consume the same display entry started by repositories().
+            // Switching projections here starts a second, empty cache entry
+            // after the first entry has already finished refreshing.
+            let report = self.repository_fast(repository, range.clone())?;
             rows.push(UsageRepositoryRow {
                 repository_id: report.repository_id,
                 display_name: report.display_name,
@@ -797,6 +727,7 @@ impl CodexUsage {
             bucket_count,
             &[],
             BTreeMap::new(),
+            None,
             self.config.codex_usage_sources.len(),
         );
         if let Some(selection) = &selection {
@@ -830,7 +761,7 @@ impl CodexUsage {
         }
         let usage = self.clone();
         let repository = repository.clone();
-        Ok(self.cache.get(key, empty, move || {
+        Ok(self.cache.get_window(key, end_ms, empty, move |cutoff_ms| {
             // Identity mapping belongs to this existing background loader,
             // never the Console request. One shared budget bounds every path.
             let selection = selection
@@ -849,7 +780,7 @@ impl CodexUsage {
                 range,
                 now_ms,
                 start_ms,
-                end_ms,
+                cutoff_ms,
                 bucket_ms,
                 bucket_count,
                 resolve_missing,
@@ -879,6 +810,7 @@ impl CodexUsage {
     ) -> Result<UsageRepository, ProtocolError> {
         let mut reports = Vec::new();
         let mut failures = BTreeMap::new();
+        let mut loading = None;
         let mut progress = Vec::new();
         let deadline = Some(deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT));
         for source in &self.config.codex_usage_sources {
@@ -956,7 +888,27 @@ impl CodexUsage {
                                 Err(error) => increment(&mut failures, &error.message),
                             }
                         }
-                        Err(reason) => increment(&mut failures, &reason),
+                        Err(reason) => {
+                            if loading.is_none() && collector_api::is_pending(&reason) {
+                                loading = self.api.loading_for(
+                                    source,
+                                    Some(&key),
+                                    selection
+                                        .as_ref()
+                                        .and_then(|s| s.source_keys.get(&source.uid))
+                                        .and_then(|v| v.as_deref()),
+                                    selection
+                                        .as_ref()
+                                        .map(|s| s.include_unassigned)
+                                        .unwrap_or(true),
+                                    None,
+                                    &[],
+                                    start_ms,
+                                    end_ms,
+                                );
+                            }
+                            increment(&mut failures, &reason)
+                        }
                     }
                 }
                 Err(error) => increment(&mut failures, &error.message),
@@ -971,6 +923,7 @@ impl CodexUsage {
             bucket_count,
             &reports,
             failures,
+            loading,
             self.config.codex_usage_sources.len(),
         );
         if let Some(mut selection) = selection {
@@ -1020,7 +973,7 @@ impl CodexUsage {
             repository,
             now_ms,
             resolve_missing,
-            Instant::now() + SOURCE_TIMEOUT,
+            Instant::now() + collector_api::API_BUDGET,
         )
     }
 
@@ -1032,47 +985,33 @@ impl CodexUsage {
         resolve_missing: bool,
         deadline: Instant,
     ) -> Result<String, ProtocolError> {
+        if !has_usage_v2_manifest(source) {
+            return Err(source_error("legacy_source_unsupported"));
+        }
         let uid = source.uid;
         let repository_id = repository.repository_id.clone();
-        let cached = self
-            .authority
-            .call(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT codex_repository_id FROM codex_usage_repository_links WHERE source_uid=?1 AND repository_id=?2",
-                        rusqlite::params![uid,repository_id],
-                        |row| row.get::<_,String>(0),
-                    )
-                    .optional()
-                    .map_err(DatabaseError::from)
-            })
-            .map_err(database_error)?;
+        let cached = self.authority.read(move |connection| {
+            connection.query_row("SELECT codex_repository_id FROM codex_usage_repository_links WHERE source_uid=$1 AND repository_id=$2 AND source_schema=3 AND taxonomy_version=1", crate::database::params![uid,repository_id], |row| row.get::<_,String>(0)).optional().map_err(DatabaseError::from)
+        }).map_err(database_error)?.filter(|key| valid_repository_key(key));
+        if let Some(key) = cached {
+            return Ok(key);
+        }
         if !resolve_missing {
-            return cached.ok_or_else(|| source_error("mapping_pending"));
+            return Err(source_error("mapping_pending"));
         }
-        if Instant::now() >= deadline {
-            return Err(source_error("query_budget_exhausted"));
-        }
-        let (key, schema, taxonomy) = self
-            .probe
-            .probe_until(source, &repository.root_path, now_ms, deadline)
-            .map_err(source_error)?;
-        if !valid_repository_key(&key) {
-            return Err(source_error("source_unavailable"));
-        }
+        let key = collector_api::repository_identity(
+            source,
+            &repository.root_path,
+            deadline.min(Instant::now() + collector_api::API_BUDGET),
+        )
+        .map_err(source_error)?;
         let resolved_at = self.timestamp()?;
-        let source_uid = source.uid;
         let repository_id = repository.repository_id.clone();
-        let stored_key = key.clone();
-        self.authority
-            .transaction(move |transaction| {
-                transaction.execute(
-                    "INSERT OR REPLACE INTO codex_usage_repository_links(source_uid,repository_id,codex_repository_id,source_schema,taxonomy_version,resolved_at) VALUES(?1,?2,?3,?4,?5,?6)",
-                    rusqlite::params![source_uid,repository_id,stored_key,schema,taxonomy,resolved_at],
-                )?;
-                Ok(())
-            })
-            .map_err(database_error)?;
+        self.authority.transaction(|tx| {
+            tx.execute("INSERT INTO codex_usage_repository_links(source_uid,repository_id,codex_repository_id,source_schema,taxonomy_version,resolved_at) VALUES($1,$2,$3,3,1,$4) ON CONFLICT(source_uid,repository_id) DO UPDATE SET codex_repository_id=EXCLUDED.codex_repository_id,source_schema=3,taxonomy_version=1,resolved_at=EXCLUDED.resolved_at", crate::database::params![uid,repository_id,key,resolved_at])?;
+            Ok(())
+        }).map_err(database_error)?;
+        let _ = now_ms;
         Ok(key)
     }
 
@@ -1081,8 +1020,8 @@ impl CodexUsage {
         self.authority
             .transaction(move |transaction| {
                 transaction.execute(
-                    "DELETE FROM codex_usage_repository_links WHERE source_uid=?1 AND repository_id=?2",
-                    rusqlite::params![uid,repository_id],
+                    "DELETE FROM codex_usage_repository_links WHERE source_uid=$1 AND repository_id=$2",
+                    crate::database::params![uid,repository_id],
                 )?;
                 Ok(())
             })
@@ -1100,9 +1039,9 @@ impl CodexUsage {
         let repository_id = repository.repository_id.clone();
         let rows = self
             .authority
-            .call(move |connection| {
+            .read(move |connection| {
                 let mut query = connection.prepare(
-                    "SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=?1 ORDER BY rowid",
+                    "SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=$1 ORDER BY rowid",
                 )?;
                 query
                     .query_map([repository_id], |row| {
@@ -1255,48 +1194,10 @@ impl CodexUsage {
         now_ms: u64,
         deadline: Option<Instant>,
     ) -> Result<Option<String>, ProtocolError> {
-        let cache_key = (source.uid, path.to_path_buf());
-        if let Ok(cache) = self.worktree_keys.lock()
-            && let Some((expires, key)) = cache.get(&cache_key)
-            && *expires > Instant::now()
-        {
-            return Ok(key.clone());
-        }
-        let Some(deadline) = deadline.filter(|deadline| *deadline > Instant::now()) else {
-            return Ok(None);
-        };
-        let resolved = self
-            .probe
-            .probe_worktree(source, path, now_ms, deadline)
-            .ok()
-            .and_then(|(_, schema, taxonomy, key)| {
-                (schema >= 9 && taxonomy == SUPPORTED_TAXONOMY)
-                    .then_some(key)
-                    .flatten()
-            })
-            .filter(|key| valid_repository_key(key));
-        // A shared-budget expiry does not permanently mark remaining paths
-        // unavailable; successful earlier probes stay cached for the retry.
-        if Instant::now() < deadline
-            && let Ok(mut cache) = self.worktree_keys.lock()
-        {
-            cache.insert(
-                cache_key,
-                (Instant::now() + Duration::from_secs(300), resolved.clone()),
-            );
-            while cache.len() > 256 {
-                if let Some(oldest) = cache
-                    .iter()
-                    .min_by_key(|(_, (expires, _))| *expires)
-                    .map(|(key, _)| key.clone())
-                {
-                    cache.remove(&oldest);
-                } else {
-                    break;
-                }
-            }
-        }
-        Ok(resolved)
+        // The v1 API does not resolve worktree paths. Only explicit producer
+        // worktree keys are accepted; the retired CLI is never executed.
+        let _ = (source, path, now_ms, deadline);
+        Ok(None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1317,33 +1218,41 @@ impl CodexUsage {
         let selected_keys = worktree_keys.and_then(Option::as_deref);
         let include_unassigned = include_unassigned.unwrap_or(true);
         let filtered = selected_keys.is_some() || !include_unassigned;
-        let inherited_deadline = deadline;
-        // Initial Performance reads return the cached snapshot immediately;
-        // this loader runs off the request path. Let the SQLite fallback finish
-        // with its normal deadline so producer warm-up can still populate the
-        // saved snapshot instead of failing after the API probe alone.
-        // Cache loaders run off the request path. Large historical collectors
-        // may need more than the normal request budget to build a saved
-        // snapshot; keep the UI responsive while allowing that work to finish.
-        let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(120));
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
+        let _ = (bucket_ms, projection, rate_cards);
         if Instant::now() >= deadline {
             return Err("query_budget_exhausted".into());
         }
-        if matches!(projection, Projection::PerformanceFast)
-            && source.api_socket.is_some()
-            && let Ok(summary) = self.api.summary(
-                source,
-                Some(repository_key),
-                worktree_keys.and_then(Option::as_deref),
-                include_unassigned,
-                start_ms,
-                end_ms,
-                deadline.min(Instant::now() + collector_api::API_BUDGET),
-            )
-        {
+        if has_usage_v2_manifest(source) {
+            let summary = self
+                .api
+                .summary(
+                    source,
+                    Some(repository_key),
+                    worktree_keys.and_then(Option::as_deref),
+                    include_unassigned,
+                    start_ms,
+                    end_ms,
+                    deadline.min(Instant::now() + collector_api::API_BUDGET),
+                )
+                .map_err(|reason| {
+                    // A fresh store is available only through a successful,
+                    // versioned handshake. Never fall back to legacy SQLite.
+                    if filtered && reason == "api_contract_unsupported" {
+                        "worktree_attribution_unavailable".to_owned()
+                    } else {
+                        reason
+                    }
+                })?;
             if filtered
-                && (summary.report.database_schema_version < 9
-                    || summary.report.worktree_coverage.is_none())
+                && (summary.report.worktree_coverage.is_none()
+                    || summary.source.as_ref().is_some_and(|source| {
+                        source
+                            .get("coverageState")
+                            .or_else(|| source.get("coverage_state"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("unavailable")
+                    }))
             {
                 return Err("worktree_attribution_unavailable".into());
             }
@@ -1354,173 +1263,12 @@ impl CodexUsage {
                 include_unassigned,
             ));
         }
-        let result = (|| {
-            let connection = match inherited_deadline {
-                Some(deadline) => open_source_until(source, deadline)?,
-                None => open_source(source)?,
-            };
-            let schema = maximum_version(&connection, "_sqlx_migrations")?;
-            let taxonomy = maximum_version(&connection, "taxonomy_versions")?;
-            if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema) || taxonomy != SUPPORTED_TAXONOMY {
-                return Err("schema_unsupported".into());
-            }
-            if filtered && schema < 9 {
-                return Err("worktree_attribution_unavailable".into());
-            }
-            if filtered && !has_worktree_attribution(&connection)? {
-                return Err("worktree_attribution_unavailable".into());
-            }
-            let canonical = canonical_repository(&connection, repository_key)?;
-            let family = repository_family(&connection, &canonical)?;
-            if !repository_exists(&connection, &family)? {
-                return Err("mapping_unavailable".into());
-            }
-            let cached_rollup: bool = connection
-                .query_row(
-                    "SELECT schema_version >= 1 AND ready = 1 FROM _usage_report_cache_meta WHERE singleton = 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false);
-            if cached_rollup
-                && matches!(projection, Projection::Tokens | Projection::PerformanceFast)
-            {
-                return cached_dimension_token_report(
-                    &connection,
-                    &family,
-                    schema,
-                    taxonomy,
-                    start_ms,
-                    end_ms,
-                    bucket_ms,
-                    bucket_count,
-                    rate_cards,
-                );
-            }
-            let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
-            if canonical
-                && matches!(
-                    projection,
-                    Projection::Full | Projection::Tokens | Projection::PerformanceFast
-                )
-            {
-                // The producer API summary is intentionally compact and does
-                // not carry terminal timing or tool outcomes. Detail reads
-                // therefore stay on the bounded canonical facts reader.
-                if !filtered
-                    && matches!(projection, Projection::PerformanceFast)
-                    && bucket_count > 1
-                {
-                    return source_token_report(
-                        &connection,
-                        &family,
-                        schema,
-                        taxonomy,
-                        start_ms,
-                        end_ms,
-                        bucket_ms,
-                        bucket_count,
-                    );
-                }
-                let mut facts = match projection {
-                    Projection::Full => review_facts::read(&connection, &family, start_ms, end_ms)?,
-                    Projection::PerformanceFast => {
-                        performance::read_fast(&connection, &family, start_ms, end_ms)?
-                            .map(Ok)
-                            .unwrap_or_else(|| {
-                                review_facts::read(&connection, &family, start_ms, end_ms)
-                            })?
-                    }
-                    Projection::Tokens => {
-                        performance::read(&connection, &family, start_ms, end_ms)?
-                            .map(Ok)
-                            .unwrap_or_else(|| {
-                                review_facts::read(&connection, &family, start_ms, end_ms)
-                            })?
-                    }
-                };
-                if filtered {
-                    filter_worktree_facts(
-                        &connection,
-                        &family,
-                        &mut facts,
-                        selected_keys,
-                        include_unassigned,
-                    )?;
-                }
-                facts.rates = rate_cards.to_vec();
-                let mut series = vec![BTreeMap::new(); bucket_count];
-                let mut observed = vec![false; bucket_count];
-                let mut coverage = vec![CoverageState::Unobserved; bucket_count];
-                for token in &facts.tokens {
-                    if token.category != "total_tokens" {
-                        continue;
-                    }
-                    if let Some(index) = bucket_index(token.at, start_ms, bucket_ms, bucket_count) {
-                        observed[index] = true;
-                        if let (Some(value), Some(owner)) =
-                            (token.value, facts.operations.get(&token.owner))
-                        {
-                            *series[index]
-                                .entry(owner.operation.phase.clone())
-                                .or_insert(0u64) += value;
-                        }
-                        coverage[index] =
-                            if token.incomplete || coverage[index] == CoverageState::Partial {
-                                CoverageState::Partial
-                            } else {
-                                CoverageState::Complete
-                            };
-                    }
-                }
-                let (mut report, _) = if matches!(projection, Projection::Full) {
-                    review_aggregate::aggregate(&connection, facts, None, start_ms, end_ms)?
-                } else {
-                    review_aggregate::display(&connection, facts, None, start_ms, end_ms)?
-                };
-                report.phase_series = series;
-                report.token_buckets_observed = observed;
-                report.bucket_coverage = coverage;
-                report.database_schema = schema;
-                return Ok(report);
-            }
-            if filtered {
-                return Err("worktree_attribution_unavailable".into());
-            }
-            match projection {
-                Projection::Full => source_report(
-                    &connection,
-                    &family,
-                    schema,
-                    taxonomy,
-                    start_ms,
-                    end_ms,
-                    bucket_ms,
-                    bucket_count,
-                    rate_cards,
-                ),
-                Projection::Tokens | Projection::PerformanceFast => source_token_report(
-                    &connection,
-                    &family,
-                    schema,
-                    taxonomy,
-                    start_ms,
-                    end_ms,
-                    bucket_ms,
-                    bucket_count,
-                ),
-            }
-        })();
-        if Instant::now() >= deadline {
-            Err("query_budget_exhausted".into())
-        } else {
-            result
-        }
+        Err("legacy_source_unsupported".into())
     }
 
     fn rate_cards(&self) -> Result<RateCardSnapshot, ProtocolError> {
         self.authority
-            .call(|connection| Ok(crate::rate_card::snapshot_rows(connection)?))
+            .read(|connection| Ok(crate::rate_card::snapshot_rows(connection)?))
             .map_err(database_error)
     }
 
@@ -1544,110 +1292,11 @@ impl CodexUsage {
     }
 }
 
-fn source_progress(source: &CodexUsageSource) -> Option<UsageSnapshot> {
-    let connection = open_source_until(source, Instant::now() + Duration::from_millis(100)).ok()?;
-    let mut rows = connection
-        .prepare("SELECT source,cursor,high_water FROM _usage_report_backfill")
-        .ok()?;
-    let mut completed = 0_u64;
-    let mut total = 0_u64;
-    let mut stage = None;
-    let mut found = false;
-    let entries = rows
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })
-        .ok()?;
-    for entry in entries {
-        let (name, cursor, high_water) = entry.ok()?;
-        let cursor = u64::try_from(cursor).ok()?;
-        let high_water = u64::try_from(high_water).ok()?;
-        completed = completed.saturating_add(cursor);
-        total = total.saturating_add(high_water);
-        if cursor < high_water && stage.is_none() {
-            stage = Some(name);
-        }
-        found = true;
-    }
-    found.then_some(UsageSnapshot {
-        updated_at_ms: None,
-        refreshing: completed < total,
-        refresh_failed: false,
-        progress_completed: Some(completed),
-        progress_total: Some(total),
-        progress_stage: stage,
-    })
+fn source_progress(_: &CodexUsageSource) -> Option<UsageSnapshot> {
+    None
 }
 
-fn open_source(source: &CodexUsageSource) -> Result<Connection, String> {
-    open_source_until(source, Instant::now() + QUERY_TIMEOUT)
-}
-
-fn open_source_until(source: &CodexUsageSource, deadline: Instant) -> Result<Connection, String> {
-    let path = source.codex_home.join("usage/usage.sqlite3");
-    let descriptor = open(
-        &path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|_| "source_unavailable".to_owned())?;
-    let metadata = fstat(&descriptor).map_err(|_| "source_unavailable".to_owned())?;
-    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-        || metadata.st_uid != source.uid
-    {
-        return Err("source_unavailable".into());
-    }
-    #[cfg(target_os = "linux")]
-    let exact_path = PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
-    #[cfg(not(target_os = "linux"))]
-    let exact_path = path;
-    let connection = Connection::open_with_flags(
-        exact_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|_| "source_unavailable".to_owned())?;
-    connection
-        .pragma_update(None, "query_only", true)
-        .map_err(|_| "source_unavailable".to_owned())?;
-    // Derived joins may spill to disk; a large collector must not turn the
-    // daemon into an in-memory copy of its database or WAL.
-    connection
-        .pragma_update(None, "temp_store", "FILE")
-        .map_err(|_| "source_unavailable")?;
-    connection
-        .pragma_update(None, "cache_size", -4096)
-        .map_err(|_| "source_unavailable")?;
-    connection
-        .pragma_update(None, "mmap_size", 0)
-        .map_err(|_| "source_unavailable")?;
-    connection
-        .busy_timeout(Duration::from_millis(250))
-        .map_err(|_| "source_unavailable".to_owned())?;
-    connection
-        .progress_handler(10_000, Some(move || Instant::now() > deadline))
-        .map_err(|_| "source_unavailable".to_owned())?;
-    Ok(connection)
-}
-
-fn maximum_version(connection: &Connection, table: &str) -> Result<u32, String> {
-    if !matches!(table, "_sqlx_migrations" | "taxonomy_versions") {
-        return Err("source_unavailable".into());
-    }
-    let value = connection
-        .query_row(
-            &format!("SELECT COALESCE(MAX(version),0) FROM {table}"),
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|_| "source_unavailable".to_owned())?;
-    u32::try_from(value).map_err(|_| "source_unavailable".into())
-}
-
+#[cfg(test)]
 fn has_worktree_attribution(connection: &Connection) -> Result<bool, String> {
     connection
         .query_row(
@@ -1661,6 +1310,7 @@ fn has_worktree_attribution(connection: &Connection) -> Result<bool, String> {
 /// Retain facts by their effective token-owning operation. A covered tool
 /// observation therefore follows its request rather than its reporting tool.
 /// The same facts feed totals, components, activity, model cost and the chart.
+#[cfg(test)]
 fn filter_worktree_facts(
     connection: &Connection,
     family: &[String],
@@ -1702,416 +1352,7 @@ fn filter_worktree_facts(
     Ok(())
 }
 
-fn canonical_repository(connection: &Connection, key: &str) -> Result<String, String> {
-    if !valid_repository_key(key) {
-        return Err("mapping_unavailable".into());
-    }
-    let mut current = key.to_owned();
-    let mut seen = BTreeSet::new();
-    while seen.len() < 64 && seen.insert(current.clone()) {
-        let target = connection
-            .query_row(
-                "SELECT target_repository_id FROM repository_merge_events WHERE source_repository_id=?1",
-                [&current],
-                |row| row.get::<_,String>(0),
-            )
-            .optional()
-            .map_err(|_| "source_unavailable".to_owned())?;
-        let Some(target) = target else {
-            return Ok(current);
-        };
-        if !valid_repository_key(&target) {
-            return Err("source_unavailable".into());
-        }
-        current = target;
-    }
-    Err("source_unavailable".into())
-}
-
-fn repository_family(connection: &Connection, canonical: &str) -> Result<Vec<String>, String> {
-    let mut statement = connection
-        .prepare(
-            "WITH RECURSIVE family(id) AS (SELECT ?1 UNION ALL SELECT merge.source_repository_id FROM repository_merge_events merge JOIN family ON merge.target_repository_id=family.id) SELECT id FROM family",
-        )
-        .map_err(|_| "source_unavailable".to_owned())?;
-    let rows = statement
-        .query_map([canonical], |row| row.get::<_, String>(0))
-        .map_err(|_| "source_unavailable".to_owned())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| "source_unavailable".to_owned())?;
-    if rows.is_empty() || rows.len() > 1_024 || rows.iter().any(|key| !valid_repository_key(key)) {
-        return Err("source_unavailable".into());
-    }
-    Ok(rows)
-}
-
-fn repository_exists(connection: &Connection, family: &[String]) -> Result<bool, String> {
-    let sql = format!(
-        "SELECT 1 FROM repositories WHERE id IN ({}) LIMIT 1",
-        placeholders(family.len())
-    );
-    connection
-        .query_row(&sql, params_from_iter(family.iter().cloned()), |_| Ok(()))
-        .optional()
-        .map(|row| row.is_some())
-        .map_err(|_| "source_unavailable".into())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn source_report(
-    connection: &Connection,
-    family: &[String],
-    schema: u32,
-    taxonomy: u32,
-    start_ms: u64,
-    end_ms: u64,
-    bucket_ms: u64,
-    bucket_count: usize,
-    rate_cards: &[devcoordinator2_api::rate_card::RateCard],
-) -> Result<SourceReport, String> {
-    let mut values = family
-        .iter()
-        .cloned()
-        .map(SqlValue::Text)
-        .collect::<Vec<_>>();
-    values.push(SqlValue::Integer(i64_value(end_ms)?));
-    values.push(SqlValue::Integer(i64_value(start_ms)?));
-    let has_model_metadata: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('model_requests') WHERE name='model' AND EXISTS(SELECT 1 FROM pragma_table_info('model_requests') WHERE name='provider_kind'))",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
-    let model_select = if has_model_metadata {
-        "request.provider_kind,request.model"
-    } else {
-        "NULL,NULL"
-    };
-    let has_context_table: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='operation_work_contexts')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
-    let context_select = if schema >= 7 && has_context_table {
-        "context.outcome_id"
-    } else {
-        "NULL"
-    };
-    let context_join = if schema >= 7 && has_context_table {
-        "LEFT JOIN operation_work_contexts context ON context.operation_id=operation.id"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT operation.id,operation.operation_kind,operation.agent_id,operation.started_at_ms,operation.phase,operation.activity,operation.activity_state,operation.attribution_provenance,terminal.occurred_at_ms,terminal.event_kind,tool.operation_family,tool.id,request.id,{model_select},{context_select} FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id LEFT JOIN model_requests request ON request.operation_id=operation.id {context_join} WHERE operation.id IN (SELECT attribution.operation_id FROM repository_attributions attribution WHERE attribution.repository_id IN ({})) AND operation.started_at_ms<? AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)",
-        placeholders(family.len())
-    );
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|_| "source_unavailable".to_owned())?;
-    let mut rows = statement
-        .query(params_from_iter(values))
-        .map_err(|_| "source_unavailable".to_owned())?;
-    let mut operations_by_id = BTreeMap::new();
-    let mut request_operations = HashMap::new();
-    let mut tool_operations = HashMap::new();
-    while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
-        let id = row
-            .get::<_, String>(0)
-            .map_err(|_| "source_unavailable".to_owned())?;
-        if let Some(tool_id) = row
-            .get::<_, Option<String>>(11)
-            .map_err(|_| "source_unavailable".to_owned())?
-        {
-            tool_operations.insert(tool_id, id.clone());
-        }
-        if let Some(request_id) = row
-            .get::<_, Option<String>>(12)
-            .map_err(|_| "source_unavailable".to_owned())?
-        {
-            request_operations.insert(request_id, id.clone());
-        }
-        if operations_by_id.contains_key(&id) {
-            continue;
-        }
-        operations_by_id.insert(
-            id.clone(),
-            Operation {
-                id,
-                kind: row.get(1).map_err(|_| "source_unavailable".to_owned())?,
-                agent_id: row.get(2).map_err(|_| "source_unavailable".to_owned())?,
-                started_at_ms: u64::try_from(
-                    row.get::<_, i64>(3)
-                        .map_err(|_| "source_unavailable".to_owned())?,
-                )
-                .map_err(|_| "source_unavailable".to_owned())?,
-                finished_at_ms: row
-                    .get::<_, Option<i64>>(8)
-                    .map_err(|_| "source_unavailable".to_owned())?
-                    .and_then(|value| u64::try_from(value).ok()),
-                phase: safe_phase(
-                    &row.get::<_, String>(4)
-                        .map_err(|_| "source_unavailable".to_owned())?,
-                ),
-                activity: safe_label(
-                    &row.get::<_, String>(5)
-                        .map_err(|_| "source_unavailable".to_owned())?,
-                ),
-                activity_state: safe_label(
-                    &row.get::<_, String>(6)
-                        .map_err(|_| "source_unavailable".to_owned())?,
-                ),
-                provenance: safe_label(
-                    &row.get::<_, String>(7)
-                        .map_err(|_| "source_unavailable".to_owned())?,
-                ),
-                terminal_event: row.get(9).map_err(|_| "source_unavailable".to_owned())?,
-                tool_family: row
-                    .get::<_, Option<String>>(10)
-                    .map_err(|_| "source_unavailable".to_owned())?
-                    .map(|value| safe_label(&value)),
-                provider_kind: row.get(13).map_err(|_| "source_unavailable".to_owned())?,
-                model: row.get(14).map_err(|_| "source_unavailable".to_owned())?,
-                outcome_id: row.get(15).map_err(|_| "source_unavailable".to_owned())?,
-            },
-        );
-    }
-    drop(rows);
-    drop(statement);
-    let operation_ids = operations_by_id.keys().cloned().collect::<Vec<_>>();
-    for identifiers in operation_ids.chunks(SQLITE_VARIABLE_CHUNK) {
-        let sql = format!(
-            "SELECT operation_id,phase,activity,activity_state,provenance FROM effective_classification_events WHERE operation_id IN ({})",
-            placeholders(identifiers.len())
-        );
-        let mut statement = connection
-            .prepare(&sql)
-            .map_err(|_| "source_unavailable".to_owned())?;
-        let mut rows = statement
-            .query(params_from_iter(identifiers.iter().cloned()))
-            .map_err(|_| "source_unavailable".to_owned())?;
-        while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
-            let operation_id = row
-                .get::<_, String>(0)
-                .map_err(|_| "source_unavailable".to_owned())?;
-            let Some(operation) = operations_by_id.get_mut(&operation_id) else {
-                continue;
-            };
-            operation.phase = safe_phase(
-                &row.get::<_, String>(1)
-                    .map_err(|_| "source_unavailable".to_owned())?,
-            );
-            operation.activity = safe_label(
-                &row.get::<_, String>(2)
-                    .map_err(|_| "source_unavailable".to_owned())?,
-            );
-            operation.activity_state = safe_label(
-                &row.get::<_, String>(3)
-                    .map_err(|_| "source_unavailable".to_owned())?,
-            );
-            operation.provenance = safe_label(
-                &row.get::<_, String>(4)
-                    .map_err(|_| "source_unavailable".to_owned())?,
-            );
-        }
-    }
-    let mut report = SourceReport {
-        database_schema: schema,
-        taxonomy_version: taxonomy,
-        phase_series: vec![BTreeMap::new(); bucket_count],
-        token_buckets_observed: vec![false; bucket_count],
-        bucket_coverage: vec![CoverageState::Unobserved; bucket_count],
-        ..Default::default()
-    };
-    let mut by_id = HashMap::new();
-    for operation in operations_by_id.into_values() {
-        report.evidence = true;
-        report.operation_count = report.operation_count.saturating_add(1);
-        report.freshest_at_ms = Some(
-            report
-                .freshest_at_ms
-                .unwrap_or(0)
-                .max(operation.started_at_ms),
-        );
-        if operation.kind == "model_request" {
-            report.model_request_count = report.model_request_count.saturating_add(1);
-        }
-        if matches!(
-            operation.kind.as_str(),
-            "local_tool" | "hosted_tool" | "activity_control"
-        ) {
-            report.tool_count = report.tool_count.saturating_add(1);
-            increment(
-                &mut report.tool_outcomes,
-                tool_outcome(operation.terminal_event.as_deref()),
-            );
-            increment(
-                &mut report.tool_families,
-                operation.tool_family.as_deref().unwrap_or("unknown"),
-            );
-        }
-        increment_pair(
-            &mut report.activity_operations,
-            (&operation.phase, &operation.activity),
-            1,
-        );
-        increment_triple(
-            &mut report.activity_provenance,
-            (&operation.phase, &operation.activity, &operation.provenance),
-            1,
-        );
-        by_id.insert(operation.id.clone(), operation);
-    }
-    add_tokens(
-        connection,
-        &mut report,
-        &by_id,
-        &request_operations,
-        &tool_operations,
-        family,
-        start_ms,
-        end_ms,
-        bucket_ms,
-        bucket_count,
-        rate_cards,
-    )?;
-    add_coverage(
-        connection,
-        &mut report,
-        &by_id,
-        start_ms,
-        end_ms,
-        bucket_ms,
-        bucket_count,
-    )?;
-    add_intervals(connection, &mut report, &by_id, start_ms, end_ms)?;
-    Ok(report)
-}
-
-// Match the bounded source-report readers' window and pricing parameters.
-#[allow(clippy::too_many_arguments)]
-fn cached_dimension_token_report(
-    connection: &Connection,
-    family: &[String],
-    schema: u32,
-    taxonomy: u32,
-    start_ms: u64,
-    end_ms: u64,
-    bucket_ms: u64,
-    bucket_count: usize,
-    rate_cards: &[devcoordinator2_api::rate_card::RateCard],
-) -> Result<SourceReport, String> {
-    let repositories = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
-    let lower_hour = i64_value(start_ms / 3_600_000)?;
-    let upper_hour = i64_value(end_ms.saturating_add(3_599_999) / 3_600_000)?;
-    let sql = r#"
-        SELECT hour_index, phase, activity, provenance, measured_tokens,
-               unknown_observations, observation_count, coverage_state
-        FROM _usage_report_dimension_tokens INDEXED BY sqlite_autoindex__usage_report_dimension_tokens_1
-        WHERE hour_index >= ?2 AND hour_index < ?3
-          AND repository_bucket IN (SELECT value FROM json_each(?1))
-          AND category_path = 'total_tokens'
-          AND measurement_provenance = 'provider_reported'
-    "#;
-    let mut statement = connection.prepare(sql).map_err(|_| "source_unavailable")?;
-    let mut rows = statement
-        .query(rusqlite::params![repositories, lower_hour, upper_hour])
-        .map_err(|_| "source_unavailable")?;
-    let mut report = SourceReport {
-        database_schema: schema,
-        taxonomy_version: taxonomy,
-        phase_series: vec![BTreeMap::new(); bucket_count],
-        token_buckets_observed: vec![false; bucket_count],
-        bucket_coverage: vec![CoverageState::Unobserved; bucket_count],
-        ..Default::default()
-    };
-    while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
-        let hour: u64 = row
-            .get::<_, i64>(0)
-            .map_err(|_| "source_unavailable")?
-            .try_into()
-            .map_err(|_| "source_unavailable")?;
-        let at = hour.saturating_mul(3_600_000);
-        let phase = safe_phase(&row.get::<_, String>(1).map_err(|_| "source_unavailable")?);
-        let activity = safe_label(&row.get::<_, String>(2).map_err(|_| "source_unavailable")?);
-        let provenance = safe_label(&row.get::<_, String>(3).map_err(|_| "source_unavailable")?);
-        let tokens: u64 = row
-            .get::<_, i64>(4)
-            .map_err(|_| "source_unavailable")?
-            .try_into()
-            .map_err(|_| "source_unavailable")?;
-        let unknown: i64 = row.get(5).map_err(|_| "source_unavailable")?;
-        let observations: u64 = row
-            .get::<_, i64>(6)
-            .map_err(|_| "source_unavailable")?
-            .try_into()
-            .map_err(|_| "source_unavailable")?;
-        let coverage = safe_coverage(&row.get::<_, String>(7).map_err(|_| "source_unavailable")?);
-        report.evidence |= observations > 0;
-        report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(at));
-        *report.tokens.entry("total_tokens".into()).or_default() = report
-            .tokens
-            .get("total_tokens")
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(tokens);
-        let coverage_key = coverage_name(&coverage).to_owned();
-        let previous = report.token_observations.remove(&coverage_key).unwrap_or(0);
-        report
-            .token_observations
-            .insert(coverage_key, previous.saturating_add(observations));
-        if unknown > 0 || coverage != CoverageState::Complete {
-            increment(&mut report.coverage_events, "partial");
-        } else {
-            let previous = report.coverage_events.remove("complete").unwrap_or(0);
-            report
-                .coverage_events
-                .insert("complete".into(), previous.saturating_add(observations));
-        }
-        *report
-            .activities
-            .entry((phase.clone(), activity.clone()))
-            .or_default() = report
-            .activities
-            .get(&(phase.clone(), activity.clone()))
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(tokens);
-        *report
-            .activity_provenance
-            .entry((phase.clone(), activity, provenance))
-            .or_default() = observations;
-        if let Some(index) = bucket_index(at, start_ms, bucket_ms, bucket_count) {
-            report.token_buckets_observed[index] = true;
-            let previous = report.phase_series[index].remove(&phase).unwrap_or(0);
-            report.phase_series[index].insert(phase, previous.saturating_add(tokens));
-            report.bucket_coverage[index] = if coverage == CoverageState::Complete
-                && report.bucket_coverage[index] != CoverageState::Partial
-            {
-                CoverageState::Complete
-            } else {
-                CoverageState::Partial
-            };
-        }
-    }
-    add_cached_dimension_costs(
-        connection,
-        &mut report,
-        family,
-        start_ms,
-        end_ms,
-        rate_cards,
-    )?;
-    Ok(report)
-}
-
-/// Enrich the indexed token dimensions with model/provider components from the
-/// same hourly rollup. This keeps the cached path bounded by the producer's
-/// primary key and avoids scanning the lifetime model receipt table.
-#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn add_cached_dimension_costs(
     connection: &Connection,
     report: &mut SourceReport,
@@ -2228,276 +1469,7 @@ fn add_cached_dimension_costs(
     Ok(())
 }
 
-// Progress needs provider totals by observation time, without loading every
-// operation's timing, tool details and classification from the full history.
-#[allow(clippy::too_many_arguments)]
-fn source_token_report(
-    connection: &Connection,
-    family: &[String],
-    schema: u32,
-    taxonomy: u32,
-    start_ms: u64,
-    end_ms: u64,
-    bucket_ms: u64,
-    bucket_count: usize,
-) -> Result<SourceReport, String> {
-    // Older schemas cannot identify covered observations. Supported review
-    // schemas use the same owner/event deduplication as the Performance charts.
-    let canonical = if schema >= 7 && bucket_count == 1 {
-        performance::token_sql(connection)?
-    } else {
-        None
-    };
-    if schema >= 7 && bucket_count == 1 && canonical.is_none() {
-        let facts = review_facts::read(connection, family, start_ms, end_ms)?;
-        return review_aggregate::display(connection, facts, None, start_ms, end_ms)
-            .map(|(report, _)| report);
-    }
-    let mut values = vec![
-        SqlValue::Integer(i64_value(start_ms)?),
-        SqlValue::Integer(i64_value(end_ms)?),
-    ];
-    values.extend(family.iter().cloned().map(SqlValue::Text));
-    values.extend(family.iter().cloned().map(SqlValue::Text));
-    let indexed: bool = connection.query_row(
-        "SELECT COUNT(*)=3 FROM sqlite_schema WHERE type='index' AND name IN ('token_observations_repository_total_observed_idx','model_requests_id_operation_idx','tool_invocations_id_operation_idx')",
-        [], |row| row.get(0),
-    ).map_err(|_| "source_unavailable")?;
-    let sql = if let Some(prefix) = canonical {
-        values = vec![
-            SqlValue::Text(serde_json::to_string(family).map_err(|_| "source_unavailable")?),
-            SqlValue::Integer(i64_value(start_ms)?),
-            SqlValue::Integer(i64_value(end_ms)?),
-        ];
-        format!(
-            "{prefix} SELECT CASE WHEN conflict THEN NULL ELSE token_count END,
-            CASE WHEN incomplete OR unknown_count OR conflict THEN 'partial' ELSE 'complete' END,
-            observed_at_ms FROM tokens"
-        )
-    } else if indexed {
-        format!(
-            "WITH bounds AS (SELECT ? lower_ms, ? upper_ms), observed AS MATERIALIZED (
-               SELECT token_count,coverage_state,observed_at_ms,model_request_id,tool_invocation_id
-               FROM bounds CROSS JOIN token_observations INDEXED BY token_observations_repository_total_observed_idx
-               WHERE repository_bucket IN ({}) AND category_path='total_tokens'
-                 AND measurement_provenance='provider_reported'
-                 AND observed_at_ms>=lower_ms AND observed_at_ms<upper_ms)
-             SELECT token.token_count,token.coverage_state,token.observed_at_ms FROM observed token
-             WHERE EXISTS (SELECT 1 FROM repository_attributions attribution
-               WHERE attribution.repository_id IN ({}) AND attribution.operation_id=COALESCE(
-                 (SELECT operation_id FROM model_requests INDEXED BY model_requests_id_operation_idx WHERE id=token.model_request_id),
-                 (SELECT operation_id FROM tool_invocations INDEXED BY tool_invocations_id_operation_idx WHERE id=token.tool_invocation_id)))",
-            placeholders(family.len()), placeholders(family.len()),
-        )
-    } else {
-        format!(
-            "WITH observed AS MATERIALIZED (
-           SELECT rowid FROM token_observations WHERE category_path='total_tokens'
-             AND measurement_provenance='provider_reported'
-             AND observed_at_ms>=? AND observed_at_ms<?)
-         SELECT token.token_count,token.coverage_state,token.observed_at_ms
-         FROM token_observations token
-         WHERE token.rowid IN (SELECT rowid FROM observed) AND token.repository_bucket IN ({})
-           AND EXISTS (SELECT 1 FROM repository_attributions attribution
-             WHERE attribution.repository_id IN ({}) AND attribution.operation_id=COALESCE(
-               (SELECT operation_id FROM model_requests WHERE id=token.model_request_id),
-               (SELECT operation_id FROM tool_invocations WHERE id=token.tool_invocation_id)))",
-            placeholders(family.len()),
-            placeholders(family.len()),
-        )
-    };
-    let mut statement = connection.prepare(&sql).map_err(|_| "source_unavailable")?;
-    let mut rows = statement
-        .query(params_from_iter(values))
-        .map_err(|_| "source_unavailable")?;
-    let mut report = SourceReport {
-        database_schema: schema,
-        taxonomy_version: taxonomy,
-        phase_series: vec![BTreeMap::new(); bucket_count],
-        token_buckets_observed: vec![false; bucket_count],
-        bucket_coverage: vec![CoverageState::Unobserved; bucket_count],
-        ..Default::default()
-    };
-    while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
-        let count = row
-            .get::<_, Option<i64>>(0)
-            .map_err(|_| "source_unavailable")?
-            .and_then(|value| u64::try_from(value).ok());
-        let coverage = safe_coverage(&row.get::<_, String>(1).map_err(|_| "source_unavailable")?);
-        let at = u64::try_from(row.get::<_, i64>(2).map_err(|_| "source_unavailable")?)
-            .map_err(|_| "source_unavailable")?;
-        report.evidence = true;
-        increment(&mut report.token_observations, coverage_name(&coverage));
-        report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(at));
-        let Some(count) = count else { continue };
-        let total = report.tokens.entry("total_tokens".into()).or_default();
-        *total = total.saturating_add(count);
-        if let Some(index) = bucket_index(at, start_ms, bucket_ms, bucket_count) {
-            report.token_buckets_observed[index] = true;
-            // This private projection is consumed only by Progress, which does
-            // not expose phases; keep the shared bucket combiner truthful.
-            let total = report.phase_series[index]
-                .entry("unattributed".into())
-                .or_default();
-            *total = total.saturating_add(count);
-            report.bucket_coverage[index] = if coverage == CoverageState::Complete
-                && report.bucket_coverage[index] != CoverageState::Partial
-            {
-                CoverageState::Complete
-            } else {
-                CoverageState::Partial
-            };
-        }
-    }
-    Ok(report)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn add_tokens(
-    connection: &Connection,
-    report: &mut SourceReport,
-    operations: &HashMap<String, Operation>,
-    request_operations: &HashMap<String, String>,
-    tool_operations: &HashMap<String, String>,
-    family: &[String],
-    start_ms: u64,
-    end_ms: u64,
-    bucket_ms: u64,
-    bucket_count: usize,
-    rate_cards: &[devcoordinator2_api::rate_card::RateCard],
-) -> Result<(), String> {
-    let mut requests = BTreeMap::<String, RequestTokens>::new();
-    for (column, source_operations) in [
-        ("model_request_id", request_operations),
-        ("tool_invocation_id", tool_operations),
-    ] {
-        let mut identifiers = source_operations.keys().cloned().collect::<Vec<_>>();
-        identifiers.sort();
-        for identifier_chunk in identifiers.chunks(SQLITE_VARIABLE_CHUNK) {
-            let mut values = identifier_chunk
-                .iter()
-                .cloned()
-                .map(SqlValue::Text)
-                .collect::<Vec<_>>();
-            values.extend(family.iter().cloned().map(SqlValue::Text));
-            values.extend(
-                TOKEN_CATEGORIES
-                    .iter()
-                    .map(|(name, _)| SqlValue::Text((*name).into())),
-            );
-            values.push(SqlValue::Integer(i64_value(start_ms)?));
-            values.push(SqlValue::Integer(i64_value(end_ms)?));
-            let sql = format!(
-                "SELECT category_path,token_count,coverage_state,observed_at_ms,{column} FROM token_observations WHERE {column} IN ({}) AND repository_bucket IN ({}) AND category_path IN ({}) AND measurement_provenance='provider_reported' AND observed_at_ms>=? AND observed_at_ms<?",
-                placeholders(identifier_chunk.len()),
-                placeholders(family.len()),
-                placeholders(TOKEN_CATEGORIES.len()),
-            );
-            let mut statement = connection
-                .prepare(&sql)
-                .map_err(|_| "source_unavailable".to_owned())?;
-            let mut rows = statement
-                .query(params_from_iter(values))
-                .map_err(|_| "source_unavailable".to_owned())?;
-            while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
-                let source_id = row
-                    .get::<_, String>(4)
-                    .map_err(|_| "source_unavailable".to_owned())?;
-                let Some(operation) = source_operations
-                    .get(&source_id)
-                    .and_then(|operation_id| operations.get(operation_id))
-                else {
-                    continue;
-                };
-                let category = row
-                    .get::<_, String>(0)
-                    .map_err(|_| "source_unavailable".to_owned())?;
-                if !TOKEN_CATEGORIES
-                    .iter()
-                    .any(|(allowed, _)| *allowed == category)
-                {
-                    continue;
-                }
-                let coverage = safe_coverage(
-                    &row.get::<_, String>(2)
-                        .map_err(|_| "source_unavailable".to_owned())?,
-                );
-                let observed = u64::try_from(
-                    row.get::<_, i64>(3)
-                        .map_err(|_| "source_unavailable".to_owned())?,
-                )
-                .map_err(|_| "source_unavailable".to_owned())?;
-                report.evidence = true;
-                increment(&mut report.token_observations, coverage_name(&coverage));
-                report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(observed));
-                let token_count = row
-                    .get::<_, Option<i64>>(1)
-                    .map_err(|_| "source_unavailable".to_owned())?
-                    .and_then(|value| u64::try_from(value).ok());
-                requests.entry(operation.id.clone()).or_default().observe(
-                    &category,
-                    token_count,
-                    coverage != CoverageState::Complete,
-                    observed,
-                );
-                let Some(token_count) = token_count else {
-                    continue;
-                };
-                *report.tokens.entry(category.clone()).or_default() = report
-                    .tokens
-                    .get(&category)
-                    .copied()
-                    .unwrap_or(0)
-                    .saturating_add(token_count);
-                if category != "total_tokens" {
-                    continue;
-                }
-                if let Some(index) = bucket_index(observed, start_ms, bucket_ms, bucket_count) {
-                    report.token_buckets_observed[index] = true;
-                    *report.phase_series[index]
-                        .entry(operation.phase.clone())
-                        .or_default() = report.phase_series[index]
-                        .get(&operation.phase)
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(token_count);
-                    report.bucket_coverage[index] = if coverage == CoverageState::Complete
-                        && report.bucket_coverage[index] != CoverageState::Partial
-                    {
-                        CoverageState::Complete
-                    } else {
-                        CoverageState::Partial
-                    };
-                }
-                increment_pair(
-                    &mut report.activities,
-                    (&operation.phase, &operation.activity),
-                    token_count,
-                );
-            }
-        }
-    }
-    for (id, request) in requests {
-        let op = &operations[&id];
-        let bucket = cost::request_cost(op, &request, rate_cards);
-        merge_cost_bucket(
-            report
-                .activity_costs
-                .entry((op.phase.clone(), op.activity.clone()))
-                .or_default(),
-            &bucket,
-        );
-        if let Some(outcome) = &op.outcome_id {
-            merge_cost_bucket(
-                report.outcome_costs.entry(outcome.clone()).or_default(),
-                &bucket,
-            );
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn add_coverage(
     connection: &Connection,
     report: &mut SourceReport,
@@ -2549,98 +1521,6 @@ fn add_coverage(
     Ok(())
 }
 
-fn add_intervals(
-    connection: &Connection,
-    report: &mut SourceReport,
-    operations: &HashMap<String, Operation>,
-    start_ms: u64,
-    end_ms: u64,
-) -> Result<(), String> {
-    let mut waits: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
-    let mut unknown_waits = BTreeSet::new();
-    let mut operation_ids = operations.keys().cloned().collect::<Vec<_>>();
-    operation_ids.sort();
-    for identifiers in operation_ids.chunks(SQLITE_VARIABLE_CHUNK) {
-        let sql = format!(
-            "SELECT span.operation_id,span.started_at_ms,ended.occurred_at_ms FROM activity_spans span LEFT JOIN activity_span_events ended ON ended.activity_span_id=span.id AND ended.event_kind='ended' WHERE span.operation_id IN ({})",
-            placeholders(identifiers.len())
-        );
-        let mut statement = connection
-            .prepare(&sql)
-            .map_err(|_| "source_unavailable".to_owned())?;
-        let mut rows = statement
-            .query(params_from_iter(identifiers.iter().cloned()))
-            .map_err(|_| "source_unavailable".to_owned())?;
-        while let Some(row) = rows.next().map_err(|_| "source_unavailable".to_owned())? {
-            let operation = row
-                .get::<_, String>(0)
-                .map_err(|_| "source_unavailable".to_owned())?;
-            let started = u64::try_from(
-                row.get::<_, i64>(1)
-                    .map_err(|_| "source_unavailable".to_owned())?,
-            )
-            .map_err(|_| "source_unavailable".to_owned())?;
-            let ended = row
-                .get::<_, Option<i64>>(2)
-                .map_err(|_| "source_unavailable".to_owned())?
-                .and_then(|value| u64::try_from(value).ok());
-            if let Some(interval) = clip_interval(started, ended, start_ms, end_ms) {
-                waits.entry(operation).or_default().push(interval);
-            } else {
-                unknown_waits.insert(operation);
-            }
-        }
-    }
-    for operation in operations.values() {
-        let interval = clip_interval(
-            operation.started_at_ms,
-            operation.finished_at_ms,
-            start_ms,
-            end_ms,
-        );
-        let active = !matches!(
-            operation.activity_state.as_str(),
-            "external_wait" | "user_wait" | "blocked_wait"
-        );
-        let Some(interval) = interval else {
-            report.execution_unknown = report.execution_unknown.saturating_add(1);
-            increment(&mut report.phase_unknown, &operation.phase);
-            if operation.kind == "model_request" {
-                report.request_unknown = report.request_unknown.saturating_add(1);
-            }
-            if active {
-                report.agent_unknown = report.agent_unknown.saturating_add(1);
-            }
-            continue;
-        };
-        report.execution_intervals.push(interval);
-        report
-            .phase_intervals
-            .entry(operation.phase.clone())
-            .or_default()
-            .push(interval);
-        if operation.kind == "model_request" {
-            report.request_intervals.push(interval);
-        }
-        if !active {
-            continue;
-        }
-        if unknown_waits.contains(&operation.id) || operation.agent_id.is_none() {
-            report.agent_unknown = report.agent_unknown.saturating_add(1);
-        } else {
-            report
-                .agent_intervals
-                .entry(operation.agent_id.clone().expect("checked above"))
-                .or_default()
-                .extend(subtract(
-                    interval,
-                    waits.get(&operation.id).map(Vec::as_slice).unwrap_or(&[]),
-                ));
-        }
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments)]
 fn combine(
     repository: &RepositoryRecord,
@@ -2651,6 +1531,7 @@ fn combine(
     bucket_count: usize,
     reports: &[(u32, SourceReport)],
     failures: BTreeMap<String, u64>,
+    loading: Option<UsageLoading>,
     configured: usize,
 ) -> UsageRepository {
     let mut tokens = BTreeMap::new();
@@ -2960,21 +1841,38 @@ fn combine(
         .iter()
         .filter_map(|(_, report)| report.snapshot.as_ref())
         .collect::<Vec<_>>();
-    let snapshot = (!snapshots.is_empty()).then(|| devcoordinator2_api::results::UsageSnapshot {
-        updated_at_ms: snapshots.iter().filter_map(|s| s.updated_at_ms).min(),
-        refreshing: snapshots.iter().any(|s| s.refreshing),
-        refresh_failed: snapshots.iter().any(|s| s.refresh_failed),
-        progress_completed: snapshots.iter().filter_map(|s| s.progress_completed).min(),
-        progress_total: snapshots.iter().filter_map(|s| s.progress_total).max(),
-        progress_stage: snapshots.iter().find_map(|s| s.progress_stage.clone()),
-    });
+    let pending = failures
+        .keys()
+        .any(|reason| collector_api::is_pending(reason));
+    let snapshot =
+        (!snapshots.is_empty() || pending).then(|| devcoordinator2_api::results::UsageSnapshot {
+            updated_at_ms: snapshots.iter().filter_map(|s| s.updated_at_ms).min(),
+            refreshing: pending || snapshots.iter().any(|s| s.refreshing),
+            refresh_failed: snapshots.iter().any(|s| s.refresh_failed),
+            progress_completed: snapshots.iter().filter_map(|s| s.progress_completed).min(),
+            progress_total: snapshots.iter().filter_map(|s| s.progress_total).max(),
+            progress_stage: if pending {
+                Some("source_read".into())
+            } else {
+                snapshots.iter().find_map(|s| s.progress_stage.clone())
+            },
+        });
     UsageRepository {
         repository_id: repository.repository_id.clone(),
         display_name: repository.display_name.clone(),
         range,
         generated_at_ms: now_ms,
         coverage: UsageCoverage {
+            sources: reports
+                .iter()
+                .filter_map(|(_, report)| report.source_snapshot.clone())
+                .collect(),
             snapshot,
+            loading: loading.or_else(|| {
+                reports
+                    .iter()
+                    .find_map(|(_, report)| report.loading.clone())
+            }),
             state: coverage_state.clone(),
             has_gaps: coverage_state != CoverageState::Complete,
             configured_collectors: u32::try_from(configured).unwrap_or(u32::MAX),
@@ -3035,290 +1933,6 @@ fn combine(
     }
 }
 
-impl RepositoryProbe for HostRepositoryProbe {
-    fn probe(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        now_ms: u64,
-    ) -> Result<(String, u32, u32), String> {
-        self.probe_until(source, repository, now_ms, Instant::now() + SOURCE_TIMEOUT)
-    }
-
-    fn probe_until(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        now_ms: u64,
-        deadline: Instant,
-    ) -> Result<(String, u32, u32), String> {
-        match self.probe_format(source, repository, now_ms, true, deadline) {
-            Err(reason) if reason == "identity_unsupported" => {
-                self.probe_format(source, repository, now_ms, false, deadline)
-            }
-            result => result,
-        }
-    }
-
-    fn probe_worktree(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        now_ms: u64,
-        deadline: Instant,
-    ) -> Result<(String, u32, u32, Option<String>), String> {
-        self.probe_format_worktree(source, repository, now_ms, deadline)
-    }
-}
-
-impl HostRepositoryProbe {
-    fn probe_format_worktree(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        _now_ms: u64,
-        deadline: Instant,
-    ) -> Result<(String, u32, u32, Option<String>), String> {
-        if !source.executable.is_absolute()
-            || !source.executable.is_file()
-            || !source.codex_home.is_absolute()
-            || !source.codex_home.is_dir()
-            || !repository.is_absolute()
-            || !repository.is_dir()
-        {
-            return Err("source_unavailable".into());
-        }
-        let effective = rustix::process::geteuid().as_raw();
-        if effective != 0 && effective != source.uid {
-            return Err("source_unavailable".into());
-        }
-        let document = self.run_identity_document(source, repository, deadline)?;
-        let (repository_key, schema, taxonomy) = parse_identity_document(&document, true)?;
-        let worktree_key = document
-            .get("worktreeKey")
-            .and_then(serde_json::Value::as_str)
-            .filter(|key| valid_repository_key(key))
-            .map(str::to_owned);
-        Ok((repository_key, schema, taxonomy, worktree_key))
-    }
-
-    fn run_identity_document(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        deadline: Instant,
-    ) -> Result<serde_json::Value, String> {
-        // Keep command construction and ownership checks identical to the
-        // existing identity probe by using a minimal temporary source wrapper.
-        let (user, effective) = (
-            user_record(source.uid).map_err(|_| "source_unavailable")?,
-            rustix::process::geteuid().as_raw(),
-        );
-        let mut command = if effective == 0 && source.uid != 0 {
-            let setpriv = ["/usr/bin/setpriv", "/bin/setpriv"]
-                .into_iter()
-                .map(Path::new)
-                .find(|candidate| candidate.is_file())
-                .ok_or_else(|| "source_unavailable".to_owned())?;
-            let mut command = Command::new(setpriv);
-            command
-                .arg(format!("--reuid={}", source.uid))
-                .arg(format!("--regid={}", user.gid))
-                .arg("--init-groups")
-                .arg("--")
-                .arg(&source.executable);
-            command
-        } else {
-            Command::new(&source.executable)
-        };
-        command
-            .args(["usage", "--json", "repo", "current", "--identity-only"])
-            .current_dir(repository)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("HOME", user.home)
-            .env("USER", &user.name)
-            .env("LOGNAME", user.name)
-            .env("CODEX_HOME", &source.codex_home)
-            .env("LANG", "C.UTF-8")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = run_probe(command, deadline)?;
-        if !output.status.success() || output.stdout_truncated {
-            return Err("source_unavailable".into());
-        }
-        serde_json::from_slice(&output.stdout).map_err(|_| "source_unavailable".into())
-    }
-
-    fn probe_format(
-        &self,
-        source: &CodexUsageSource,
-        repository: &Path,
-        now_ms: u64,
-        identity_only: bool,
-        deadline: Instant,
-    ) -> Result<(String, u32, u32), String> {
-        if !source.executable.is_absolute()
-            || !source.executable.is_file()
-            || !source.codex_home.is_absolute()
-            || !source.codex_home.is_dir()
-            || !repository.is_absolute()
-            || !repository.is_dir()
-        {
-            return Err("source_unavailable".into());
-        }
-        let user = user_record(source.uid).map_err(|_| "source_unavailable")?;
-        let effective = rustix::process::geteuid().as_raw();
-        if effective != 0 && effective != source.uid {
-            return Err("source_unavailable".into());
-        }
-        let mut command = if effective == 0 && source.uid != 0 {
-            let setpriv = ["/usr/bin/setpriv", "/bin/setpriv"]
-                .into_iter()
-                .map(Path::new)
-                .find(|candidate| candidate.is_file())
-                .ok_or_else(|| "source_unavailable".to_owned())?;
-            let mut command = Command::new(setpriv);
-            command
-                .arg(format!("--reuid={}", source.uid))
-                .arg(format!("--regid={}", user.gid))
-                .arg("--init-groups")
-                .arg("--")
-                .arg(&source.executable);
-            command
-        } else {
-            Command::new(&source.executable)
-        };
-        if identity_only {
-            command.args(["usage", "--json", "repo", "current", "--identity-only"]);
-        } else {
-            command.args([
-                "usage",
-                "--json",
-                "--since",
-                &now_ms.to_string(),
-                "repo",
-                "current",
-            ]);
-        }
-        command
-            .current_dir(repository)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("HOME", user.home)
-            .env("USER", &user.name)
-            .env("LOGNAME", user.name)
-            .env("CODEX_HOME", &source.codex_home)
-            .env("LANG", "C.UTF-8")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = run_probe(command, deadline)?;
-        if !output.status.success() || output.stdout_truncated {
-            if !output.stderr_truncated {
-                if serde_json::from_slice::<serde_json::Value>(&output.stderr)
-                    .ok()
-                    .and_then(|document| {
-                        document
-                            .get("error")?
-                            .get("code")?
-                            .as_str()
-                            .map(str::to_owned)
-                    })
-                    .as_deref()
-                    == Some("not_found")
-                {
-                    return Err("mapping_unavailable".into());
-                }
-                let message = String::from_utf8_lossy(&output.stderr);
-                if identity_only && message.contains("unexpected argument '--identity-only'") {
-                    return Err("identity_unsupported".into());
-                }
-            }
-            return Err("source_unavailable".into());
-        }
-        let document: serde_json::Value =
-            serde_json::from_slice(&output.stdout).map_err(|_| "source_unavailable")?;
-        let key = document
-            .get("scope")
-            .and_then(|scope| scope.get("id"))
-            .and_then(serde_json::Value::as_str)
-            .filter(|key| valid_repository_key(key))
-            .ok_or_else(|| "source_unavailable".to_owned())?;
-        let scope = document
-            .get("scope")
-            .and_then(|scope| scope.get("type"))
-            .and_then(serde_json::Value::as_str);
-        let schema = document
-            .get("databaseSchemaVersion")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or_else(|| "source_unavailable".to_owned())?;
-        let taxonomy = document
-            .get("taxonomyVersion")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or_else(|| "source_unavailable".to_owned())?;
-        if document
-            .get("schemaVersion")
-            .and_then(serde_json::Value::as_u64)
-            != Some(1)
-            || document.get("kind").and_then(serde_json::Value::as_str)
-                != Some(if identity_only {
-                    "usageRepositoryIdentity"
-                } else {
-                    "usageSummary"
-                })
-            || scope != Some("repository")
-        {
-            return Err("source_unavailable".into());
-        }
-        Ok((key.into(), schema, taxonomy))
-    }
-}
-
-fn parse_identity_document(
-    document: &serde_json::Value,
-    identity_only: bool,
-) -> Result<(String, u32, u32), String> {
-    let key = document
-        .get("scope")
-        .and_then(|scope| scope.get("id"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|key| valid_repository_key(key))
-        .ok_or_else(|| "source_unavailable".to_owned())?;
-    let scope = document
-        .get("scope")
-        .and_then(|scope| scope.get("type"))
-        .and_then(serde_json::Value::as_str);
-    let schema = document
-        .get("databaseSchemaVersion")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| "source_unavailable".to_owned())?;
-    let taxonomy = document
-        .get("taxonomyVersion")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| "source_unavailable".to_owned())?;
-    if document
-        .get("schemaVersion")
-        .and_then(serde_json::Value::as_u64)
-        != Some(1)
-        || document.get("kind").and_then(serde_json::Value::as_str)
-            != Some(if identity_only {
-                "usageRepositoryIdentity"
-            } else {
-                "usageSummary"
-            })
-        || scope != Some("repository")
-    {
-        return Err("source_unavailable".into());
-    }
-    Ok((key.into(), schema, taxonomy))
-}
-
 pub(crate) struct UserRecord {
     pub(crate) name: OsString,
     pub(crate) home: OsString,
@@ -3366,8 +1980,6 @@ pub(crate) struct ProbeOutput {
     pub(crate) status: std::process::ExitStatus,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stdout_truncated: bool,
-    pub(crate) stderr: Vec<u8>,
-    pub(crate) stderr_truncated: bool,
 }
 
 pub(crate) fn run_probe_with_limit(
@@ -3436,7 +2048,7 @@ pub(crate) fn run_probe_with_limit(
         .join()
         .map_err(|_| "source_unavailable")?
         .map_err(|_| "source_unavailable")?;
-    let (stderr, stderr_truncated) = stderr
+    let (_stderr, _stderr_truncated) = stderr
         .join()
         .map_err(|_| "source_unavailable")?
         .map_err(|_| "source_unavailable")?;
@@ -3444,13 +2056,7 @@ pub(crate) fn run_probe_with_limit(
         status,
         stdout,
         stdout_truncated,
-        stderr,
-        stderr_truncated,
     })
-}
-
-fn run_probe(command: Command, deadline: Instant) -> Result<ProbeOutput, String> {
-    run_probe_with_limit(command, deadline, SOURCE_OUTPUT_BYTES)
 }
 
 fn kill_probe_group(child: &mut std::process::Child) {
@@ -3514,20 +2120,10 @@ fn range_name(range: &UsageRange) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn bucket_index(at: u64, start: u64, bucket: u64, count: usize) -> Option<usize> {
     let index = at.checked_sub(start)? / bucket;
     usize::try_from(index).ok().filter(|index| *index < count)
-}
-
-fn clip_interval(
-    start: u64,
-    end: Option<u64>,
-    range_start: u64,
-    range_end: u64,
-) -> Option<(u64, u64)> {
-    let end = end.filter(|end| *end >= start)?;
-    let clipped = (start.max(range_start), end.min(range_end));
-    (clipped.0 <= clipped.1).then_some(clipped)
 }
 
 fn union_ms(intervals: &[(u64, u64)]) -> u64 {
@@ -3549,6 +2145,7 @@ fn union_ms(intervals: &[(u64, u64)]) -> u64 {
     total.saturating_add(end.saturating_sub(start))
 }
 
+#[cfg(test)]
 fn subtract(base: (u64, u64), exclusions: &[(u64, u64)]) -> Vec<(u64, u64)> {
     let mut relevant = exclusions
         .iter()
@@ -3570,18 +2167,22 @@ fn subtract(base: (u64, u64), exclusions: &[(u64, u64)]) -> Vec<(u64, u64)> {
     result
 }
 
+#[cfg(test)]
 fn placeholders(count: usize) -> String {
     std::iter::repeat_n("?", count)
         .collect::<Vec<_>>()
         .join(",")
 }
 
+#[cfg(test)]
 fn i64_value(value: u64) -> Result<i64, String> {
     i64::try_from(value).map_err(|_| "source_unavailable".into())
 }
 
 fn valid_repository_key(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.strip_prefix("repo_").is_some_and(|digest| {
+        digest.len() == 40 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
 }
 
 fn safe_phase(value: &str) -> String {
@@ -3605,6 +2206,7 @@ fn safe_label(value: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn safe_coverage(value: &str) -> CoverageState {
     match value {
         "complete" => CoverageState::Complete,
@@ -3614,6 +2216,7 @@ fn safe_coverage(value: &str) -> CoverageState {
     }
 }
 
+#[cfg(test)]
 fn coverage_name(value: &CoverageState) -> &'static str {
     match value {
         CoverageState::Complete => "complete",
@@ -3623,6 +2226,7 @@ fn coverage_name(value: &CoverageState) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn tool_outcome(value: Option<&str>) -> &'static str {
     match value {
         Some("completed") => "completed",
@@ -3638,11 +2242,13 @@ fn increment(values: &mut BTreeMap<String, u64>, name: &str) {
     *value = value.saturating_add(1);
 }
 
+#[cfg(test)]
 fn increment_pair(values: &mut BTreeMap<(String, String), u64>, key: (&str, &str), amount: u64) {
     let value = values.entry((key.0.into(), key.1.into())).or_default();
     *value = value.saturating_add(amount);
 }
 
+#[cfg(test)]
 fn increment_triple(
     values: &mut BTreeMap<(String, String, String), u64>,
     key: (&str, &str, &str),
@@ -3697,35 +2303,6 @@ fn database_error(error: DatabaseError) -> ProtocolError {
 pub(crate) mod tests {
     use super::cost::{CostModel, select_card};
     use super::*;
-    use crate::platform::FixedClock;
-    use std::collections::HashSet;
-    use std::os::unix::fs::PermissionsExt;
-    use std::os::unix::fs::symlink;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use tempfile::tempdir;
-    use time::macros::datetime;
-
-    struct FixtureProbe;
-    impl RepositoryProbe for FixtureProbe {
-        fn probe(
-            &self,
-            source: &CodexUsageSource,
-            _repository: &Path,
-            _now_ms: u64,
-        ) -> Result<(String, u32, u32), String> {
-            let connection = open_source(source)?;
-            Ok((
-                "b".repeat(64),
-                maximum_version(&connection, "_sqlx_migrations")?,
-                1,
-            ))
-        }
-    }
-
-    struct BlockingProbe {
-        entered: AtomicU64,
-        released: AtomicBool,
-    }
 
     #[test]
     fn cached_cost_projection_prices_model_dimensions() {
@@ -3922,863 +2499,6 @@ pub(crate) mod tests {
         assert!(select_card(&cards, "openai", "other", 1, 2_000).is_none());
     }
 
-    impl RepositoryProbe for BlockingProbe {
-        fn probe(
-            &self,
-            _source: &CodexUsageSource,
-            _repository: &Path,
-            _now_ms: u64,
-        ) -> Result<(String, u32, u32), String> {
-            self.entered.fetch_add(1, Ordering::SeqCst);
-            while !self.released.load(Ordering::SeqCst) {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err("source_unavailable".into())
-        }
-    }
-
-    pub(crate) fn source_database(codex_home: &Path, schema: i64) -> (String, u64) {
-        let usage = codex_home.join("usage");
-        std::fs::create_dir_all(&usage).unwrap();
-        let connection = Connection::open(usage.join("usage.sqlite3")).unwrap();
-        connection.execute_batch(
-            "CREATE TABLE _sqlx_migrations(version INTEGER);
-             CREATE TABLE taxonomy_versions(version INTEGER);
-             CREATE TABLE repository_merge_events(source_repository_id TEXT,target_repository_id TEXT);
-             CREATE TABLE repositories(id TEXT PRIMARY KEY);
-             CREATE TABLE operations(id TEXT PRIMARY KEY,operation_kind TEXT,agent_id TEXT,started_at_ms INTEGER,phase TEXT,activity TEXT,activity_state TEXT,attribution_provenance TEXT);
-             CREATE TABLE operation_events(operation_id TEXT,terminal INTEGER,occurred_at_ms INTEGER,event_kind TEXT);
-             CREATE TABLE tool_invocations(id TEXT PRIMARY KEY,operation_id TEXT,operation_family TEXT);
-             CREATE TABLE model_requests(id TEXT PRIMARY KEY,operation_id TEXT);
-             CREATE TABLE repository_attributions(operation_id TEXT,repository_id TEXT);
-             CREATE TABLE token_observations(category_path TEXT,token_count INTEGER,coverage_state TEXT,observed_at_ms INTEGER,model_request_id TEXT,tool_invocation_id TEXT,repository_bucket TEXT,measurement_provenance TEXT);
-             CREATE TABLE coverage_events(operation_id TEXT,coverage_state TEXT,occurred_at_ms INTEGER);
-             CREATE TABLE activity_spans(id TEXT PRIMARY KEY,operation_id TEXT,started_at_ms INTEGER);
-             CREATE TABLE activity_span_events(activity_span_id TEXT,event_kind TEXT,occurred_at_ms INTEGER);
-             CREATE TABLE effective_classification_events(operation_id TEXT,phase TEXT,activity TEXT,activity_state TEXT,provenance TEXT);
-             CREATE INDEX token_model_lookup ON token_observations(model_request_id,repository_bucket,category_path,observed_at_ms);
-             CREATE INDEX token_tool_lookup ON token_observations(tool_invocation_id,repository_bucket,category_path,observed_at_ms);
-             CREATE INDEX coverage_operation_lookup ON coverage_events(operation_id,occurred_at_ms);
-             CREATE INDEX repository_attributions_repository_operation_idx ON repository_attributions(repository_id,operation_id);
-             CREATE UNIQUE INDEX model_requests_operation_idx ON model_requests(operation_id);
-             CREATE UNIQUE INDEX tool_invocations_operation_idx ON tool_invocations(operation_id);
-             CREATE INDEX effective_operation_lookup ON effective_classification_events(operation_id);
-             CREATE INDEX span_operation_lookup ON activity_spans(operation_id);",
-        )
-        .unwrap();
-        connection
-            .execute("INSERT INTO _sqlx_migrations VALUES(?1)", [schema])
-            .unwrap();
-        connection
-            .execute("INSERT INTO taxonomy_versions VALUES(1)", [])
-            .unwrap();
-        let source = "a".repeat(64);
-        let canonical = "b".repeat(64);
-        connection
-            .execute(
-                "INSERT INTO repository_merge_events VALUES(?1,?2)",
-                rusqlite::params![source, canonical],
-            )
-            .unwrap();
-        connection
-            .execute("INSERT INTO repositories VALUES(?1)", [&source])
-            .unwrap();
-        connection
-            .execute("INSERT INTO repositories VALUES(?1)", [&canonical])
-            .unwrap();
-        let now_ms = 1_788_000_000_000_u64;
-        let start = i64::try_from(now_ms - 60_000).unwrap();
-        connection.execute(
-            "INSERT INTO operations VALUES('model-op','model_request','agent-private',?1,'implementation','coding','model_active','agent_declared')",
-            [start],
-        ).unwrap();
-        connection
-            .execute(
-                "INSERT INTO operation_events VALUES('model-op',1,?1,'completed')",
-                [start + 10_000],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO model_requests VALUES('request-private','model-op')",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO repository_attributions VALUES('model-op',?1)",
-                [&source],
-            )
-            .unwrap();
-        connection.execute("INSERT INTO effective_classification_events VALUES('model-op','implementation','coding','model_active','agent_declared')",[]).unwrap();
-        connection.execute(
-            "INSERT INTO operations VALUES('tool-op','local_tool','agent-private',?1,'testing','integration_testing','tool_active','agent_declared')",
-            [start + 4_000],
-        ).unwrap();
-        connection
-            .execute(
-                "INSERT INTO operation_events VALUES('tool-op',1,?1,'completed')",
-                [start + 8_000],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO tool_invocations VALUES('tool-private','tool-op','execution')",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO repository_attributions VALUES('tool-op',?1)",
-                [&source],
-            )
-            .unwrap();
-        connection.execute("INSERT INTO effective_classification_events VALUES('tool-op','testing','integration_testing','tool_active','agent_declared')",[]).unwrap();
-        for (category, count) in [
-            ("total_tokens", 100),
-            ("input_tokens", 80),
-            ("input_tokens_details.cached_tokens", 50),
-            ("input_tokens_details.cache_write_tokens", 0),
-            ("output_tokens", 20),
-            ("output_tokens_details.reasoning_tokens", 10),
-        ] {
-            connection.execute(
-                "INSERT INTO token_observations VALUES(?1,?2,'complete',?3,'request-private',NULL,?4,'provider_reported')",
-                rusqlite::params![category,count,start+10_000,source],
-            ).unwrap();
-        }
-        for operation in ["model-op", "tool-op"] {
-            connection
-                .execute(
-                    "INSERT INTO coverage_events VALUES(?1,'complete',?2)",
-                    rusqlite::params![operation, start + 9_000],
-                )
-                .unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO activity_spans VALUES('wait-private','model-op',?1)",
-                [start + 2_000],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO activity_span_events VALUES('wait-private','ended',?1)",
-                [start + 3_000],
-            )
-            .unwrap();
-        if (5..=8).contains(&schema) {
-            connection.execute_batch(
-                "CREATE TABLE model_request_context_sources (
-                    model_request_id TEXT PRIMARY KEY NOT NULL REFERENCES model_requests(id),
-                    policy_estimated_tokens INTEGER NOT NULL CHECK (policy_estimated_tokens >= 0),
-                    conversation_estimated_tokens INTEGER NOT NULL CHECK (conversation_estimated_tokens >= 0),
-                    tool_output_estimated_tokens INTEGER NOT NULL CHECK (tool_output_estimated_tokens >= 0),
-                    estimator TEXT NOT NULL CHECK (estimator = 'approx_model_visible_v1'),
-                    observed_at_ms INTEGER NOT NULL
-                 ) STRICT;
-                 ALTER TABLE tool_invocations ADD COLUMN execution_group_id TEXT;
-                 ALTER TABLE tool_invocations ADD COLUMN execution_role TEXT NOT NULL DEFAULT 'standalone'
-                    CHECK (execution_role IN ('standalone', 'wrapper', 'nested'));
-                 INSERT INTO model_request_context_sources VALUES
-                    ('request-private',9000,8000,7000,'approx_model_visible_v1',0);",
-            ).unwrap();
-        }
-        if (6..=8).contains(&schema) {
-            connection
-                .execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY);")
-                .unwrap();
-            connection
-                .execute_batch(include_str!(
-                    "../tests/fixtures/codex-usage-0006-work-bindings.sql"
-                ))
-                .unwrap();
-        }
-        if schema == 8 {
-            connection
-                .execute_batch(include_str!(
-                    "../tests/fixtures/codex-usage-0008-activity-declarations.sql"
-                ))
-                .unwrap();
-        }
-        drop(connection);
-        (canonical, now_ms)
-    }
-
-    pub(crate) fn config(root: &Path, codex_home: PathBuf) -> Config {
-        Config {
-            socket_path: root.join("daemon.sock"),
-            sandbox_bridge_dir: root.join("bridge"),
-            state_dir: root.join("state"),
-            unit_prefix: "fixture".into(),
-            slice_name: "fixture.slice".into(),
-            client_group: "clients".into(),
-            port_range: (40000, 40100),
-            base_domain: "example.test".into(),
-            edge_uid: None,
-            admin_emails: Vec::new(),
-            telegram_token_file: None,
-            telegram_api: "https://api.telegram.org".into(),
-            bugs_dir: root.join("bugs"),
-            compose_env_allowlist_file: None,
-            compose_env_authorizations: HashSet::new(),
-            codex_usage_sources_file: None,
-            codex_usage_sources: vec![CodexUsageSource {
-                api_socket: None,
-                uid: rustix::process::getuid().as_raw(),
-                codex_home,
-                executable: root.join("codex"),
-            }],
-        }
-    }
-
-    #[test]
-    fn repository_usage_is_additive_complete_and_excludes_private_source_identity() {
-        assert_repository_usage(4);
-    }
-
-    #[test]
-    fn schema_five_usage_preserves_provider_measurements_and_privacy() {
-        assert_repository_usage(5);
-    }
-
-    #[test]
-    fn additive_usage_schemas_preserve_measurements_and_privacy() {
-        for schema in [6, 7, 8] {
-            assert_repository_usage(schema);
-        }
-    }
-
-    #[test]
-    fn review_usage_reads_exact_indexed_window_without_persistent_measurements() {
-        let temporary = tempdir().unwrap();
-        let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, 5);
-        let authority = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
-        let repository = RepositoryRecord {
-            repository_id: "project-alpha".into(),
-            display_name: "Project Alpha".into(),
-            root_path: temporary.path().join("repo"),
-        };
-        let usage = CodexUsage::with_probe(
-            config(temporary.path(), codex_home.clone()),
-            authority.clone(),
-            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(FixtureProbe),
-        );
-        let uid = rustix::process::getuid().as_raw();
-        authority.call(move |connection| {
-            connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/fixture','Project Alpha','t',1,'t')", [])?;
-            connection.execute("INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')", rusqlite::params![uid,canonical])?;
-            Ok(())
-        }).unwrap();
-        let service = UsageService {
-            registry: Registry::new(authority.clone()),
-            usage,
-        };
-        let included = service
-            .review_window(
-                &repository,
-                None,
-                now_ms - 60_000,
-                now_ms - 49_999,
-                Instant::now() + QUERY_TIMEOUT,
-            )
-            .unwrap();
-        let excluded = service
-            .review_window(
-                &repository,
-                None,
-                now_ms - 49_999,
-                now_ms,
-                Instant::now() + QUERY_TIMEOUT,
-            )
-            .unwrap();
-        let broad = service
-            .review_window(&repository, None, 0, now_ms, Instant::now() + QUERY_TIMEOUT)
-            .unwrap();
-        assert_eq!(broad.totals, included.totals);
-        assert_eq!(included.totals.total_tokens, Some(100));
-        assert_eq!(excluded.totals.model_requests, 0);
-        let source = Connection::open(codex_home.join("usage/usage.sqlite3")).unwrap();
-        assert_eq!(source.query_row("SELECT SUM(token_count) FROM token_observations WHERE category_path='total_tokens'", [], |row| row.get::<_, i64>(0)).unwrap(), 100);
-        let mirrored: i32 = authority
-            .call(|connection| {
-                Ok(connection
-                    .query_row("SELECT COUNT(*) FROM review_records", [], |row| row.get(0))?)
-            })
-            .unwrap();
-        assert_eq!(mirrored, 0);
-    }
-
-    #[test]
-    fn review_usage_exhaustion_and_missing_mapping_are_explicit_without_probes() {
-        let temporary = tempdir().unwrap();
-        let codex_home = temporary.path().join("codex-home");
-        let (_, now_ms) = source_database(&codex_home, 5);
-        let authority = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
-        let repository = RepositoryRecord {
-            repository_id: "project-alpha".into(),
-            display_name: "Project Alpha".into(),
-            root_path: temporary.path().join("repo"),
-        };
-        let probe = Arc::new(BlockingProbe {
-            entered: AtomicU64::new(0),
-            released: AtomicBool::new(true),
-        });
-        let usage = CodexUsage::with_probe(
-            config(temporary.path(), codex_home),
-            authority,
-            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            probe.clone(),
-        );
-        let rate_cards = usage.rate_cards().unwrap();
-        for (deadline, reason) in [
-            (Instant::now(), "query_budget_exhausted"),
-            (Instant::now() + QUERY_TIMEOUT, "mapping_pending"),
-        ] {
-            let report = usage
-                .repository_window(
-                    &repository,
-                    UsageRange::Hours24,
-                    now_ms,
-                    0,
-                    now_ms,
-                    now_ms,
-                    1,
-                    false,
-                    Some(deadline),
-                    Projection::Full,
-                    rate_cards.clone(),
-                    None,
-                )
-                .unwrap();
-            assert!(report.coverage.has_gaps);
-            assert_eq!(
-                report.coverage.unavailable_reasons,
-                BTreeMap::from([(reason.to_owned(), 1)])
-            );
-            assert_eq!(report.totals.total_tokens, None);
-        }
-        assert_eq!(probe.entered.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn review_source_query_deadline_interrupts_sql_instead_of_scanning_without_a_limit() {
-        let temporary = tempdir().unwrap();
-        let codex_home = temporary.path().join("codex-home");
-        source_database(&codex_home, 5);
-        let settings = config(temporary.path(), codex_home);
-        let connection =
-            open_source_until(&settings.codex_usage_sources[0], Instant::now()).unwrap();
-        let result = connection.query_row("WITH RECURSIVE numbers(value) AS (VALUES(0) UNION ALL SELECT value+1 FROM numbers WHERE value<1000000) SELECT SUM(value) FROM numbers", [], |row| row.get::<_, i64>(0));
-        assert!(
-            matches!(result, Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::OperationInterrupted)
-        );
-    }
-
-    fn assert_repository_usage(schema: i64) {
-        let temporary = tempdir().unwrap();
-        let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, schema);
-        let config = config(temporary.path(), codex_home.clone());
-        std::fs::create_dir_all(&config.state_dir).unwrap();
-        let authority = Database::open(config.database_path()).unwrap();
-        let repository = RepositoryRecord {
-            repository_id: "r0123456789abcdef".into(),
-            display_name: "Example".into(),
-            root_path: temporary.path().join("repo"),
-        };
-        std::fs::create_dir(&repository.root_path).unwrap();
-        let repository_id = repository.repository_id.clone();
-        let canonical_for_db = "c".repeat(64);
-        let source_connection = Connection::open(codex_home.join("usage/usage.sqlite3")).unwrap();
-        source_connection
-            .execute_batch(
-                "ALTER TABLE model_requests ADD COLUMN provider_kind TEXT;
-                 ALTER TABLE model_requests ADD COLUMN model TEXT;
-                 UPDATE model_requests SET provider_kind='openai', model='gpt-6-sol';",
-            )
-            .unwrap();
-        source_connection
-            .execute("INSERT INTO repositories VALUES(?1)", [&canonical_for_db])
-            .unwrap();
-        let uid = rustix::process::getuid().as_raw();
-        authority.transaction(move |transaction| {
-            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,4,1,'t')",rusqlite::params![uid,repository_id,canonical_for_db])?;
-            Ok(())
-        }).unwrap();
-        let usage = CodexUsage::with_probe(
-            config,
-            authority,
-            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(FixtureProbe),
-        );
-        let report = usage
-            .repository_at(&repository, UsageRange::Hours24, now_ms)
-            .unwrap();
-        assert_eq!(report.coverage.state, CoverageState::Complete);
-        assert_eq!(report.totals.total_tokens, Some(100));
-        assert_eq!(report.totals.cached_input_tokens, Some(50));
-        assert_eq!(report.totals.model_requests, 1);
-        assert_eq!(report.totals.tool_calls, 1);
-        assert_eq!(report.totals.cost.status, "complete");
-        assert_eq!(report.totals.cost.estimated_usd_micros, Some(270));
-        assert_eq!(
-            report.totals.cost.rate_card_ref.as_deref(),
-            Some("openai-standard-gpt-6-sol@1")
-        );
-        assert_eq!(report.time.request_to_delivery.measured_ms, 10_000);
-        assert_eq!(report.time.execution_wall.measured_ms, 10_000);
-        assert_eq!(report.time.summed_agent_active.measured_ms, 9_000);
-        let observed = report
-            .series
-            .iter()
-            .filter_map(|point| point.total_tokens)
-            .collect::<Vec<_>>();
-        assert_eq!(observed, vec![100]);
-        assert_eq!(
-            report
-                .series
-                .iter()
-                .filter(|point| point.total_tokens.is_none())
-                .count(),
-            report.series.len() - 1
-        );
-        let rendered = serde_json::to_string(&report).unwrap();
-        for private in [
-            codex_home.to_string_lossy().as_ref(),
-            canonical.as_str(),
-            "agent-private",
-            "request-private",
-            "tool-private",
-            "wait-private",
-        ] {
-            assert!(!rendered.contains(private));
-        }
-    }
-
-    #[test]
-    fn repository_detail_uses_indexed_identifiers_at_production_scale() {
-        let temporary = tempdir().unwrap();
-        let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, 4);
-        let source_path = codex_home.join("usage/usage.sqlite3");
-        let mut source = Connection::open(source_path).unwrap();
-        let transaction = source.transaction().unwrap();
-        {
-            let mut token = transaction
-                .prepare("INSERT INTO token_observations VALUES('total_tokens',1,'complete',?1,'unrelated',NULL,?2,'provider_reported')")
-                .unwrap();
-            let mut coverage = transaction
-                .prepare("INSERT INTO coverage_events VALUES('unrelated','complete',?1)")
-                .unwrap();
-            let at = i64::try_from(now_ms - 30_000).unwrap();
-            let bucket = "a".repeat(64);
-            for _ in 0..100_000 {
-                token.execute(rusqlite::params![at, bucket]).unwrap();
-                coverage.execute([at]).unwrap();
-            }
-        }
-        // Match a mature repository: most attributed operations ended before
-        // the requested period, while a long operation crosses its boundary.
-        transaction.execute_batch(
-            "CREATE INDEX operations_started_id_idx ON operations(started_at_ms,id);
-             CREATE INDEX operation_events_terminal_observed_idx ON operation_events(occurred_at_ms,operation_id) WHERE terminal=1;
-             CREATE UNIQUE INDEX operation_events_one_terminal ON operation_events(operation_id) WHERE terminal=1;
-             WITH RECURSIVE history(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM history WHERE n<50000)
-             INSERT INTO operations SELECT 'history-'||n,'local_tool','old-agent',0,'testing','unit_testing','tool_active','agent_declared' FROM history;
-             INSERT INTO operation_events SELECT id,1,1,'completed' FROM operations WHERE id LIKE 'history-%';"
-        ).unwrap();
-        transaction.execute(
-            "INSERT INTO repository_attributions SELECT id,?1 FROM operations WHERE id LIKE 'history-%'",
-            ["a".repeat(64)],
-        ).unwrap();
-        transaction.execute(
-            "INSERT INTO operations VALUES('crossing-op','model_request','agent-private',?1,'implementation','coding','model_active','agent_declared')",
-            [i64::try_from(now_ms - 180_000).unwrap()],
-        ).unwrap();
-        transaction
-            .execute(
-                "INSERT INTO operation_events VALUES('crossing-op',1,?1,'completed')",
-                [i64::try_from(now_ms - 1000).unwrap()],
-            )
-            .unwrap();
-        transaction
-            .execute(
-                "INSERT INTO model_requests VALUES('crossing-request','crossing-op')",
-                [],
-            )
-            .unwrap();
-        transaction
-            .execute(
-                "INSERT INTO repository_attributions VALUES('crossing-op',?1)",
-                ["a".repeat(64)],
-            )
-            .unwrap();
-        transaction.execute("INSERT INTO token_observations VALUES('total_tokens',17,'complete',?1,'crossing-request',NULL,?2,'provider_reported')", rusqlite::params![i64::try_from(now_ms - 1000).unwrap(), "a".repeat(64)]).unwrap();
-        transaction.commit().unwrap();
-        drop(source);
-
-        let config = config(temporary.path(), codex_home);
-        std::fs::create_dir_all(&config.state_dir).unwrap();
-        let authority = Database::open(config.database_path()).unwrap();
-        let repository = RepositoryRecord {
-            repository_id: "r0123456789abcdef".into(),
-            display_name: "Example".into(),
-            root_path: temporary.path().join("repo"),
-        };
-        std::fs::create_dir(&repository.root_path).unwrap();
-        let repository_id = repository.repository_id.clone();
-        let uid = rustix::process::getuid().as_raw();
-        authority
-            .transaction(move |transaction| {
-                transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-                transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,4,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
-                Ok(())
-            })
-            .unwrap();
-        for indexed in [false, true] {
-            if indexed {
-                Connection::open(config.codex_usage_sources[0].codex_home.join("usage/usage.sqlite3")).unwrap().execute_batch(
-                "CREATE INDEX token_observations_repository_total_observed_idx ON token_observations(repository_bucket, observed_at_ms, token_count, coverage_state, model_request_id, tool_invocation_id) WHERE category_path='total_tokens' AND measurement_provenance='provider_reported';
-                 CREATE INDEX model_requests_id_operation_idx ON model_requests(id, operation_id);
-                 CREATE INDEX tool_invocations_id_operation_idx ON tool_invocations(id, operation_id);"
-            ).unwrap();
-            }
-            let usage = CodexUsage::with_probe(
-                config.clone(),
-                authority.clone(),
-                Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-                Arc::new(FixtureProbe),
-            );
-            let detail = usage
-                .repository_buckets(
-                    &repository,
-                    UsageRange::Hours24,
-                    60_000,
-                    2,
-                    now_ms,
-                    now_ms,
-                    true,
-                )
-                .unwrap();
-            assert!(detail.coverage.snapshot.as_ref().unwrap().refreshing);
-            usage.wait_for_refresh(Some(&repository.repository_id));
-            let detail = usage
-                .repository_buckets(
-                    &repository,
-                    UsageRange::Hours24,
-                    60_000,
-                    2,
-                    now_ms,
-                    now_ms,
-                    true,
-                )
-                .unwrap();
-            assert_eq!(detail.totals.total_tokens, Some(117));
-            assert_eq!(
-                detail
-                    .series
-                    .iter()
-                    .map(|point| point.total_tokens)
-                    .collect::<Vec<_>>(),
-                vec![None, Some(117)]
-            );
-        }
-    }
-
-    #[test]
-    fn partial_source_failure_keeps_missing_bucket_blank_and_real_zero_measured() {
-        let report = SourceReport {
-            database_schema: 4,
-            taxonomy_version: 1,
-            evidence: true,
-            tokens: BTreeMap::from([("total_tokens".into(), 0)]),
-            token_observations: BTreeMap::from([("complete".into(), 1)]),
-            phase_series: vec![
-                BTreeMap::new(),
-                BTreeMap::from([("implementation".into(), 0)]),
-            ],
-            token_buckets_observed: vec![false, true],
-            bucket_coverage: vec![CoverageState::Unobserved, CoverageState::Complete],
-            ..SourceReport::default()
-        };
-        let combined = combine(
-            &RepositoryRecord {
-                repository_id: "r1".into(),
-                display_name: "Example".into(),
-                root_path: "/repo".into(),
-            },
-            UsageRange::Hours24,
-            120_000,
-            0,
-            60_000,
-            2,
-            &[(1, report)],
-            BTreeMap::from([("source_unavailable".into(), 1)]),
-            2,
-        );
-        assert_eq!(combined.coverage.state, CoverageState::Partial);
-        assert_eq!(
-            combined
-                .series
-                .iter()
-                .map(|point| point.coverage.clone())
-                .collect::<Vec<_>>(),
-            vec![CoverageState::Partial, CoverageState::Partial]
-        );
-        assert_eq!(
-            combined
-                .series
-                .iter()
-                .map(|point| point.total_tokens)
-                .collect::<Vec<_>>(),
-            vec![None, Some(0)]
-        );
-        assert_eq!(combined.totals.total_tokens, Some(0));
-    }
-
-    #[test]
-    fn unsupported_and_unconfigured_collectors_are_unavailable_not_zero() {
-        let temporary = tempdir().unwrap();
-        let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, 10);
-        let mut config = config(temporary.path(), codex_home);
-        std::fs::create_dir_all(&config.state_dir).unwrap();
-        let authority = Database::open(config.database_path()).unwrap();
-        let repository = RepositoryRecord {
-            repository_id: "r0123456789abcdef".into(),
-            display_name: "Example".into(),
-            root_path: temporary.path().join("repo"),
-        };
-        std::fs::create_dir(&repository.root_path).unwrap();
-        let repository_id = repository.repository_id.clone();
-        let uid = rustix::process::getuid().as_raw();
-        authority.transaction(move |transaction| {
-            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,9,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
-            Ok(())
-        }).unwrap();
-        let usage = CodexUsage::with_probe(
-            config.clone(),
-            authority,
-            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(FixtureProbe),
-        );
-        let report = usage
-            .repository_at(&repository, UsageRange::Hours24, now_ms)
-            .unwrap();
-        assert_eq!(report.coverage.state, CoverageState::Unavailable);
-        assert_eq!(report.coverage.unavailable_reasons["schema_unsupported"], 1);
-        assert_eq!(report.totals.total_tokens, None);
-
-        config.codex_usage_sources.clear();
-        let empty = CodexUsage::with_probe(
-            config,
-            Database::open(temporary.path().join("empty.sqlite3")).unwrap(),
-            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(FixtureProbe),
-        )
-        .repository_at(&repository, UsageRange::Hours24, now_ms)
-        .unwrap();
-        assert_eq!(empty.coverage.state, CoverageState::Unavailable);
-        assert_eq!(empty.totals.total_tokens, None);
-    }
-
-    #[test]
-    fn repository_probe_uses_the_fixed_json_command_and_private_codex_home() {
-        let temporary = tempdir().unwrap();
-        let codex_home = temporary.path().join("codex-home");
-        std::fs::create_dir(&codex_home).unwrap();
-        let executable = temporary.path().join("codex-fixture");
-        std::fs::write(
-            &executable,
-            format!(
-                "#!/bin/sh\n[ \"$1\" = usage ] || exit 9\n[ \"$2\" = --json ] || exit 9\n[ \"$3\" = repo ] || exit 9\n[ \"$4\" = current ] || exit 9\n[ \"$5\" = --identity-only ] || exit 9\n[ \"$CODEX_HOME\" = \"{}\" ] || exit 9\nprintf '%s\\n' '{{\"schemaVersion\":1,\"kind\":\"usageRepositoryIdentity\",\"databaseSchemaVersion\":4,\"taxonomyVersion\":1,\"scope\":{{\"type\":\"repository\",\"id\":\"{}\"}}}}'\n",
-                codex_home.display(),
-                "c".repeat(64),
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let source = CodexUsageSource {
-            api_socket: None,
-            uid: rustix::process::getuid().as_raw(),
-            codex_home,
-            executable,
-        };
-        let result = HostRepositoryProbe
-            .probe(&source, temporary.path(), 1_234)
-            .unwrap();
-        assert_eq!(result, ("c".repeat(64), 4, 1));
-
-        // A provider may leave a child holding its output pipe. Deadline and
-        // output limits must terminate that probe rather than wait for the child.
-        let mut failures = Vec::new();
-        for (name, tail, budget, expected) in [
-            (
-                "deadline",
-                "wait",
-                Duration::from_millis(150),
-                "query_budget_exhausted",
-            ),
-            (
-                "parent-exits",
-                "exit 0",
-                Duration::from_millis(150),
-                "query_budget_exhausted",
-            ),
-            (
-                "output",
-                "head -c 4096 /dev/zero; wait",
-                Duration::from_secs(2),
-                "source_unavailable",
-            ),
-        ] {
-            let child_file = temporary.path().join(format!("{name}.child"));
-            let quoted = format!(
-                "'{}'",
-                child_file.display().to_string().replace('\'', "'\"'\"'")
-            );
-            let mut command = Command::new("/bin/sh");
-            command
-                .args([
-                    "-c",
-                    &format!("sleep 1 & printf '%s' \"$!\" > {quoted}; {tail}"),
-                ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            let started = Instant::now();
-            let result = run_probe_with_limit(command, started + budget, 64);
-            let elapsed = started.elapsed();
-            if result.as_ref().err().map(String::as_str) != Some(expected)
-                || elapsed >= Duration::from_millis(750)
-            {
-                let observed = result.as_ref().err().map(String::as_str).unwrap_or("ok");
-                failures.push(format!(
-                    "{name}: observed={observed}, expected={expected}, elapsed={elapsed:?}"
-                ));
-            }
-            let cleanup_deadline = Instant::now() + Duration::from_millis(500);
-            let child_pid = loop {
-                if let Some(pid) = std::fs::read_to_string(&child_file)
-                    .ok()
-                    .and_then(|value| value.trim().parse::<i32>().ok())
-                {
-                    break Some(pid);
-                }
-                if Instant::now() >= cleanup_deadline {
-                    break None;
-                }
-                thread::sleep(PROCESS_POLL);
-            };
-            if child_pid.is_some_and(|pid| {
-                let Some(pid) = rustix::process::Pid::from_raw(pid) else {
-                    return false;
-                };
-                while Instant::now() < cleanup_deadline
-                    && rustix::process::test_kill_process(pid).is_ok()
-                {
-                    thread::sleep(PROCESS_POLL);
-                }
-                rustix::process::test_kill_process(pid).is_ok()
-            }) {
-                failures.push(format!("{name}: descendant process survived cleanup"));
-            }
-        }
-        assert!(failures.is_empty(), "{}", failures.join("; "));
-    }
-
-    #[test]
-    fn collector_database_must_be_an_owner_file_not_a_symlink() {
-        let temporary = tempdir().unwrap();
-        let codex_home = temporary.path().join("codex-home");
-        std::fs::create_dir_all(codex_home.join("usage")).unwrap();
-        let outside = temporary.path().join("outside.sqlite3");
-        Connection::open(&outside).unwrap();
-        symlink(&outside, codex_home.join("usage/usage.sqlite3")).unwrap();
-        let source = CodexUsageSource {
-            api_socket: None,
-            uid: rustix::process::getuid().as_raw(),
-            codex_home,
-            executable: temporary.path().join("codex"),
-        };
-        assert!(matches!(open_source(&source), Err(reason) if reason == "source_unavailable"));
-    }
-
-    #[test]
-    fn legacy_repository_probe_distinguishes_missing_history_from_failure() {
-        let temporary = tempdir().unwrap();
-        let executable = temporary.path().join("probe");
-        let source = CodexUsageSource {
-            api_socket: None,
-            uid: rustix::process::getuid().as_raw(),
-            codex_home: temporary.path().to_path_buf(),
-            executable: executable.clone(),
-        };
-        for (message, expected) in [
-            (
-                r#"{"schemaVersion":1,"error":{"code":"not_found"}}"#,
-                "mapping_unavailable",
-            ),
-            (
-                r#"{"schemaVersion":1,"error":{"code":"database_unavailable"}}"#,
-                "source_unavailable",
-            ),
-        ] {
-            std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$5\" = --identity-only ]; then printf \"unexpected argument '--identity-only'\\n\" >&2; exit 2; fi\n[ \"$3\" = --since ] || exit 9\nprintf '%s\\n' '{message}' >&2\nexit 3\n")).unwrap();
-            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-            assert_eq!(
-                HostRepositoryProbe.probe(&source, temporary.path(), 1234),
-                Err(expected.into())
-            );
-        }
-    }
-
-    #[test]
-    fn collection_returns_mapping_pending_while_resolution_runs_off_thread() {
-        let temporary = tempdir().unwrap();
-        let mut config = config(temporary.path(), temporary.path().join("missing-home"));
-        std::fs::create_dir_all(&config.state_dir).unwrap();
-        config.codex_usage_sources[0].uid = rustix::process::getuid().as_raw();
-        let authority = Database::open(config.database_path()).unwrap();
-        let repository = RepositoryRecord {
-            repository_id: "r0123456789abcdef".into(),
-            display_name: "Example".into(),
-            root_path: temporary.path().into(),
-        };
-        let probe = Arc::new(BlockingProbe {
-            entered: AtomicU64::new(0),
-            released: AtomicBool::new(false),
-        });
-        let usage = CodexUsage::with_probe(
-            config,
-            authority,
-            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            probe.clone(),
-        );
-        let started = Instant::now();
-        let result = usage
-            .repositories(&[repository], UsageRange::Hours24)
-            .unwrap();
-        assert!(started.elapsed() < Duration::from_millis(250));
-        assert!(
-            result.repositories[0]
-                .coverage
-                .snapshot
-                .as_ref()
-                .unwrap()
-                .refreshing
-        );
-        assert_eq!(result.repositories[0].total_tokens, None);
-        probe.released.store(true, Ordering::SeqCst);
-        usage.wait_for_refresh(None);
-        assert_eq!(probe.entered.load(Ordering::SeqCst), 1);
-    }
-
     #[test]
     fn combining_collectors_adds_tokens_and_unions_wall_time() {
         let source = |phase: &str, tokens: u64, interval: (u64, u64)| SourceReport {
@@ -4810,6 +2530,7 @@ pub(crate) mod tests {
                 (2, source("testing", 50, (5, 15))),
             ],
             BTreeMap::new(),
+            None,
             2,
         );
         assert_eq!(report.coverage.state, CoverageState::Complete);

@@ -163,8 +163,17 @@ pub struct Register {
     pub expected_revision: u64,
     pub repository_id: Option<String>,
     pub effect: Effect,
+    #[serde(default)]
+    pub reviewed_ignored_files: Option<Vec<IgnoredFileReview>>,
     /// An explicit disposal decision; it never overrides a live reference.
     pub reason: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IgnoredFileReview {
+    pub path: String,
+    pub sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

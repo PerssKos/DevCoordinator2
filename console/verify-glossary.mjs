@@ -37,11 +37,11 @@ function request(operation, params = {}, identity = 'owner@example.test') {
   const id = `glossary-${++sequence}`;
   if (process.env.CONSOLE_VERIFY_HEALTH_ONLY && identity === 'owner@example.test') {
     const data = healthReadFixture(operation);
-    if (data) return Promise.resolve({protocol:2,id,ok:true,data});
+    if (data) return Promise.resolve({protocol:3,id,ok:true,data});
   }
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    bridge.stdin.write(`${JSON.stringify({ protocol: 2, id, operation, params, client: { kind: identity ? 'edge' : 'other', ...(identity ? { identity } : {}) } })}\n`);
+    bridge.stdin.write(`${JSON.stringify({ protocol: 3, id, operation, params, client: { kind: identity ? 'edge' : 'other', ...(identity ? { identity } : {}) } })}\n`);
   });
 }
 
@@ -324,7 +324,7 @@ async function main() {
   await check('CLI and MCP resolve the exact Console glossary revision', async () => {
     const environment = { ...process.env, DEVCOORDINATOR2_SOCKET: socketPath, DEVCOORDINATOR2_INSTANCE_ENV: path.join(temporary, 'absent-instance.env') };
     const binary = process.env.GLOSSARY_CLI_BINARY || path.join(root, 'target/debug/devcoordinator2');
-    const { stdout } = await execute(binary, ['glossary', 'resolve', '--query', 'Test execution'], { env: environment });
+    const { stdout } = await execute(binary, ['call', 'glossary.resolve', '--params', JSON.stringify({query:'Test execution'})], { env: environment });
     const result = JSON.parse(stdout);
     assert.equal(result.ok, true);
     assert.equal(result.data.profile.revision, (await detail()).profile.revision);
@@ -345,8 +345,8 @@ async function main() {
       assert.ok(initialized.result);
       mcp.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
       const tools = await send(2, 'tools/list', {});
-      assert.ok(tools.result.tools.some((tool) => tool.name === 'glossary_resolve'));
-      const resolved = await send(3, 'tools/call', { name: 'glossary_resolve', arguments: { query: 'Test execution' } });
+      assert.ok(tools.result.tools.some((tool) => tool.name === 'call_operation'));
+      const resolved = await send(3, 'tools/call', { name: 'call_operation', arguments: { operation: 'glossary.resolve', params: { query: 'Test execution' } } });
       assert.equal(resolved.result.isError || false, false);
       assert.match(JSON.stringify(resolved.result), new RegExp(primaryId));
     } finally { mcp.stdin.end(); mcp.kill('SIGTERM'); if (mcp.exitCode == null && mcp.signalCode == null) await new Promise((resolve) => mcp.once('exit', resolve)); lines.close(); }
@@ -367,9 +367,9 @@ async function main() {
   }, page);
 
   await check('Service failure stays honest and retry restores the collection', async () => {
-    await page.route('**/api/v2/glossary.list', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture failure' } }) }));
+    await page.route('**/api/v3/glossary.list', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture failure' } }) }));
     await page.goto(`${base}#/glossary/shared`); await page.getByRole('button', { name: 'Retry', exact: true }).waitFor();
-    await page.unroute('**/api/v2/glossary.list'); await page.getByRole('button', { name: 'Retry', exact: true }).click(); await page.locator('#glossary-concepts').waitFor();
+    await page.unroute('**/api/v3/glossary.list'); await page.getByRole('button', { name: 'Retry', exact: true }).click(); await page.locator('#glossary-concepts').waitFor();
   }, page);
 
   await check('Long collections pagination searching and creation remain usable', async () => {

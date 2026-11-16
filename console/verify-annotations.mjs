@@ -124,11 +124,11 @@ export async function verifyAnnotations({ page, daemon, check, scenario, baseUrl
   await page.locator('[data-evidence-compose]').click();
   await body.fill('Keep this exact image and red rectangle with the feedback.');
   const create = page.locator('#evidence-feedback-create button[type=submit]');
-  await page.route('**/api/v2/test.evidence.feedback.create', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture save unavailable' } }) }));
+  await page.route('**/api/v3/test.evidence.feedback.create', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture save unavailable' } }) }));
   await create.click();
   await page.locator('#evidence-feedback-error:not([hidden])').waitFor();
   verify('failed save keeps the comment, marks, and retry action', await count() === '1' && (await body.inputValue()).includes('exact image') && await create.isEnabled());
-  await page.unroute('**/api/v2/test.evidence.feedback.create');
+  await page.unroute('**/api/v3/test.evidence.feedback.create');
   await create.click();
   await page.locator('.evidence-thread').waitFor();
   const saved = daemon.calls.filter((call) => call.operation === 'test.evidence.feedback.create').at(-1)?.params;

@@ -366,7 +366,7 @@ impl ContainerInventory {
         ProtocolError,
     > {
         self.database
-            .call(|connection| {
+            .read(|connection| {
                 let components = {
                     let mut statement = connection.prepare(
                         "SELECT deployment_id,name,binding_identity FROM components",
@@ -533,7 +533,7 @@ mod tests {
             transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111','/repo','repo','t',1,'t')", [])?;
             transaction.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','r1111111111111111','/repo','t','t')", [])?;
             transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,domain,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1111111111111111','r1111111111111111','w1111111111111111','web','worktree',NULL,'f','{}','running','t',1,'other','t')", [])?;
-            transaction.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,binding_kind,binding_identity,restarts,updated_at) VALUES('d1111111111111111','api','docker',0,'f','running','running','healthy','container',?1,0,'t')", ["a".repeat(64)])?;
+            transaction.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,binding_kind,binding_identity,restarts,updated_at) VALUES('d1111111111111111','api','docker',0,'f','running','running','healthy','container',$1,0,'t')", ["a".repeat(64)])?;
             Ok(())
         }).unwrap();
         let managed = serde_json::json!({

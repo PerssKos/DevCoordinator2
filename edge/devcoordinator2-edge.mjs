@@ -196,6 +196,8 @@ export async function createEdge(config, { log = console } = {}) {
   const acmeRoot = config.acmeWebroot ? fs.realpathSync(config.acmeWebroot) : null;
   const acmeCertificate = acmeRoot && !config.httpOnly ? new X509Certificate(fs.readFileSync(config.tlsCert)) : null;
   const scheme = config.httpOnly ? 'http' : 'https';
+  const consoleStatic = config.consoleDir ? createStaticServer({ dir: config.consoleDir, log, sourceRevision: config.uiSourceRevision }) : null;
+  await consoleStatic?.prepare();
   const store = await createRoutesStore({ file: config.routesFile, stateDir: config.stateDir, log });
   const sessions = createSessionManager({ secret: config.sessionSecret, ttlMs: SESSION_TTL_MS,
     cookieName: SESSION_COOKIE, cookieDomain: `.${config.baseDomain}`, secure: !config.httpOnly });
@@ -216,7 +218,6 @@ export async function createEdge(config, { log = console } = {}) {
     renderBadGateway: (req, res, { kind, target }) => writePage(res, pages.forRequest(req).renderUpstreamError({ slug: target.slug, kind, consoleUrl: consoleOrigin })),
     renderUpstreamAuthFailure: (req, res, { target }) => writePage(res, pages.forRequest(req).renderUpstreamError({ slug: target.slug, kind: 'upstream_auth', consoleUrl: consoleOrigin })) });
   const daemon = createDaemonClient({ socketPath: config.daemonSocket });
-  const consoleStatic = config.consoleDir ? createStaticServer({ dir: config.consoleDir, log, sourceRevision: config.uiSourceRevision }) : null;
 
   function identityOf(req) {
     const session = sessions.parse(req.headers.cookie);
@@ -289,11 +290,11 @@ export async function createEdge(config, { log = console } = {}) {
         source: store.source(),
       });
     }
-    if (url.pathname.startsWith('/api/v2/')) {
+    if (url.pathname.startsWith('/api/v3/')) {
       const identity = identityOf(req) || (trustedLocal(req) ? localIdentity() : null);
       if (!identity) return writeJson(res, 401, { ok: false, error: { code: 'unauthenticated', message: 'sign in first' } });
       if (req.method !== 'POST') return writeJson(res, 405, { ok: false, error: { code: 'method_not_allowed' } });
-      const operation = url.pathname.slice('/api/v2/'.length);
+      const operation = url.pathname.slice('/api/v3/'.length);
       // One or more dot-separated operation segments, plus the daemon's
       // single dotless operation; anything else is grammar garbage and never
       // reaches the daemon.
@@ -316,8 +317,8 @@ export async function createEdge(config, { log = console } = {}) {
     }
     if (url.pathname.startsWith('/api/')) {
       return writeJson(res, 400, {
-        protocol: 2, id: '', ok: false,
-        error: { code: 'protocol_unsupported', message: 'use /api/v2/<operation>', detail: '' },
+        protocol: 3, id: '', ok: false,
+        error: { code: 'protocol_unsupported', message: 'use /api/v3/<operation>', detail: '' },
       });
     }
     const identity = identityOf(req) || (trustedLocal(req) ? localIdentity() : null);

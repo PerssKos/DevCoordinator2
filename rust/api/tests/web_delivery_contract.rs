@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 fn delivery_request(kind: &str) -> Value {
     json!({
-        "protocol": 2,
+        "protocol": 3,
         "id": "web-preview-contract",
         "operation": "release.deliver_evidence",
         "client": {"kind": "other"},

@@ -1,614 +1,621 @@
-//! Extend the existing usage fixture through a real localUsage websocket peer.
 use super::*;
-use crate::platform::FixedClock;
-use std::os::unix::net::UnixListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use time::OffsetDateTime;
+use crate::usage_api_fixture::{KEY, capability, response};
 
-fn response(repository: Option<&str>, start: u64, end: u64) -> Value {
-    let key = "b".repeat(64);
-    json!({"generatedAt":end,"report":{
-        "schemaVersion":1,"kind":"usageSummary","databaseSchemaVersion":99,"taxonomyVersion":1,
-        "scope":{"type":if repository.is_some(){"repository"}else{"all"},"id":repository},
-        "timeRange":{"startMs":start,"endMs":end},"coverage":{"state":"complete","hasGaps":false},
-        "counts":{"operations":2,"modelRequests":1,"tools":1},
-        "providerTokens":[
-            {"category":"total_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":120,"exactTokens":120,"unknownObservations":0,"observationCount":1},
-            {"category":"input_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":100,"exactTokens":100,"unknownObservations":0,"observationCount":1},
-            {"category":"input_tokens_details.cached_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":80,"exactTokens":80,"unknownObservations":0,"observationCount":1},
-            {"category":"output_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":20,"exactTokens":20,"unknownObservations":0,"observationCount":1},
-            {"category":"output_tokens_details.reasoning_tokens","repositoryBucket":key,"measurementProvenance":"provider_reported","measuredTokens":5,"exactTokens":5,"unknownObservations":0,"observationCount":1}
-        ],
-        "providerTokensByActivity":[{"phase":"implementation","activity":"coding","attributionProvenance":"agent_declared","measuredTokens":120,"exactTokens":120,"unknownObservations":0}],
-        "account":"private-account-must-not-escape","extraPrivate":"private-payload-must-not-escape"
-    }})
-}
-
-#[derive(Clone, Copy)]
-struct DetailProbe;
-
-impl RepositoryProbe for DetailProbe {
-    fn probe(
-        &self,
-        _source: &CodexUsageSource,
-        _repository: &Path,
-        _now_ms: u64,
-    ) -> Result<(String, u32, u32), String> {
-        Ok(("b".repeat(64), 5, 1))
+fn expire_completed_summaries(api: &CollectorApi) {
+    // Fair-admission tests age a completed observation while keeping an
+    // actively polled cold hint current. The full expire() test seam ages
+    // all cache state, including abandoned hints and failed-read backoffs.
+    for entry in api.0.0.lock().unwrap().entries.values_mut() {
+        entry.loaded = Instant::now() - FRESH_FOR;
     }
 }
 
-fn peer(
-    path: &Path,
-    home: &Path,
-    count: usize,
-    mut mutate: impl FnMut(&mut Value) + Send + 'static,
-) -> (std::thread::JoinHandle<()>, Arc<AtomicUsize>) {
-    let listener = UnixListener::bind(path).unwrap();
-    let home = home.to_path_buf();
+#[test]
+fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
+    validate_capability(&json!({"localUsageAccounting":capability()})).unwrap();
+    assert!(validate_capability(&json!({})).is_err());
+    let mut cap = capability();
+    cap["version"] = json!(2);
+    assert!(validate_capability(&json!({"localUsageAccounting":cap})).is_err());
+    let params = json!({"repositoryKey":KEY,"fromAt":10,"toAt":20});
+    let value = response(&params, 20, 135);
+    let summary: Summary = serde_json::from_value(value.clone()).unwrap();
+    validate(&summary, Some(KEY), 10, 20).unwrap();
+    let mut later_response = value.clone();
+    later_response["generatedAt"] = json!(21);
+    let later: Summary = serde_json::from_value(later_response).unwrap();
+    validate(&later, Some(KEY), 10, 20).unwrap();
+    assert_eq!(later.snapshot.as_ref().unwrap().generated_at, 20);
+    assert_eq!(
+        later
+            .source_report(Some(KEY), 1, None, true)
+            .source_snapshot
+            .unwrap()
+            .generated_at_ms,
+        20
+    );
+    assert_eq!(
+        summary.snapshot.as_ref().unwrap().journal_watermark,
+        Some(10)
+    );
+    for field in [
+        "sourceWatermark",
+        "generation",
+        "journalWatermark",
+        "watermarkAtMs",
+        "updatedAtMs",
+        "pendingEntries",
+        "pendingCorrections",
+    ] {
+        let mut missing = value.clone();
+        missing["snapshot"].as_object_mut().unwrap().remove(field);
+        let summary: Summary = serde_json::from_value(missing).unwrap();
+        assert_eq!(
+            validate(&summary, Some(KEY), 10, 20).unwrap_err(),
+            "api_contract_unsupported",
+            "{field}"
+        );
+    }
+    for (field, bad) in [
+        ("journalWatermark", json!(9)),
+        ("generatedAt", json!(21)),
+        ("updatedAtMs", json!(21)),
+        ("generation", json!(0)),
+    ] {
+        let mut inconsistent = value.clone();
+        inconsistent["snapshot"][field] = bad;
+        let summary: Summary = serde_json::from_value(inconsistent).unwrap();
+        assert_eq!(
+            validate(&summary, Some(KEY), 10, 20).unwrap_err(),
+            "api_snapshot_inconsistent",
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn source_loading_reports_unknown_estimate_overrun_and_completion_for_exact_scope() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::time::Duration;
+
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            response_gate.wait();
+            response(params, 20, 135)
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    let deadline = Instant::now() + Duration::from_millis(50);
+    assert_eq!(
+        api.summary(&peer.source, Some(KEY), None, true, 10, 20, deadline,)
+            .err()
+            .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let profile = profile_key(&peer.source, Some(KEY), None, true, None, &[], 10, 20).unwrap();
+    let initial = api
+        .loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+        .unwrap();
+    assert_eq!(initial.state, "reading");
+    assert_eq!(initial.estimated_remaining_ms, None);
+    assert_eq!(initial.estimate_samples, 0);
+    {
+        let mut state = api.0.0.lock().unwrap();
+        state.profiles.insert(
+            profile.clone(),
+            ProfileHistory {
+                samples: (0..3)
+                    .map(|index| (Instant::now() - Duration::from_secs(index + 1), 1_000))
+                    .collect(),
+            },
+        );
+    }
+    let estimated = api
+        .loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+        .unwrap();
+    assert_eq!(estimated.estimate_samples, 3);
+    assert!(estimated.estimated_remaining_ms.is_some());
+    assert_eq!(
+        estimated.estimate_basis.as_deref(),
+        Some("recent_comparable_source_reads")
+    );
+    {
+        let mut state = api.0.0.lock().unwrap();
+        state.inflight.values_mut().next().unwrap().started =
+            Instant::now() - Duration::from_secs(2);
+    }
+    let overrun = api
+        .loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+        .unwrap();
+    assert_eq!(overrun.state, "estimate_exceeded");
+    assert_eq!(overrun.estimated_remaining_ms, None);
+    let saved: Summary = serde_json::from_value(response(
+        &json!({"repositoryKey": KEY, "fromAt": 10, "toAt": 20}),
+        20,
+        135,
+    ))
+    .unwrap();
+    let displayed = SummaryRead::cached_with_loading(
+        Arc::new(saved),
+        "api_refresh_pending",
+        Some(estimated.clone()),
+    )
+    .unwrap()
+    .source_report(Some(KEY), 1, None, true);
+    assert_eq!(displayed.loading, Some(estimated));
+    assert!(
+        api.loading_for(&peer.source, Some(KEY), None, true, None, &[], 11, 20)
+            .is_none()
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    assert!(
+        api.0
+            .0
+            .lock()
+            .unwrap()
+            .profiles
+            .get(&profile)
+            .is_some_and(|history| !history.samples.is_empty())
+    );
+    assert!(
+        api.loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+            .is_none()
+    );
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_secs(2)
+        )
+        .unwrap()
+        .report
+        .provider_tokens[0]
+            .measured_tokens,
+        135
+    );
+}
+
+#[test]
+fn source_projection_keeps_unknown_only_tokens_unknown_and_preserves_snapshot() {
+    let mut value = response(&json!({"repositoryKey":KEY,"fromAt":10,"toAt":20}), 20, 135);
+    let summary: Summary = serde_json::from_value(value.clone()).unwrap();
+    let report = summary.source_report(Some(KEY), 1, None, true);
+    assert_eq!(report.tokens["total_tokens"], 135);
+    let metadata = report.source_snapshot.unwrap();
+    assert_eq!(metadata.generation, 7);
+    assert_eq!(metadata.pending_entries, 0);
+    let mut stale = value.clone();
+    stale["snapshot"]["freshness"] = json!("stale");
+    stale["snapshot"]["pendingEntries"] = json!(97);
+    let summary: Summary = serde_json::from_value(stale.clone()).unwrap();
+    let report = summary.source_report(Some(KEY), 1, None, true);
+    let snapshot = report.snapshot.unwrap();
+    assert!(snapshot.refreshing);
+    assert!(
+        !snapshot.refresh_failed,
+        "stale publication with a successful read is not a failed refresh"
+    );
+    assert_eq!(report.source_snapshot.unwrap().freshness, "stale");
+    let failed =
+        SummaryRead::cached_or_error(Some(Arc::new(summary)), "api_contract_unsupported").unwrap();
+    assert!(
+        failed
+            .source_report(Some(KEY), 1, None, true)
+            .snapshot
+            .unwrap()
+            .refresh_failed
+    );
+    stale["snapshot"]["freshness"] = json!("failed");
+    let failed: Summary = serde_json::from_value(stale).unwrap();
+    assert!(
+        failed
+            .source_report(Some(KEY), 1, None, true)
+            .snapshot
+            .unwrap()
+            .refresh_failed
+    );
+    for token in value["report"]["providerTokens"].as_array_mut().unwrap() {
+        token["measuredTokens"] = json!(0);
+        token["exactTokens"] = Value::Null;
+        token["unknownObservations"] = json!(2);
+    }
+    let summary: Summary = serde_json::from_value(value).unwrap();
+    assert!(
+        !summary
+            .source_report(Some(KEY), 1, None, true)
+            .tokens
+            .contains_key("total_tokens")
+    );
+}
+
+#[test]
+fn explicit_review_rows_keep_unknown_precision_costs_and_truthful_time_basis() {
+    let value: Value = serde_json::from_str(include_str!(
+        "../../../test-fixtures/usage-v2-bound-response.json"
+    ))
+    .unwrap();
+    let mut summary: Summary = serde_json::from_value(value).unwrap();
+    validate(&summary, Some("repo-a"), 0, 3000).unwrap();
+    let review = summary.review.as_mut().unwrap();
+    review.outcomes.totals.provider_total_tokens.exact = None;
+    review.outcomes.totals.provider_total_tokens.unknown = 0;
+    review.outcomes.totals.elapsed_execution_ms.measured = 1000;
+    review.outcomes.totals.cost.status = "partial".into();
+    review.outcomes.totals.cost.estimated_usd_micros = Some(7);
+    let mut groups = super::review_aggregate::from_api(&review.outcomes);
+    groups
+        .merge(super::review_aggregate::from_api(&review.outcomes), 1)
+        .unwrap();
+    let report = groups.finish(false).unwrap();
+    assert_eq!(report.totals.provider_total_tokens.exact, None);
+    assert_eq!(report.totals.cost.estimated_usd_micros, Some(14));
+    assert_eq!(report.totals.elapsed_execution_ms.exact, None);
+    assert!(
+        report
+            .basis
+            .contains("aggregate intervals cannot be unioned")
+    );
+    assert_eq!(report.rows.len(), 1);
+}
+
+#[test]
+fn independent_healthy_collectors_do_not_hold_the_global_cache_lock_during_ipc() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::sync::mpsc;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let left = root.join("left");
+    let right = root.join("right");
+    std::fs::create_dir(&left).unwrap();
+    std::fs::create_dir(&right).unwrap();
+    let gate = ResponseGate::default();
+    let (entered, responses) = mpsc::channel();
+    let left_gate = gate.clone();
+    let left_entered = entered.clone();
+    let a = Peer::start(&left, &left.join("home"), move |params| {
+        left_entered.send(()).unwrap();
+        left_gate.wait();
+        response(params, 20, 135)
+    });
+    let right_gate = gate.clone();
+    let b = Peer::start(&right, &right.join("home"), move |params| {
+        entered.send(()).unwrap();
+        right_gate.wait();
+        response(params, 20, 135)
+    });
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    let barrier = std::sync::Barrier::new(2);
+    let run = |source| {
+        barrier.wait();
+        api.summary(
+            source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_secs(2),
+        )
+    };
+    std::thread::scope(|scope| {
+        let left = scope.spawn(|| run(&a.source));
+        let right = scope.spawn(|| run(&b.source));
+        let first = responses.recv_timeout(Duration::from_secs(1));
+        let second = responses.recv_timeout(Duration::from_secs(1));
+        release.release();
+        assert!(
+            first.is_ok() && second.is_ok(),
+            "both collectors must reach IPC before either response is released"
+        );
+        assert!(left.join().unwrap().is_ok());
+        assert!(right.join().unwrap().is_ok());
+    });
+}
+
+#[test]
+fn waiting_cold_lifetime_read_precedes_repeated_period_revalidation() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let revalidation = ResponseGate::default();
+    let response_revalidation = revalidation.clone();
+    let periods = Arc::new(AtomicUsize::new(0));
+    let observed = periods.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            if params["fromAt"] == 10 {
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    response_gate.wait();
+                } else {
+                    response_revalidation.wait();
+                }
+                response(params, 20, 135)
+            } else {
+                response(params, 20, 270)
+            }
+        },
+    );
+    let release = gate.release_on_drop();
+    let release_revalidation = revalidation.release_on_drop();
+    let api = CollectorApi::default();
+    let read = |start, budget| {
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            start,
+            20,
+            Instant::now() + budget,
+        )
+    };
+
+    assert_eq!(
+        read(10, Duration::from_millis(100)).err().as_deref(),
+        Some("api_refresh_pending")
+    );
+    assert_eq!(
+        read(0, Duration::from_millis(100)).err().as_deref(),
+        Some("api_source_busy")
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    expire_completed_summaries(&api);
+    // Browser polls the period first. Its saved result must remain visible,
+    // while its revalidation yields to the lifetime query waiting for data.
+    let period = read(10, Duration::from_secs(2)).unwrap();
+    assert_eq!(period.report.provider_tokens[0].measured_tokens, 135);
+    let lifetime = read(0, Duration::from_secs(2));
+    release_revalidation.release();
+    let lifetime = lifetime.expect("a cached period must not starve a waiting lifetime read");
+    assert_eq!(lifetime.report.provider_tokens[0].measured_tokens, 270);
+    assert_eq!(lifetime.report.time_range.as_ref().unwrap().start_ms, 0);
+    assert_eq!(periods.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn cold_waiter_hints_are_bounded_expire_and_preserve_source_isolation() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let directory = tempfile::tempdir().unwrap();
+    let left = directory.path().join("left");
+    let right = directory.path().join("right");
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::create_dir_all(&right).unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
-    let worker = std::thread::spawn(move || {
-        for _ in 0..count {
-            let (stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            let mut socket = tungstenite::accept(stream).unwrap();
-            let init: Value =
-                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(init["method"], "initialize");
-            assert_eq!(init["params"]["capabilities"]["experimentalApi"], true);
-            socket
-                .send(Message::Text(
-                    json!({"id":1,"result":{"codexHome":home}})
-                        .to_string()
-                        .into(),
-                ))
-                .unwrap();
-            let initialized: Value =
-                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(initialized["method"], "initialized");
-            let request: Value =
-                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(request["method"], "localUsage/summary");
-            observed.fetch_add(1, Ordering::SeqCst);
-            let mut result = response(
-                request["params"]["repositoryKey"].as_str(),
-                request["params"]["fromAt"].as_u64().unwrap(),
-                request["params"]["toAt"].as_u64().unwrap(),
-            );
-            mutate(&mut result);
-            if result
-                .get("__wait_for_disconnect")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                let _ = socket.read();
-                continue;
-            }
-            let _ = socket.send(Message::Text(
-                json!({"id":2,"result":result}).to_string().into(),
-            ));
-        }
+    let a = Peer::start(&left, &left.join("home"), move |params| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        response_gate.wait();
+        response(params, 20, 135)
     });
-    (worker, calls)
-}
-
-#[test]
-fn source_api_serves_whole_collection_once_and_keeps_missing_counts_unknown() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 5);
-    let mut config = super::super::tests::config(dir.path(), home.clone());
-    let socket = dir.path().join("api.sock");
-    config.codex_usage_sources[0].api_socket = Some(socket.clone());
-    let uid = config.codex_usage_sources[0].uid;
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let key = "b".repeat(64);
-    db.transaction(move |tx|{
-        for id in ["project-alpha","project-beta"] {
-            tx.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,?2,?1,'t',1,'t')",rusqlite::params![id,format!("/{id}")])?;
-        }
-        tx.execute("INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')",rusqlite::params![uid,key])?;Ok(())
-    }).unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db,
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(HostRepositoryProbe),
-    );
-    let repositories = [
-        RepositoryRecord {
-            repository_id: "project-alpha".into(),
-            display_name: "Alpha".into(),
-            root_path: "/alpha".into(),
-        },
-        RepositoryRecord {
-            repository_id: "project-beta".into(),
-            display_name: "Beta".into(),
-            root_path: "/beta".into(),
-        },
-    ];
-    let (server, calls) = peer(&socket, &home, 1, |_| {});
-    let began = Instant::now();
-    let first = usage
-        .repositories(&repositories, UsageRange::Hours24)
-        .unwrap();
-    assert!(began.elapsed() < Duration::from_secs(1));
-    let warm = usage
-        .repositories(&repositories, UsageRange::Hours24)
-        .unwrap();
-    assert_eq!(first, warm);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(first.repositories[0].total_tokens, Some(120));
-    assert_eq!(first.repositories[0].model_requests, Some(1));
-    assert_eq!(first.repositories[0].tool_calls, Some(1));
-    assert_eq!(first.repositories[0].execution_wall_ms, Some(0));
-    assert_eq!(first.repositories[1].total_tokens, None);
-    let wire = serde_json::to_string(&first).unwrap();
-    for private in [
-        "private-account",
-        "private-payload",
-        home.to_str().unwrap(),
-        &"b".repeat(64),
-    ] {
-        assert!(!wire.contains(private));
-    }
-    // A new producer database schema is acceptable only through its stable API;
-    // the fallback's explicit SQLite schema gate is unchanged.
-    assert_eq!(first.repositories[0].coverage.database_schemas, vec![99]);
-    server.join().unwrap();
-}
-
-#[test]
-fn repository_fast_projection_uses_the_bounded_api_summary() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 5);
-    let mut config = super::super::tests::config(dir.path(), home.clone());
-    let socket = dir.path().join("api.sock");
-    config.codex_usage_sources[0].api_socket = Some(socket.clone());
-    let uid = config.codex_usage_sources[0].uid;
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let key = "b".repeat(64);
-    db.transaction(move |tx| {
-        tx.execute(
-            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
-            [],
-        )?;
-        tx.execute(
-            "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')",
-            rusqlite::params![uid, key],
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db.clone(),
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(DetailProbe),
-    );
-    let service = UsageService {
-        registry: Registry::new(db),
-        usage,
-    };
-    let repository = RepositoryRecord {
-        repository_id: "project-alpha".into(),
-        display_name: "Alpha".into(),
-        root_path: "/alpha".into(),
-    };
-    let (server, calls) = peer(&socket, &home, 1, |_| {});
-    assert!(
-        service.usage.config.codex_usage_sources[0]
-            .api_socket
-            .is_some()
-    );
-    let _initial = service
-        .usage
-        .repository_fast(&repository, UsageRange::Hours24)
-        .unwrap();
-    service.usage.wait_for_refresh(Some("project-alpha"));
-    let report = service
-        .usage
-        .repository_fast(&repository, UsageRange::Hours24)
-        .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(report.totals.total_tokens, Some(120));
-    assert_eq!(report.coverage.database_schemas, vec![99]);
-    server.join().unwrap();
-}
-
-#[test]
-fn initial_repository_detail_preserves_full_measurements() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (canonical, now) = super::super::tests::source_database(&home, 8);
-    let config = super::super::tests::config(dir.path(), home.clone());
-    let source = Connection::open(home.join("usage/usage.sqlite3")).unwrap();
-    source
-        .execute_batch(
-            "ALTER TABLE operations ADD COLUMN retry_of_operation_id TEXT;
-             ALTER TABLE operations ADD COLUMN rework_of_operation_id TEXT;
-             ALTER TABLE operation_events ADD COLUMN duration_ns INTEGER;
-             ALTER TABLE tool_invocations ADD COLUMN covering_model_request_id TEXT;
-             ALTER TABLE activity_spans ADD COLUMN activity_state TEXT NOT NULL DEFAULT 'external_wait';
-             ALTER TABLE model_requests ADD COLUMN provider_kind TEXT;
-             ALTER TABLE model_requests ADD COLUMN model TEXT;
-             UPDATE model_requests SET provider_kind='openai', model='gpt-6-sol';
-             UPDATE operation_events
-                SET duration_ns = (occurred_at_ms -
-                    (SELECT started_at_ms FROM operations
-                     WHERE operations.id = operation_events.operation_id)) * 1000000;
-             ALTER TABLE token_observations RENAME TO legacy_token_observations;
-             CREATE TABLE token_observations(
-                 source_event_id TEXT,
-                 model_request_id TEXT,
-                 tool_invocation_id TEXT,
-                 category_path TEXT,
-                 token_count INTEGER,
-                 measurement_provenance TEXT,
-                 coverage_state TEXT,
-                 observed_at_ms INTEGER,
-                 repository_bucket TEXT
-             );
-             INSERT INTO token_observations
-                 SELECT CASE WHEN model_request_id IS NOT NULL
-                             THEN 'event-model' ELSE 'event-tool' END,
-                        model_request_id, tool_invocation_id,
-                        category_path, token_count, measurement_provenance,
-                        coverage_state, observed_at_ms, repository_bucket
-                 FROM legacy_token_observations;
-             DROP TABLE legacy_token_observations;
-             CREATE INDEX token_model_lookup
-                 ON token_observations(model_request_id, source_event_id, category_path);
-             CREATE INDEX token_tool_lookup
-                 ON token_observations(tool_invocation_id, source_event_id, category_path);
-             CREATE INDEX operation_events_terminal_observed_idx
-                 ON operation_events(occurred_at_ms, operation_id) WHERE terminal = 1;
-             CREATE TABLE operation_work_contexts(
-                 operation_id TEXT,
-                 native_project_id TEXT,
-                 workstream_id TEXT,
-                 outcome_id TEXT
-             );",
-        )
-        .unwrap();
-    source
-        .execute(
-            "INSERT INTO operation_work_contexts VALUES('model-op','project-alpha','implementation','outcome-1')",
-            [],
-        )
-        .unwrap();
-    drop(source);
-
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let uid = config.codex_usage_sources[0].uid;
-    db.transaction(move |tx| {
-        tx.execute(
-            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
-            [],
-        )?;
-        tx.execute(
-            "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,8,1,'t')",
-            rusqlite::params![uid, canonical],
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db.clone(),
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(DetailProbe),
-    );
-    let service = UsageService {
-        registry: Registry::new(db),
-        usage,
-    };
-    let params = UsageRepositoryParams {
-        wait_for_refresh: false,
-        repository_id: "project-alpha".into(),
-        range: UsageRange::Hours24,
-        worktree_ids: None,
-        include_unassigned: true,
-    };
-    let _initial = service.repository(params.clone()).unwrap();
-    service.usage.wait_for_refresh(Some("project-alpha"));
-    let report = service.repository(params).unwrap();
-    assert_eq!(report.totals.total_tokens, Some(100));
-    assert_eq!(report.totals.model_requests, 1);
-    assert_eq!(report.totals.tool_calls, 1);
-    assert_eq!(report.totals.cost.status, "complete");
-    assert_eq!(report.time.request_to_delivery.measured_ms, 10_000);
-    assert_eq!(report.time.request_to_delivery.unknown_intervals, 0);
-    assert!(
-        report
-            .activities
-            .iter()
-            .any(|activity| activity.activity == "coding" && activity.total_tokens == 100)
-    );
-    assert!(report.outcomes.iter().any(|outcome| {
-        outcome.outcome_id == "outcome-1"
-            && outcome.total_tokens == 100
-            && outcome.cost.status == "complete"
-    }));
-    assert!(
-        report
-            .tools
-            .outcomes
-            .iter()
-            .any(|outcome| outcome.outcome == "completed" && outcome.count == 1)
-    );
-}
-
-#[test]
-fn usage_worktree_filter_rejects_unknown_registered_id_before_source_read() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 5);
-    let config = super::super::tests::config(dir.path(), home);
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    db.transaction(|tx| {
-        tx.execute(
-            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
-            [],
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        db.clone(),
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(DetailProbe),
-    );
-    let service = UsageService {
-        registry: Registry::new(db),
-        usage,
-    };
-    let error = service
-        .repository(UsageRepositoryParams {
-            wait_for_refresh: false,
-            repository_id: "project-alpha".into(),
-            range: UsageRange::Hours24,
-            worktree_ids: Some(vec!["w-does-not-exist".into()]),
-            include_unassigned: true,
-        })
-        .expect_err("unknown worktree ids must be denied");
-    assert_eq!(error.code, ErrorCode::ParamsInvalid);
-}
-
-#[test]
-fn api_exact_windows_validate_and_unsupported_or_failed_sources_fall_back() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 5);
-    let mut config = super::super::tests::config(dir.path(), home.clone());
-    let socket = dir.path().join("api.sock");
-    config.codex_usage_sources[0].api_socket = Some(socket.clone());
-    let source = config.codex_usage_sources[0].clone();
-    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let usage = CodexUsage::new(config, db);
-    let (server, _) = peer(&socket, &home, 1, |v| {
-        v["report"]["timeRange"]["endMs"] = json!(0)
+    let (entered_source, entered) = std::sync::mpsc::channel();
+    let b = Peer::start(&right, &right.join("home"), move |params| {
+        entered_source.send(()).unwrap();
+        response(params, 20, 270)
     });
-    let report = usage
-        .read_source(
-            &source,
-            &"b".repeat(64),
-            now - 86_400_000,
-            now,
-            86_400_000,
-            1,
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    let read = |source: &crate::config::CodexUsageSource, end, budget| {
+        api.summary(
+            source,
+            Some(KEY),
             None,
-            Projection::PerformanceFast,
-            &[],
-            None,
-            Some(true),
-        )
-        .unwrap();
-    assert_eq!(report.tokens["total_tokens"], 100);
-    server.join().unwrap();
-    // Failed source cooldown is bounded and does not repeat the socket request.
-    let source_report = usage
-        .read_source(
-            &source,
-            &"b".repeat(64),
-            now - 86_400_000,
-            now,
-            86_400_000,
-            1,
-            None,
-            Projection::PerformanceFast,
-            &[],
-            None,
-            Some(true),
-        )
-        .unwrap();
-    assert_eq!(source_report.tokens["total_tokens"], 100);
-}
-
-#[test]
-fn api_contract_preserves_subsets_cost_basis_and_optional_metadata() {
-    let mut value = response(Some(&"b".repeat(64)), 10, 20);
-    let summary: Summary = serde_json::from_value(value.clone()).unwrap();
-    validate(&summary, Some(&"b".repeat(64)), 10, 20).unwrap();
-    let report = summary.source_report(None, 1, None, true);
-    assert_eq!(report.tokens["total_tokens"], 120);
-    assert_eq!(report.tokens["input_tokens_details.cached_tokens"], 80);
-    assert_eq!(report.tokens["output_tokens_details.reasoning_tokens"], 5);
-    assert!(validate(&summary, Some(&"b".repeat(64)), 10, 21).is_err());
-    value["snapshot"] =
-        json!({"source_watermark":"42","generated_at":19,"freshness":"stale","refresh_id":null});
-    let mut cost = json!({
-        "status":"complete","basis":"api_equivalent","currency":"USD","processingTier":"standard",
-        "estimatedUsdMicros":20,"inputUsdMicros":4,"cachedInputUsdMicros":2,"cacheWriteUsdMicros":0,"outputUsdMicros":14,
-        "inputTokens":100,"uncachedInputTokens":10,"cachedInputTokens":80,"cacheWriteTokens":10,"outputTokens":20,"reasoningTokens":5,
-        "providerTotalTokens":120,"pricedObservations":1,"unknownObservations":0,"rateCardRefs":["fixture@1"]
-    });
-    value["report"]["cost"] = cost.clone();
-    let priced: Summary = serde_json::from_value(value.clone()).unwrap();
-    validate(&priced, Some(&"b".repeat(64)), 10, 20).unwrap();
-    assert_eq!(
-        priced
-            .source_report(None, 1, None, true)
-            .supplied_cost
-            .unwrap()
-            .estimated_usd_micros,
-        Some(20)
-    );
-    cost["basis"] = json!("subscription");
-    value["report"]["cost"] = cost;
-    assert!(
-        validate(
-            &serde_json::from_value(value).unwrap(),
-            Some(&"b".repeat(64)),
+            true,
             10,
-            20
+            end,
+            Instant::now() + budget,
         )
-        .is_err()
-    );
-}
-
-#[test]
-fn slow_api_is_cancelled_within_the_shared_read_budget() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let socket = dir.path().join("api.sock");
-    let source = CodexUsageSource {
-        uid: rustix::process::getuid().as_raw(),
-        codex_home: home.clone(),
-        executable: "/unused".into(),
-        api_socket: Some(socket.clone()),
     };
-    let (server, calls) = peer(&socket, &home, 1, |result| {
-        result["__wait_for_disconnect"] = Value::Bool(true);
-    });
-    let began = Instant::now();
-    let result = CollectorApi::default().summary(
-        &source,
-        None,
-        None,
-        true,
-        10,
-        20,
-        Instant::now() + Duration::from_millis(100),
-    );
-    let elapsed = began.elapsed();
-    let server_result = server.join();
-    server_result.unwrap();
-    assert!(result.is_err());
-    assert!(elapsed < Duration::from_millis(650));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn source_backfill_progress_is_reported_without_scanning_raw_usage() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    super::super::tests::source_database(&home, 5);
-    let connection = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE _usage_report_backfill(source TEXT PRIMARY KEY,cursor INTEGER NOT NULL,high_water INTEGER NOT NULL);
-             INSERT INTO _usage_report_backfill VALUES('operations', 20, 20),('token_observations', 30, 100),('coverage_events', 5, 5);",
-        )
-        .unwrap();
-    let source = CodexUsageSource {
-        uid: rustix::process::getuid().as_raw(),
-        codex_home: home,
-        executable: "/unused".into(),
-        api_socket: None,
-    };
-    let snapshot = source_progress(&source).expect("progress row");
-    assert_eq!(snapshot.progress_completed, Some(55));
-    assert_eq!(snapshot.progress_total, Some(125));
     assert_eq!(
-        snapshot.progress_stage.as_deref(),
-        Some("token_observations")
+        read(&a.source, 20, Duration::from_millis(100))
+            .err()
+            .as_deref(),
+        Some("api_refresh_pending")
     );
-    assert!(snapshot.refreshing);
+    for end in 21..21 + MAX_CACHED as u64 + 1 {
+        assert_eq!(
+            read(&a.source, end, Duration::from_millis(100))
+                .err()
+                .as_deref(),
+            Some("api_source_busy")
+        );
+    }
+    {
+        let state = api.0.0.lock().unwrap();
+        assert_eq!(state.cold_waiters.len(), MAX_CACHED);
+        assert!(state.pending_bytes() <= MAX_INFLIGHT_BYTES);
+    }
+    let independent = read(&b.source, 20, Duration::from_secs(2)).unwrap();
+    assert_eq!(independent.report.provider_tokens[0].measured_tokens, 270);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    expire_completed_summaries(&api);
+    let independent = read(&b.source, 20, Duration::from_secs(2)).unwrap();
+    assert_eq!(independent.report.provider_tokens[0].measured_tokens, 270);
+    entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("another source's waiters must not block revalidation");
+
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    {
+        let mut state = api.0.0.lock().unwrap();
+        for waiter in state.cold_waiters.values_mut() {
+            // Advance only retained waiter age, not request or source time.
+            // An abandoned poll must expire without a test timer delay.
+            waiter.touched = Instant::now() - COLD_WAITER_FOR;
+        }
+    }
+    expire_completed_summaries(&api);
+    let stale = read(&a.source, 20, Duration::from_secs(2)).unwrap();
+    assert_eq!(stale.report.provider_tokens[0].measured_tokens, 135);
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "expired waiters must release the revalidation turn"
+    );
+    assert!(api.0.0.lock().unwrap().cold_waiters.is_empty());
 }
 
 #[test]
-fn unfinished_source_cache_skips_raw_fallback_reads() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("collector");
-    let (_, now) = super::super::tests::source_database(&home, 8);
-    let connection = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE _usage_report_backfill(source TEXT PRIMARY KEY,cursor INTEGER NOT NULL,high_water INTEGER NOT NULL);
-             INSERT INTO _usage_report_backfill VALUES
-               ('operations', 2, 2),
-               ('token_observations', 0, 100),
-               ('coverage_events', 2, 2),
-               ('activity_spans', 1, 1);",
-        )
-        .unwrap();
-    let config = super::super::tests::config(dir.path(), home.clone());
-    let uid = config.codex_usage_sources[0].uid;
-    let authority = Database::open(dir.path().join("authority.sqlite3")).unwrap();
-    let key = "b".repeat(64);
-    authority
-        .transaction(move |tx| {
-            tx.execute(
-                "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/project-alpha','Alpha','t',1,'t')",
-                [],
-            )?;
-            tx.execute(
-                "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,8,1,'t')",
-                rusqlite::params![uid, key],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    let usage = CodexUsage::with_probe(
-        config,
-        authority,
-        Arc::new(FixedClock(
-            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
-        )),
-        Arc::new(HostRepositoryProbe),
-    );
-    let first = usage
-        .repository(
-            &RepositoryRecord {
-                repository_id: "project-alpha".into(),
-                display_name: "Alpha".into(),
-                root_path: "/project-alpha".into(),
-            },
-            UsageRange::Hours24,
-        )
-        .unwrap();
-    assert_eq!(first.totals.total_tokens, None);
-    assert!(first.coverage.snapshot.as_ref().unwrap().refreshing);
-    std::thread::sleep(Duration::from_millis(50));
-    let report = usage
-        .repository(
-            &RepositoryRecord {
-                repository_id: "project-alpha".into(),
-                display_name: "Alpha".into(),
-                root_path: "/project-alpha".into(),
-            },
-            UsageRange::Hours24,
-        )
-        .unwrap();
-    assert_eq!(report.totals.total_tokens, None);
-    assert!(
-        report.coverage.unavailable_reasons.contains_key("indexing"),
-        "unexpected unavailable reasons: {:?}",
-        report.coverage.unavailable_reasons
-    );
-    assert!(report.coverage.snapshot.as_ref().unwrap().refreshing);
+fn usage_repository_retry_consumes_completed_query_after_clock_advances() {
+    use crate::automation_test_support::{Fixture, START, WEEK};
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    struct MovingClock(Arc<AtomicU64>);
+    impl crate::platform::Clock for MovingClock {
+        fn now_utc(&self) -> time::OffsetDateTime {
+            time::OffsetDateTime::from_unix_timestamp_nanos(
+                i128::from(self.0.load(Ordering::SeqCst)) * 1_000_000,
+            )
+            .unwrap()
+        }
+    }
+    for range in [UsageRange::Hours24, UsageRange::Days7, UsageRange::Days30] {
+        let mut fixture = Fixture::new();
+        let root = fixture._temporary.path();
+        let first = ResponseGate::default();
+        let first_response = first.clone();
+        let later = ResponseGate::default();
+        let later_response = later.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let peer = Peer::start(root, &root.join("usage-source"), move |params| {
+            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                first_response.wait();
+            } else {
+                later_response.wait();
+            }
+            response(params, START + WEEK, 135)
+        });
+        let release_first = first.release_on_drop();
+        let release_later = later.release_on_drop();
+        fixture.config.codex_usage_sources = vec![peer.source.clone()];
+        let clock = Arc::new(AtomicU64::new(START + WEEK));
+        let service = UsageService::with_clock(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Registry::new(fixture.database.clone()),
+            Arc::new(MovingClock(clock.clone())),
+        );
+        let params = |wait_for_refresh| devcoordinator2_api::params::UsageRepository {
+            repository_id: "project-alpha".into(),
+            range: range.clone(),
+            worktree_ids: None,
+            include_unassigned: true,
+            wait_for_refresh,
+        };
+        let cold = service.repository(params(false)).unwrap();
+        assert_eq!(cold.totals.total_tokens, None);
+        assert!(
+            service
+                .usage
+                .cache
+                .wait_until_idle(Instant::now() + Duration::from_secs(3))
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        release_first.release();
+        assert!(service.wait_for_collector_refresh(Instant::now() + Duration::from_secs(2)));
+        clock.store(START + WEEK + 10_000, Ordering::SeqCst);
+
+        let refreshed = service.repository(params(true)).unwrap();
+        release_later.release();
+        assert_eq!(
+            refreshed.totals.total_tokens,
+            Some(135),
+            "Usage retry must consume its completed earlier cutoff before starting a new cutoff"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a moving wall clock must not abandon the completed source query"
+        );
+        assert_eq!(refreshed.generated_at_ms, START + WEEK + 10_000);
+        assert_eq!(
+            refreshed.coverage.snapshot.as_ref().unwrap().updated_at_ms,
+            Some(START + WEEK),
+            "producer generation time is independent of a later report assembly"
+        );
+        let (start, _, bucket, count) = usage_window(&range, START + WEEK);
+        let record = RepositoryRecord {
+            repository_id: "project-alpha".into(),
+            display_name: "Project Alpha".into(),
+            root_path: fixture.repository.clone(),
+        };
+        let now = START + WEEK + 10_000;
+        let aligned_end = now.div_ceil(bucket) * bucket;
+        // Progress and chart callers share the token display entry. They must
+        // consume that entry's original cutoff as well as the full detail entry.
+        service
+            .usage
+            .repository_buckets(
+                &record,
+                range.clone(),
+                bucket,
+                count,
+                now,
+                aligned_end,
+                true,
+            )
+            .unwrap();
+        assert!(
+            service
+                .usage
+                .cache
+                .wait_until_idle(Instant::now() + Duration::from_secs(2))
+        );
+        let bucketed = service
+            .usage
+            .repository_buckets(
+                &record,
+                range.clone(),
+                bucket,
+                count,
+                now,
+                aligned_end,
+                true,
+            )
+            .unwrap();
+        assert_eq!(bucketed.totals.total_tokens, Some(135));
+        assert_eq!(bucketed.generated_at_ms, now);
+        assert_eq!(
+            bucketed.coverage.snapshot.as_ref().unwrap().updated_at_ms,
+            Some(START + WEEK)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let requests = peer.requests.lock().unwrap();
+        for request in requests
+            .iter()
+            .filter(|request| request["method"] == "localUsage/summary")
+        {
+            assert_eq!(request["params"]["repositoryKey"], KEY);
+            assert_eq!(request["params"]["fromAt"], start);
+            assert_eq!(request["params"]["toAt"], START + WEEK);
+            assert_eq!(request["params"]["includeReview"], true);
+            assert_eq!(request["params"]["includeUnassigned"], true);
+        }
+        assert!(service.wait_for_collector_refresh(Instant::now() + Duration::from_secs(2)));
+    }
 }

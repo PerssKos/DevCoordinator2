@@ -148,6 +148,9 @@ pub struct ComponentSpec {
     pub route: bool,
     pub health: Option<HealthSpec>,
     pub persistent_paths: Vec<String>,
+    /// Opts this process out of systemd's default `NoNewPrivileges=yes`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_new_privileges: bool,
     pub image: Option<String>,
     pub container_port: Option<u16>,
     pub volumes: Vec<String>,
@@ -2129,6 +2132,7 @@ fn validate_component(
             "route",
             "health",
             "persistent_paths",
+            "allow_new_privileges",
         ],
         ComponentKind::Docker => &["image", "command", "port", "volumes", "health"],
         ComponentKind::Compose => &[
@@ -2178,6 +2182,7 @@ fn validate_component(
         route: false,
         health: None,
         persistent_paths: Vec::new(),
+        allow_new_privileges: false,
         image: None,
         container_port: None,
         volumes: Vec::new(),
@@ -2262,6 +2267,7 @@ fn validate_process_component(
         }
         None => Vec::new(),
     };
+    specification.allow_new_privileges = optional_bool(body, "allow_new_privileges", false, label)?;
     specification.health = validate_health(label, body.get("health"))?;
     Ok(())
 }
@@ -2676,6 +2682,57 @@ resources=[{kind='directory',id='./shared',access='exclusive'}]
                 "accepted invalid {extra}"
             );
         }
+    }
+
+    #[test]
+    fn process_allow_new_privileges_defaults_false_and_is_serialized_only_when_enabled() {
+        let temporary = tempdir().expect("tempdir");
+        write(
+            temporary.path(),
+            r#"
+schema = 2
+[deployment.app]
+source = "checkout"
+components = ["default", "privileged"]
+[deployment.app.component.default]
+type = "process"
+command = ["/usr/bin/true"]
+[deployment.app.component.privileged]
+type = "process"
+command = ["/usr/bin/true"]
+allow_new_privileges = true
+"#,
+        );
+        let specification = load_deployment_spec(temporary.path(), "app").expect("deployment");
+        let default = specification.component("default").expect("default");
+        let privileged = specification.component("privileged").expect("privileged");
+        assert!(!default.allow_new_privileges);
+        assert!(privileged.allow_new_privileges);
+        let default_json = serde_json::to_value(default).expect("default JSON");
+        assert!(default_json.get("allow_new_privileges").is_none());
+        assert_eq!(
+            serde_json::to_value(privileged).expect("privileged JSON")["allow_new_privileges"],
+            true
+        );
+    }
+
+    #[test]
+    fn allow_new_privileges_is_rejected_for_non_process_components() {
+        let temporary = tempdir().expect("tempdir");
+        write(
+            temporary.path(),
+            r#"
+schema = 2
+[deployment.app]
+source = "checkout"
+components = ["cache"]
+[deployment.app.component.cache]
+type = "docker"
+image = "valkey/valkey:9.1.0-alpine"
+allow_new_privileges = true
+"#,
+        );
+        assert!(load_deployment_spec(temporary.path(), "app").is_err());
     }
     use std::os::unix::fs::symlink;
     use tempfile::tempdir;

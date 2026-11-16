@@ -32,7 +32,7 @@ async function server(name){
     child.on('exit',()=>{for(const entry of pending.values())entry.reject(new Error('Fixture exited'));pending.clear();});
   };
   const request=(operation,params={},identity=null)=>new Promise((resolve,reject)=>{
-    const id=`request-${++sequence}`;pending.set(id,{resolve,reject});child.stdin.write(JSON.stringify({protocol:2,id,operation,params,client:{kind:identity?'edge':'other',identity}})+'\n');
+    const id=`request-${++sequence}`;pending.set(id,{resolve,reject});child.stdin.write(JSON.stringify({protocol:3,id,operation,params,client:{kind:identity?'edge':'other',identity}})+'\n');
   });
   start();assert.equal((await request('ping')).ok,true);
   const socketPath=path.join(directory,'bridge.sock');
@@ -56,7 +56,7 @@ async function mcp(server){
   child.on('exit',()=>{for(const e of pending.values())e.reject(new Error('MCP exited'));pending.clear();});
   const ready=await rpc('initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'codex',version:'1'}});assert.ok(!ready.error);
   child.stdin.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})+'\n');
-  const client={rpc,async call(name,args){const result=await rpc('tools/call',{name,arguments:args});assert.ok(!result.error,JSON.stringify(result.error));assert.equal(result.result.isError,false,JSON.stringify(result.result.content));return result.result.structuredContent;},close(){child.stdin.end();}};mcps.push(client);return client;
+  const client={rpc,async call(name,args){const result=await rpc('tools/call',{name:'call_operation',arguments:{operation:name,params:args}});assert.ok(!result.error,JSON.stringify(result.error));assert.equal(result.result.isError,false,JSON.stringify(result.result.content));return result.result.structuredContent;},close(){child.stdin.end();}};mcps.push(client);return client;
 }
 const remote=async(server,action,credential=null,extra={})=>{
   const response=await fetch(server.base+'/.well-known/devcoordinator2/tickets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,credential,server_label:credential?'Third server':null,...extra})});return response.json();
@@ -123,10 +123,10 @@ try {
     const ordinary=await origin.request('ticket.settings',{},'viewer@example.test');assert.equal(ordinary.ok,true);assert.equal(ordinary.data.can_configure,false);const deniedSetting=await origin.request('ticket.configure',{upstream:'other.example',expected_revision:ordinary.data.revision},'viewer@example.test');assert.equal(deniedSetting.ok,false);
   },page);
   await check('real MCP clients on both servers create, discuss, close and discover public tickets',async()=>{
-    const a=await mcp(origin),b=await mcp(upstream);const list=await a.rpc('tools/list',{});assert.ok(list.result.tools.some(t=>t.name==='ticket_request'));assert.ok(!list.result.tools.some(t=>t.name==='ticket_remote'));
-    const created=await a.call('ticket_request',{action:{kind:'create',request_key:'mcp-request',title:'MCP feature request',body:'Created through the real MCP server.',attachments:[]}});
-    const comment=await b.call('ticket_request',{target:'local',action:{kind:'comment',ticket_id:created.ticket.id,request_key:'mcp-reply',body:'Upstream agent reply.',attachments:[]}});assert.equal(comment.comment.body,'Upstream agent reply.');
-    const refreshed=await a.call('ticket_request',{action:{kind:'get',ticket_id:created.ticket.id}});const closed=await a.call('ticket_request',{action:{kind:'close',ticket_id:created.ticket.id,expected_revision:refreshed.ticket.revision,closed:true}});assert.equal(closed.ticket.closed,true);
+    const a=await mcp(origin),b=await mcp(upstream);const list=await a.rpc('tools/list',{});assert.ok(list.result.tools.some(t=>t.name==='call_operation'));assert.ok(!list.result.tools.some(t=>t.name==='ticket_remote'));
+    const created=await a.call('ticket.request',{action:{kind:'create',request_key:'mcp-request',title:'MCP feature request',body:'Created through the real MCP server.',attachments:[]}});
+    const comment=await b.call('ticket.request',{target:'local',action:{kind:'comment',ticket_id:created.ticket.id,request_key:'mcp-reply',body:'Upstream agent reply.',attachments:[]}});assert.equal(comment.comment.body,'Upstream agent reply.');
+    const refreshed=await a.call('ticket.request',{action:{kind:'get',ticket_id:created.ticket.id}});const closed=await a.call('ticket.request',{action:{kind:'close',ticket_id:created.ticket.id,expected_revision:refreshed.ticket.revision,closed:true}});assert.equal(closed.ticket.closed,true);
   },page);
   await check('network failure preserves a reply draft and retry saves it once',async()=>{
     await page.reload();await page.locator('#ticket-reply').waitFor();await page.locator('#ticket-reply').fill('Retry after the upstream reconnects.');upstream.setOffline(true);
@@ -136,12 +136,12 @@ try {
   },page);
   await check('upload chunks resume safely and reject incomplete or foreign files',async()=>{
     const a=await mcp(origin);const bytes=Buffer.from('Attachment through MCP');const hash=crypto.createHash('sha256').update(bytes).digest('hex');
-    const args={action:{kind:'upload_start',request_key:'mcp-upload',name:'agent.txt',byte_size:bytes.length,sha256:hash}};const upload=await a.call('ticket_request',args);
+    const args={action:{kind:'upload_start',request_key:'mcp-upload',name:'agent.txt',byte_size:bytes.length,sha256:hash}};const upload=await a.call('ticket.request',args);
     const incomplete=await origin.request('ticket.request',{action:{kind:'comment',ticket_id:ticketId,request_key:'incomplete',body:'Must not appear',attachments:[upload.upload_id]}});assert.equal(incomplete.ok,false);
-    const part={action:{kind:'upload_chunk',upload_id:upload.upload_id,offset:0,data_base64:bytes.toString('base64')}};assert.equal((await a.call('ticket_request',part)).offset,bytes.length);assert.equal((await a.call('ticket_request',part)).offset,bytes.length);
-    const reply=await a.call('ticket_request',{action:{kind:'comment',ticket_id:ticketId,request_key:'mcp-attachment-comment',body:'Agent attachment',attachments:[upload.upload_id]}});assert.equal(reply.comment.attachments.length,1);
+    const part={action:{kind:'upload_chunk',upload_id:upload.upload_id,offset:0,data_base64:bytes.toString('base64')}};assert.equal((await a.call('ticket.request',part)).offset,bytes.length);assert.equal((await a.call('ticket.request',part)).offset,bytes.length);
+    const reply=await a.call('ticket.request',{action:{kind:'comment',ticket_id:ticketId,request_key:'mcp-attachment-comment',body:'Agent attachment',attachments:[upload.upload_id]}});assert.equal(reply.comment.attachments.length,1);
     const denied=await remote(upstream,{kind:'upload_chunk',upload_id:upload.upload_id,offset:bytes.length,data_base64:'YQ=='},'2'.repeat(64));assert.equal(denied.ok,false);
-    const duplicate=await a.call('ticket_request',{action:{kind:'comment',ticket_id:ticketId,request_key:'mcp-attachment-comment',body:'Agent attachment',attachments:[upload.upload_id]}});assert.equal(duplicate.comment.id,reply.comment.id);
+    const duplicate=await a.call('ticket.request',{action:{kind:'comment',ticket_id:ticketId,request_key:'mcp-attachment-comment',body:'Agent attachment',attachments:[upload.upload_id]}});assert.equal(duplicate.comment.id,reply.comment.id);
   },page);
   await check('restart both databases without losing ticket ownership, settings, replies or files',async()=>{
     await origin.restart();await upstream.restart();assert.equal((await origin.call('ticket.settings')).upstream,upstream.base);

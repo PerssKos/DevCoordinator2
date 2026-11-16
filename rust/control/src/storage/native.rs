@@ -1,4 +1,5 @@
 //! Native storage observation and exact-target mutations; no shell commands.
+mod discovery;
 mod docker;
 mod docker_engine;
 mod evidence;
@@ -15,8 +16,8 @@ use crate::{
     metrics_source::run_bounded,
 };
 use devcoordinator2_api::{ProtocolError, storage as api};
+pub use discovery::{DiscoveryBudget, DiscoveryCursor};
 pub(crate) use mounts::execute as run_mount_helper;
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,12 +25,34 @@ use std::time::Duration;
 
 pub trait Backend: Send + Sync {
     fn discover(&self, context: &Context) -> Result<Discovery, ProtocolError>;
+    fn discover_step(
+        &self,
+        context: &Context,
+        cursor: &mut DiscoveryCursor,
+        _budget: DiscoveryBudget,
+    ) -> Result<Option<Discovery>, ProtocolError> {
+        if cursor.complete {
+            return Err(unavailable("discovery_already_complete"));
+        }
+        let result = self.discover(context)?;
+        cursor.complete = true;
+        Ok(Some(result))
+    }
     fn validate(
         &self,
         record: &Record,
         context: &Context,
         selected: &[String],
     ) -> Result<(), ProtocolError>;
+    /// Validate a recognized source-worktree disposal intent without running
+    /// the unbounded discovery context or full native safety checks.
+    fn validate_disposal_intent(
+        &self,
+        record: &Record,
+        repository_id: &str,
+        now_ms: u64,
+        reviewed_ignored_files: Option<&[api::IgnoredFileReview]>,
+    ) -> Result<(String, Option<super::model::IgnoredReview>), ProtocolError>;
     fn remove(
         &self,
         record: &Record,
@@ -39,6 +62,15 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), ProtocolError>;
     /// Used only after a durable mutation intent exists, including restart.
     fn absent(&self, record: &Record, context: &Context) -> Result<bool, ProtocolError>;
+    fn absent_step(
+        &self,
+        record: &Record,
+        context: &Context,
+        _cursor: &mut Option<String>,
+        _budget: DiscoveryBudget,
+    ) -> Result<Option<bool>, ProtocolError> {
+        self.absent(record, context).map(Some)
+    }
     fn save_recovery(&self, record: &Record, job_id: &str) -> Result<(), ProtocolError>;
     fn resume(
         &self,
@@ -104,6 +136,16 @@ impl Backend for HostBackend {
         self.save_private_definition(r, job_id)
     }
 
+    fn validate_disposal_intent(
+        &self,
+        record: &Record,
+        repository_id: &str,
+        now_ms: u64,
+        reviewed_ignored_files: Option<&[api::IgnoredFileReview]>,
+    ) -> Result<(String, Option<super::model::IgnoredReview>), ProtocolError> {
+        self.validate_intent(record, repository_id, now_ms, reviewed_ignored_files)
+    }
+
     fn absent(&self, r: &Record, context: &Context) -> Result<bool, ProtocolError> {
         match &r.locator {
             Locator::Directory { path, .. } => fs::absent(path),
@@ -118,52 +160,38 @@ impl Backend for HostBackend {
         }
     }
 
+    fn absent_step(
+        &self,
+        record: &Record,
+        context: &Context,
+        cursor: &mut Option<String>,
+        budget: DiscoveryBudget,
+    ) -> Result<Option<bool>, ProtocolError> {
+        if matches!(record.locator, Locator::Evidence { .. }) {
+            self.evidence_absent_step(record, context, cursor, budget)
+        } else {
+            self.absent(record, context).map(Some)
+        }
+    }
+
     fn discover(&self, context: &Context) -> Result<Discovery, ProtocolError> {
-        let mut observation = context.clone();
-        observation.discovering = true;
-        match self.container_rows() {
-            Ok(rows) => observation.docker_snapshot = Some(Arc::new(rows)),
-            Err(_) => observation.docker_unavailable = true,
-        }
-        let context = &observation;
-        let mut result = Discovery {
-            repository_id: context.scan_repository_id.clone(),
-            ..Discovery::default()
-        };
-        self.discover_sources(context, &mut result)?;
-        self.discover_evidence(context, &mut result)?;
-        if !context.repositories.is_empty() {
-            match self.discover_docker(context, &mut result) {
-                Ok(()) => result.complete_kinds.extend([
-                    api::Kind::Container,
-                    api::Kind::Image,
-                    api::Kind::Network,
-                    api::Kind::Volume,
-                    api::Kind::Mount,
-                    api::Kind::BackingDirectory,
-                ]),
-                Err(_) => result
-                    .coverage_gaps
-                    .push("docker_discovery_incomplete".into()),
+        let mut cursor = DiscoveryCursor::default();
+        loop {
+            if let Some(result) =
+                self.discover_host_step(context, &mut cursor, DiscoveryBudget::default())?
+            {
+                return Ok(result);
             }
         }
-        self.discover_retained_backing(context, &mut result)?;
-        for record in &mut result.records {
-            let mut ancestors = BTreeSet::new();
-            for alias in &record.private_aliases {
-                for parent in alias.ancestors().skip(1) {
-                    if let Ok((device, inode)) = fs::identity(parent) {
-                        ancestors.insert(format!("fs:{device}:{inode}"));
-                    }
-                }
-            }
-            record.ancestor_keys = ancestors.into_iter().collect();
-        }
-        let mut filesystems = BTreeSet::new();
-        result
-            .filesystems
-            .retain(|f| filesystems.insert(f.filesystem_id.clone()));
-        Ok(result)
+    }
+
+    fn discover_step(
+        &self,
+        context: &Context,
+        cursor: &mut DiscoveryCursor,
+        budget: DiscoveryBudget,
+    ) -> Result<Option<Discovery>, ProtocolError> {
+        self.discover_host_step(context, cursor, budget)
     }
 
     fn validate(
@@ -187,6 +215,18 @@ impl Backend for HostBackend {
             || context.leased_ancestors.contains(&r.resource_key)
         {
             return Err(blocked("active_lease"));
+        }
+        if matches!(r.locator, Locator::Evidence { .. }) {
+            for alias in &r.private_aliases {
+                let (device, inode) = fs::identity(alias)?;
+                let key = format!("fs:{device}:{inode}");
+                if context.protected_ancestors.contains(&key) {
+                    return Err(blocked("protected_shared_data"));
+                }
+                if context.leased_ancestors.contains(&key) {
+                    return Err(blocked("active_lease"));
+                }
+            }
         }
         for alias in &r.private_aliases {
             for path in alias.ancestors() {
@@ -217,12 +257,25 @@ impl Backend for HostBackend {
                 root,
                 git_root,
             } => {
-                validate_root(path, &self.config)?;
+                let native_backup =
+                    native_backup_generation(path, root, r.artifact.kind, &self.config);
+                validate_path(path, &self.config, native_backup, &self.database)?;
                 if !path.starts_with(root) {
                     return Err(blocked("outside_registered_root"));
                 }
                 if fs::identity(path)? != (*device, *inode) {
                     return Err(blocked("identity_changed"));
+                }
+                if native_backup {
+                    self.native_backup_root_identity(r, root, context)?;
+                    if path
+                        .join("retirement-pending.json")
+                        .symlink_metadata()
+                        .is_ok()
+                    {
+                        return Err(blocked("activation_acceptance_pending"));
+                    }
+                    fs::validate_native_snapshot(path)?;
                 }
                 if r.artifact.kind == api::Kind::Backup && !context.discovering {
                     self.validate_backup_floor(r, context)?;
@@ -245,7 +298,16 @@ impl Backend for HostBackend {
                 if processes_reference(&r.private_aliases)? {
                     return Err(blocked("active_process"));
                 }
-                let measured = fs::measure(path)?;
+                let measured = if context.discovering {
+                    context
+                        .discovery_measurements
+                        .get(path)
+                        .cloned()
+                        .map(Ok)
+                        .unwrap_or_else(|| fs::measure(path))?
+                } else {
+                    fs::measure(path)?
+                };
                 if measured.protected_metadata && generated_kind(r.artifact.kind) {
                     return Err(blocked("protected_source_or_credentials"));
                 }
@@ -268,9 +330,24 @@ impl Backend for HostBackend {
                     return Err(blocked("nested_repository"));
                 }
                 if r.artifact.kind == api::Kind::Worktree {
-                    self.validate_worktree(path, git_root.as_deref(), context)?;
-                } else if let Some(git) = git_root
-                    && !git_bytes(
+                    self.validate_worktree(r, path, git_root.as_deref(), context)?;
+                } else if let Some(git) = git_root {
+                    let git = context
+                        .repositories
+                        .iter()
+                        .find(|repository| repository.root == *git)
+                        .and_then(|repository| {
+                            context
+                                .worktrees
+                                .iter()
+                                .filter(|(id, worktree)| {
+                                    id == &repository.id && path.starts_with(worktree)
+                                })
+                                .max_by_key(|(_, worktree)| worktree.components().count())
+                                .map(|(_, worktree)| worktree.as_path())
+                        })
+                        .unwrap_or(git);
+                    if !git_bytes(
                         git,
                         &[
                             "ls-files",
@@ -281,8 +358,9 @@ impl Backend for HostBackend {
                         context,
                     )?
                     .is_empty()
-                {
-                    return Err(blocked("tracked_source"));
+                    {
+                        return Err(blocked("tracked_source"));
+                    }
                 }
                 let allowed_mount = r
                     .artifact
@@ -317,8 +395,8 @@ impl Backend for HostBackend {
                 path,
                 device,
                 inode,
+                root,
                 git_root,
-                ..
             } => {
                 if r.artifact.kind == api::Kind::Worktree {
                     let git = git_root
@@ -339,6 +417,12 @@ impl Backend for HostBackend {
                         return Err(unavailable("worktree_removal_unverified"));
                     }
                     Ok(())
+                } else if native_backup_generation(path, root, r.artifact.kind, &self.config) {
+                    fs::remove_native_snapshot(
+                        path,
+                        (*device, *inode),
+                        self.native_backup_root_identity(r, root, context)?,
+                    )
                 } else {
                     fs::remove_tree(
                         path,
@@ -381,7 +465,40 @@ impl Backend for HostBackend {
     }
 }
 
-pub fn validate_root(path: &Path, config: &Config) -> Result<(), ProtocolError> {
+pub fn validate_root(
+    path: &Path,
+    config: &Config,
+    database: &crate::database::Database,
+) -> Result<(), ProtocolError> {
+    validate_path(path, config, false, database)
+}
+
+pub fn validate_configured_root(
+    path: &Path,
+    kind: api::Kind,
+    config: &Config,
+    database: &crate::database::Database,
+) -> Result<(), ProtocolError> {
+    validate_path(
+        path,
+        config,
+        kind == api::Kind::Backup && path == config.state_dir.join("cutover"),
+        database,
+    )
+}
+
+fn native_backup_generation(path: &Path, root: &Path, kind: api::Kind, config: &Config) -> bool {
+    kind == api::Kind::Backup
+        && root == config.state_dir.join("cutover")
+        && path.parent() == Some(root)
+}
+
+pub(super) fn validate_path(
+    path: &Path,
+    config: &Config,
+    native_backup: bool,
+    database: &crate::database::Database,
+) -> Result<(), ProtocolError> {
     if !path.is_absolute()
         || path.components().any(|p| {
             matches!(
@@ -395,12 +512,23 @@ pub fn validate_root(path: &Path, config: &Config) -> Result<(), ProtocolError> 
     if path.components().count() < 4 {
         return Err(blocked("protected_root"));
     }
+    let postgres_data = database
+        .data_directory()
+        .ok_or_else(|| unavailable("postgres_data_binding_unavailable"))?;
+    let postgres_root = postgres_data
+        .parent()
+        .ok_or_else(|| unavailable("postgres_data_binding_unavailable"))?;
+    if path.starts_with(postgres_root) || postgres_root.starts_with(path) {
+        return Err(blocked("protected_system_data"));
+    }
     let excluded = [
         "/etc", "/usr", "/bin", "/sbin", "/boot", "/dev", "/proc", "/sys", "/run",
     ];
     if excluded.iter().any(|p| path.starts_with(p))
         || path.starts_with("/var/lib/docker")
-        || path.starts_with(&config.state_dir)
+        || path.starts_with("/var/lib/devcoordinator2-postgres")
+        || Path::new("/var/lib/devcoordinator2-postgres").starts_with(path)
+        || (path.starts_with(&config.state_dir) && !native_backup)
         || config.state_dir.starts_with(path)
     {
         return Err(blocked("protected_system_data"));
@@ -471,6 +599,7 @@ pub(super) fn candidate(
         recovery_created_at_ms: None,
         private_aliases: Vec::new(),
         retention_eligible: false,
+        ignored_review: None,
     })
 }
 
@@ -479,6 +608,14 @@ pub(super) fn git_bytes(
     args: &[&str],
     context: &Context,
 ) -> Result<Vec<u8>, ProtocolError> {
+    git_bytes_with_stderr(root, args, context).map(|(stdout, _)| stdout)
+}
+
+pub(super) fn git_bytes_with_stderr(
+    root: &Path,
+    args: &[&str],
+    context: &Context,
+) -> Result<(Vec<u8>, Vec<u8>), ProtocolError> {
     let repository = context
         .repositories
         .iter()
@@ -539,7 +676,7 @@ pub(super) fn git_bytes(
     if !output.status.success() || output.truncated {
         return Err(blocked("git_baseline_unverified"));
     }
-    Ok(output.stdout)
+    Ok((output.stdout, output.stderr))
 }
 
 pub(super) fn processes_reference(paths: &[PathBuf]) -> Result<bool, ProtocolError> {

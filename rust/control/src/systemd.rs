@@ -51,6 +51,7 @@ pub struct PersistentUnitSpec {
     pub environment_file: PathBuf,
     pub command: Vec<OsString>,
     pub log_path: PathBuf,
+    pub allow_new_privileges: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -217,7 +218,18 @@ impl SystemdControl for SystemdCli {
             self.stop_unit(&specification.unit)?;
             self.reset_failed(&specification.unit)?;
         }
-        rotate_log(&specification.log_path)?;
+        // The deployment domain reserves an immutable attempt log. The
+        // launcher only appends; rotating here would discard that identity.
+        match std::fs::symlink_metadata(&specification.log_path) {
+            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+                return Err(SystemdError::Invalid(
+                    "deployment log must be a regular non-symlink file".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(invocation_error(&specification.log_path, error)),
+        }
         let output = run_bounded(&self.systemd_run, &argv[1..], STOP_TIMEOUT)?;
         if output.status.success() {
             Ok(())
@@ -440,7 +452,11 @@ pub fn build_persistent_systemd_run_argv(
         OsString::from("--property=RestartSec=2s"),
         OsString::from("--property=StartLimitIntervalSec=120"),
         OsString::from("--property=StartLimitBurst=5"),
-        OsString::from("--property=NoNewPrivileges=yes"),
+        OsString::from(if specification.allow_new_privileges {
+            "--property=NoNewPrivileges=no"
+        } else {
+            "--property=NoNewPrivileges=yes"
+        }),
         OsString::from("--property=UMask=0027"),
         prefixed(
             "--property=EnvironmentFile=",
@@ -463,24 +479,6 @@ pub fn build_persistent_systemd_run_argv(
     argv.push(OsString::from("--"));
     argv.extend(specification.command.iter().cloned());
     Ok(argv)
-}
-
-fn rotate_log(path: &Path) -> Result<(), SystemdError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err(SystemdError::Invalid(
-                "deployment log path must be a regular non-symlink file".into(),
-            ));
-        }
-        Ok(_) => {
-            let mut previous = path.as_os_str().to_owned();
-            previous.push(".1");
-            let _ = std::fs::rename(path, PathBuf::from(previous));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(invocation_error(path, error)),
-    }
-    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -971,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_unit_uses_exact_properties_and_rotates_one_bounded_log() {
+    fn persistent_unit_uses_exact_properties_without_renaming_reserved_evidence() {
         let temporary = tempdir().expect("tempdir");
         let recorder = temporary.path().join("arguments");
         let launcher = temporary.path().join("systemd-run");
@@ -1001,17 +999,35 @@ mod tests {
             environment_file: temporary.path().join("environment"),
             command: vec![OsString::from("/usr/bin/true")],
             log_path: log.clone(),
+            allow_new_privileges: false,
         })
         .expect("persistent start");
-        assert_eq!(
-            std::fs::read_to_string(log.with_extension("log.1")).unwrap(),
-            "prior"
-        );
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "prior");
+        assert!(!log.with_extension("log.1").exists());
         let arguments = std::fs::read_to_string(recorder).unwrap();
         assert!(arguments.contains("--property=Restart=on-failure"));
         assert!(arguments.contains("--property=NoNewPrivileges=yes"));
         assert!(arguments.contains("--property=StandardOutput=append:"));
         assert!(arguments.contains("/usr/bin/true"));
+    }
+
+    #[test]
+    fn persistent_unit_opt_in_disables_no_new_privileges_only_for_that_process() {
+        let root = Path::new("/tmp/fixture");
+        let spec = PersistentUnitSpec {
+            unit: "devcoordinator2-deploy-d1-api-g1.service".into(),
+            slice_name: "devcoordinator2-deploy-d1.slice".into(),
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            working_directory: root.to_owned(),
+            environment_file: root.join("environment"),
+            command: vec![OsString::from("/usr/bin/true")],
+            log_path: root.join("component.log"),
+            allow_new_privileges: true,
+        };
+        let argv = build_persistent_systemd_run_argv(&spec).expect("persistent argv");
+        assert!(argv.contains(&OsString::from("--property=NoNewPrivileges=no")));
+        assert!(!argv.contains(&OsString::from("--property=NoNewPrivileges=yes")));
     }
 
     #[test]
@@ -1076,6 +1092,7 @@ mod tests {
                     Vec::new()
                 },
                 log_path: log.clone(),
+                allow_new_privileges: false,
             });
             assert_eq!(
                 result.is_ok(),
@@ -1090,9 +1107,10 @@ mod tests {
                     assert!(calls.ends_with("stop\nreset-failed\nlaunch\n"));
                 }
                 assert_eq!(
-                    std::fs::read_to_string(log.with_extension("log.1")).unwrap(),
+                    std::fs::read_to_string(&log).unwrap(),
                     "original failure evidence"
                 );
+                assert!(!log.with_extension("log.1").exists());
             } else {
                 assert_eq!(calls.contains("stop\n"), stop_exit != 0);
                 assert!(!calls.contains("reset-failed\n"));

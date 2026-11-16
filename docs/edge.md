@@ -29,7 +29,7 @@ values and diagnostics remain escaped data and never enter catalogs.
   change and every 5 s.
 - Hosts: `<label>.<base domain>` routes to the published port; the console
   host (`console.<base domain>` by default) serves `/auth/*`, `/healthz`,
-  the Console (Phase 7), and the `/api/v2/<operation>` bridge.
+  the Console (Phase 7), and the `/api/v3/<operation>` bridge.
 - Authorization per request: `auth: public` routes proxy without sign-in;
   authenticated routes require a session whose identity is an owner or
   holds any grant for that exact `deployment_id`. Revocation is effective on
@@ -43,7 +43,7 @@ values and diagnostics remain escaped data and never enter catalogs.
   (`user.accept_invitation`, trusted only because the edge's Unix uid is the
   configured `DEVCOORDINATOR2_EDGE_UID`). A session is issued regardless;
   what it may reach is decided by the route document and the daemon.
-- `/api/v2/<operation>` (POST JSON params, session required): forwarded to the
+- `/api/v3/<operation>` (POST JSON params, session required): forwarded to the
   daemon with `client.identity = <signed-in e-mail>`; the daemon applies
   roles (`docs/contract-commands.md`). Operation names must match
   dot-separated operation grammar such as `family.name` or
@@ -52,7 +52,7 @@ values and diagnostics remain escaped data and never enter catalogs.
   daemon. Public callers address deployments
   by `deployment_id`; actions on their behalf execute as the account that
   created the deployment.
-- The former `/api/<operation>` route returns a bounded protocol-2
+- The former `/api/<operation>` route returns a bounded protocol-3
   `protocol_unsupported` error and never forwards the request.
 - Protected deployment routes preserve challenge-free upstream `401` responses,
   including empty session-check responses and JSON sign-in errors. Applications

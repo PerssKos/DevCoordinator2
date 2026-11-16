@@ -1638,7 +1638,7 @@ fn run_state_and_wait_phase(
     timeout: Duration,
 ) -> Result<usize, String> {
     let base = server.base_url();
-    let mut scenarios = 0usize;
+    let mut scenarios = run_capture_cleanup_phase(root, &work.join("capture-cleanup"), timeout)?;
     let initial_missing = run_verifier(
         root,
         &contracted_config(
@@ -2034,7 +2034,8 @@ fn run_state_and_wait_phase(
             root,
             json!({
                 "targets":[{"url":format!("{base}/interaction-states.html"),"includeBase":false,"states":[{
-                    "name":"missing-trigger","actions":[{"action":"fill","selector":"#does-not-exist","value":"SECRET_ACTION_VALUE_MUST_NOT_LEAK","timeoutMs":100}]
+                    "name":"missing-trigger","actions":[{"action":"fill","selector":"#does-not-exist","value":"SECRET_ACTION_VALUE_MUST_NOT_LEAK","timeoutMs":100}],
+                    "afterFailureWaitFor":{"selector":"#never-ready","timeoutMs":150}
                 }]}],"viewports":[{"name":"desktop","width":1280,"height":800}]
             }),
         ),
@@ -2057,6 +2058,14 @@ fn run_state_and_wait_phase(
         return Err(
             "failed interaction coverage, redaction, or zero-wait behavior regressed".to_owned(),
         );
+    }
+    if failed.pointer("/pages/0/interactionFailure/afterFailureObservation/checked")
+        != Some(&json!(false))
+        || failed
+            .pointer("/pages/0/interactionFailure/afterFailureObservation/waitEvidence/0/outcome")
+            != Some(&json!("timed_out"))
+    {
+        return Err("failed downstream observation lost its wait evidence".to_owned());
     }
     scenarios += 1;
 
@@ -2148,6 +2157,12 @@ fn run_state_and_wait_phase(
     if !["response", "ready-or-error-dom", "render-frames"]
         .iter()
         .all(|kind| wait_kinds.contains(kind))
+        || event_ready
+            .pointer("/pages/0/waitEvidence")
+            .and_then(Value::as_array)
+            .is_none_or(|items| {
+                items.len() != 4 || items.iter().any(|item| item["outcome"] != "completed")
+            })
     {
         return Err("event readiness evidence is incomplete".to_owned());
     }
@@ -2192,12 +2207,49 @@ fn run_state_and_wait_phase(
         timeout,
         &[],
     )?;
-    if missing_event
-        .pointer("/pages/0/durationMs")
-        .and_then(Value::as_u64)
-        .is_none_or(|duration| !(100..=1000).contains(&duration))
+    let missing_event_wait = missing_event
+        .pointer("/pages/0/waitEvidence")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|item| {
+            item["kind"] == "selector"
+                && item["selector"] == "#never-ready"
+                && item["outcome"] == "timed_out"
+        })
+        .and_then(|item| item.get("durationMs"))
+        .and_then(Value::as_u64);
+    if missing_event_wait.is_none_or(|duration| !(100..=500).contains(&duration))
+        || missing_event.pointer("/pages/0/outcome") != Some(&json!("interaction_error"))
+        || missing_event.pointer("/pages/0/waitEvidence/0/outcome") != Some(&json!("completed"))
     {
-        return Err("missing event did not fail at its bounded deadline".to_owned());
+        return Err("missing event did not fail at its bounded readiness deadline".to_owned());
+    }
+    scenarios += 1;
+
+    let initial_missing = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{"url":format!("{base}/clean.html"),
+                    "waitFor":{"selector":"#never-ready","timeoutMs":150}}],
+                "viewports":[{"name":"desktop","width":1280,"height":800}]
+            }),
+        ),
+        &work.join("initial-readiness-missing"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    if initial_missing.pointer("/pages/0/outcome") != Some(&json!("navigation_error"))
+        || initial_missing.pointer("/pages/0/waitEvidence/0/outcome") != Some(&json!("timed_out"))
+        || initial_missing
+            .pointer("/pages/0/waitEvidence/0/durationMs")
+            .and_then(Value::as_u64)
+            .is_none_or(|duration| !(100..=500).contains(&duration))
+    {
+        return Err("initial readiness failure lost its bounded wait evidence".to_owned());
     }
     scenarios += 1;
 
@@ -2310,6 +2362,180 @@ fn run_state_and_wait_phase(
         timeout,
     )?;
     Ok(scenarios)
+}
+
+fn run_capture_cleanup_phase(root: &Path, work: &Path, timeout: Duration) -> Result<usize, String> {
+    let leased = Arc::new(AtomicBool::new(false));
+    let releases = Arc::new(AtomicUsize::new(0));
+    let held = Arc::clone(&leased);
+    let released = Arc::clone(&releases);
+    let server = StaticServer::start_handler(Arc::new(move |request| {
+        match request.path.as_str() {
+            "/lease" => HttpResponse::status(
+                if held.swap(true, Ordering::AcqRel) {
+                    "409 Conflict"
+                } else {
+                    "200 OK"
+                },
+                Vec::new(),
+            ),
+            "/release" => {
+                held.store(false, Ordering::Release);
+                released.fetch_add(1, Ordering::AcqRel);
+                HttpResponse::status("204 No Content", Vec::new())
+            }
+            _ => HttpResponse::html(html_page(
+                r#"<h1>Feedback editor</h1><button id="open">Edit text</button>
+<dialog><label>Body<textarea readonly></textarea></label><input id="private-cleanup" aria-label="Private cleanup fixture"><button id="close">Close text editor</button></dialog>
+<script>
+const dialog=document.querySelector('dialog'),field=document.querySelector('textarea');
+document.querySelector('#open').onclick=async()=>{dialog.showModal();const response=await fetch('/lease',{method:'POST'});if(response.status===200){field.readOnly=false;field.focus();}};
+document.querySelector('#close').onclick=async()=>{const response=await fetch('/release',{method:'POST'});if(response.status===204)dialog.close();};
+</script>"#,
+                "label{display:block} textarea{display:block;width:250px} input{display:block} button{padding:12px}",
+            )),
+        }
+    }))?;
+    let cleanup = json!({"actions":[{"action":"click","selector":"#close"}],"waitFor":{"responseUrl":"**/release","responseStatus":204,"timeoutMs":500}});
+    let config = |cleanup: Option<Value>| {
+        let mut state = json!({"name":"editor","actions":[{"action":"click","selector":"#open"}],"waitFor":{"selector":"dialog textarea:not([readonly])","timeoutMs":500},"continuation":{"kind":"in-page","anchor":"dialog textarea","focusWithin":"dialog"}});
+        if let Some(cleanup) = cleanup {
+            state["cleanup"] = cleanup;
+        }
+        contracted_config(
+            root,
+            json!({"targets":[{"name":"leased-editor","url":server.base_url(),"includeBase":false,"states":[state]}],"viewports":[{"name":"first","width":800,"height":600},{"name":"next","width":800,"height":600}]}),
+        )
+    };
+    // This is the original defect: closing a context does not release its UI lease.
+    let negative = run_verifier(
+        root,
+        &config(None),
+        &work.join("original-context-close"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    if negative.pointer("/pages/0/outcome") != Some(&json!("checked"))
+        || negative.pointer("/pages/1/outcome") != Some(&json!("interaction_error"))
+        || releases.load(Ordering::Acquire) != 0
+    {
+        return Err("sequential editor fixture did not reproduce the retained lease".into());
+    }
+    leased.store(false, Ordering::Release);
+    let positive = run_verifier(
+        root,
+        &config(Some(cleanup.clone())),
+        &work.join("released-between-cells"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    if releases.load(Ordering::Acquire) != 2
+        || leased.load(Ordering::Acquire)
+        || positive["pages"].as_array().unwrap().iter().any(|page| {
+            page.pointer("/cleanup/postCapture/status") != Some(&json!("completed"))
+                || page.pointer("/cleanup/postCapture/waits/0/status") != Some(&json!(204))
+        })
+    {
+        return Err(
+            "post-capture Close did not release both sequential editor leases with 204".into(),
+        );
+    }
+    for (name, screenshot_failure) in [("screenshot-failure", true), ("readiness-failure", false)] {
+        let before = releases.load(Ordering::Acquire);
+        let mut failed = config(Some(cleanup.clone()));
+        failed["viewports"].as_array_mut().unwrap().truncate(1);
+        if screenshot_failure {
+            failed["targets"][0]["screenshotMasks"] =
+                json!([{"selector":"[","reason":"Deliberate screenshot failure"}]);
+        } else {
+            failed["targets"][0]["states"][0]["waitFor"]["selector"] = json!("#never-ready");
+        }
+        let report = run_verifier(root, &failed, &work.join(name), &[3], timeout, &[])?;
+        if report.pointer("/pages/0/cleanup/postCapture/status") != Some(&json!("completed"))
+            || releases.load(Ordering::Acquire) != before + 1
+            || leased.load(Ordering::Acquire)
+            || report.pointer("/formal/result") == Some(&json!("passed"))
+        {
+            return Err(format!(
+                "{name} skipped its actual UI cleanup or incorrectly passed"
+            ));
+        }
+    }
+    for (name, plan) in [
+        (
+            "wrong-response",
+            json!({"actions":[{"action":"click","selector":"#close"}],"waitFor":{"responseUrl":"**/release","responseStatus":200,"timeoutMs":200}}),
+        ),
+        (
+            "cleanup-timeout",
+            json!({"actions":[{"action":"click","selector":"#missing","timeoutMs":100}]}),
+        ),
+    ] {
+        let mut failed = config(Some(plan));
+        failed["viewports"].as_array_mut().unwrap().truncate(1);
+        let report = run_verifier(root, &failed, &work.join(name), &[3], timeout, &[])?;
+        if report.pointer("/pages/0/cleanup/postCapture/status") != Some(&json!("failed"))
+            || report.pointer("/pages/0/cleanup/contextStatus") != Some(&json!("completed"))
+            || report.pointer("/formal/result") != Some(&json!("blocked"))
+        {
+            return Err(format!("{name} failed open or prevented context cleanup"));
+        }
+        leased.store(false, Ordering::Release);
+    }
+    let mut private = config(Some(
+        json!({"actions":[{"action":"fill","selector":"#private-cleanup","value":"cleanup-private-sentinel"},{"action":"click","selector":"#close"}],"waitFor":{"responseUrl":"**/release","responseStatus":204}}),
+    ));
+    private["viewports"].as_array_mut().unwrap().truncate(1);
+    let report = run_verifier(
+        root,
+        &private,
+        &work.join("private-action"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    for file in [
+        "report.json",
+        "report.md",
+        "review-queue.json",
+        "journey-evidence.json",
+    ] {
+        let bytes = std::fs::read(work.join("private-action").join(file))
+            .map_err(|error| error.to_string())?;
+        if String::from_utf8_lossy(&bytes).contains("cleanup-private-sentinel") {
+            return Err(format!("cleanup value leaked into {file}"));
+        }
+    }
+    // Both first cells have the same source, state, viewport and target. Their
+    // cleanup declaration alone changes this per-cell intent identity.
+    if report["pages"][0]["review"]["intentFingerprint"]
+        == positive["pages"][0]["review"]["intentFingerprint"]
+    {
+        return Err("cleanup declaration was absent from the source-bound intent identity".into());
+    }
+    let mut invalid = config(Some(
+        json!({"actions":[{"action":"click","selector":"#close","timeoutMs":0}]}),
+    ));
+    invalid["viewports"].as_array_mut().unwrap().truncate(1);
+    let report = run_verifier(
+        root,
+        &invalid,
+        &work.join("invalid-cleanup"),
+        &[2],
+        timeout,
+        &[],
+    )?;
+    if report["exitCode"] != 2
+        || report["status"] != "setup-failure"
+        || !report["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("cleanup"))
+    {
+        return Err("unbounded cleanup declaration was not rejected".into());
+    }
+    Ok(8)
 }
 
 fn run_transport_and_cache_phase(
@@ -4858,7 +5084,7 @@ fn run_discovery_phase(
     let base = contracted_config(
         root,
         json!({
-            "fromCoordinator":true,"coordinatorCommand":fixture,"minCheckedPages":0,
+            "fromCoordinator":true,"coordinatorCommand":fixture,"coordinatorProject":"/fixture/project","minCheckedPages":0,
             "viewports":[{"name":"desktop","width":1280,"height":800}]
         }),
     );
@@ -4885,27 +5111,31 @@ fn run_discovery_phase(
         return Err("explicit discovered-target tolerance was not preserved".to_owned());
     }
     create_directory_all_nofollow(work, 0o700).map_err(|error| error.to_string())?;
-    let legacy = work.join("coordinator-protocol-v1");
-    std::fs::copy(&fixture, &legacy)
-        .map_err(|error| format!("cannot copy v1 executable fixture: {error}"))?;
-    let mut legacy_config = base;
-    legacy_config["coordinatorCommand"] = json!(legacy);
-    let legacy = run_verifier(
-        root,
-        &legacy_config,
-        &work.join("v1-rejected"),
-        &[2],
-        timeout,
-        &[],
-    )?;
-    if !legacy
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .is_some_and(|message| message.contains("invalid response"))
-    {
-        return Err("protocol-v1 deployment discovery was not rejected".to_owned());
+    for version in [1, 2] {
+        let legacy = work.join(format!("coordinator-protocol-v{version}"));
+        std::fs::copy(&fixture, &legacy)
+            .map_err(|error| format!("cannot copy v1 executable fixture: {error}"))?;
+        let mut legacy_config = base.clone();
+        legacy_config["coordinatorCommand"] = json!(legacy);
+        let legacy = run_verifier(
+            root,
+            &legacy_config,
+            &work.join(format!("v{version}-rejected")),
+            &[2],
+            timeout,
+            &[],
+        )?;
+        if !legacy
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("invalid response"))
+        {
+            return Err(format!(
+                "protocol-v{version} deployment discovery was not rejected"
+            ));
+        }
     }
-    Ok(3)
+    Ok(4)
 }
 
 fn validate_skill_contract(root: &Path) -> Result<(), String> {
@@ -5524,6 +5754,17 @@ if(readinessFailure!=='render-frame readiness deadline reached') throw new Error
                 .iter()
                 .any(|case| !case.forbidden_text.is_empty())
         );
+    }
+
+    #[test]
+    #[ignore = "real browser acceptance is also included in the formal state self-test"]
+    fn post_capture_cleanup_releases_real_sequential_leases() {
+        let work = tempfile::tempdir().unwrap();
+        if let Err(error) =
+            run_capture_cleanup_phase(&source_root(), work.path(), Duration::from_secs(60))
+        {
+            panic!("{error}; retained evidence: {}", work.keep().display());
+        }
     }
 
     #[test]

@@ -3,11 +3,13 @@ use super::*;
 use devcoordinator2_api::rate_card::RateCard;
 
 #[derive(Clone, Default)]
+#[cfg(test)]
 pub(super) struct RequestTokens {
     pub fields: BTreeMap<String, Option<u64>>,
     pub incomplete: bool,
     pub at: u64,
 }
+#[cfg(test)]
 impl RequestTokens {
     pub fn observe(&mut self, category: &str, value: Option<u64>, incomplete: bool, at: u64) {
         let slot = self.fields.entry(category.to_owned()).or_insert(value);
@@ -68,11 +70,13 @@ pub(super) fn merge_cost_bucket(target: &mut CostBuckets, source: &CostBuckets) 
         merge_counts(&mut dst.reasons, &value.reasons);
     }
 }
+#[cfg(test)]
 fn model_matches(pattern: &str, model: &str) -> bool {
     pattern
         .strip_suffix('*')
         .map_or(pattern == model, |prefix| model.starts_with(prefix))
 }
+#[cfg(test)]
 pub(super) fn select_card<'a>(
     cards: &'a [RateCard],
     provider: &str,
@@ -114,6 +118,7 @@ pub(super) fn select_card<'a>(
     chosen.active.then_some(chosen)
 }
 
+#[cfg(test)]
 pub(super) fn request_cost(
     operation: &Operation,
     request: &RequestTokens,
@@ -214,6 +219,7 @@ pub(super) fn request_cost(
 /// does not retain one row per request. Use the short-context card as the
 /// conservative default for the aggregate and mark the result partial when
 /// request-level context or component coverage cannot be recovered.
+#[cfg(test)]
 pub(super) fn aggregate_cost(
     provider: &str,
     model: &str,
@@ -380,6 +386,7 @@ pub(super) fn cost_from_buckets(buckets: &CostBuckets) -> UsageCost {
 }
 
 /// Read only content-free model metadata for the already selected owners.
+#[cfg(test)]
 pub(super) fn load_models(
     connection: &Connection,
     operations: &mut BTreeMap<String, review_facts::WorkOperation>,

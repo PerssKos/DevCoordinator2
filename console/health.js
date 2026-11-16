@@ -11,7 +11,7 @@
     const main = () => document.querySelector('#main');
     const phone = matchMedia('(max-width: 760px)');
     const ranges = { '24h': [1440, 288], '7d': [10080, 336], '30d': [43200, 360] };
-    let summaryResult, repositoryError;
+    let summaryResult, repositoryError, repositoriesReady = false;
     const history = new Map();
     const date = (v) => v && !Number.isNaN(Date.parse(v))
       ? (window.DevCoordinatorI18n?.date ? window.DevCoordinatorI18n.date(v) : new Date(v).toLocaleString())
@@ -203,7 +203,11 @@
       root.querySelectorAll('[data-hi-repo]').forEach(d=>d.ontoggle=()=>d.open?s.expandedRepos.add(d.dataset.hiRepo):s.expandedRepos.delete(d.dataset.hiRepo));
       main().querySelectorAll('[data-hi-sort]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.hiSort===s.sort)));
     }
-    function hostMarkup(h) {
+    function historyPlaceholder() {
+      return [tr('cpu_db9a4c','CPU'),tr('memory_c3963a','Memory'),tr('storage_a69c4d','Storage')].map((label,index)=>`<div class="chartbox" aria-busy="true"><div class="chartmeta"><span>${esc(label)}</span><span aria-hidden="true">—</span></div><div class="hi-history-placeholder">${index ? '' : `<p role="status">${safe('loading_history','Loading history…')}</p>`}</div><div class="chartaxis" aria-hidden="true"><span>&nbsp;</span></div></div>`).join('');
+    }
+    function hostMarkup(observed) {
+      const h = observed || {};
       const labels = {
         cpu: tr('cpu_db9a4c', 'CPU'),
         memory: tr('memory_c3963a', 'Memory'),
@@ -211,13 +215,15 @@
         load: tr('system_load_f58135', 'System load'),
       };
       const metric=(title,value,note)=>`<div class="hi-capacity-cell"><span>${esc(title)}</span><strong>${value}</strong><small>${note}</small></div>`;
-      const cores = tr('value1_cores_cfde1b', `${h.ncpu} cores`, { value1: h.ncpu });
-      return `<div class="hi-host" data-ui-region="health-primary"><section class="hi-capacity"><h2>${safe('host_capacity_c36874','Host capacity')}</h2><div>${metric(labels.cpu,pct(h.cpu_percent),esc(cores))}${metric(labels.memory,bytes(h.memory_used),`${safe('of','of')} ${bytes(h.memory_total)}`)}${metric(labels.storage,bytes(h.fs_used),`${bytes(h.fs_free)} ${safe('free','free')}`)}${metric(labels.load,String(h.load_1 ?? '—'),safe('one_minute_average','1-minute average'))}</div></section><section class="hi-trends"><div class="hi-trends-heading"><h2>${safe('system_trends_eeef72','System trends')}</h2><div role="group" aria-label="${esc(tr('history_range','History range'))}">${Object.keys(ranges).map(r=>`<button class="btn" type="button" data-hi-range="${r}" aria-pressed="${s.range===r}">${r}</button>`).join('')}</div></div><div id="hi-history" aria-live="polite"><p>${safe('loading_history','Loading history…')}</p></div></section></div>`;
+      const cores = observed ? tr('value1_cores_cfde1b', `${h.ncpu} cores`, { value1: h.ncpu }) : tr('loading_health','Loading Health…');
+      return `<div class="${observed ? 'hi-host' : 'hi-host-pending'}" data-state="${observed ? 'ready' : 'loading'}" data-ui-region="health-primary" aria-busy="${!observed}"><section class="hi-capacity"><h2>${safe('host_capacity_c36874','Host capacity')}</h2><div>${metric(labels.cpu,pct(h.cpu_percent),esc(cores))}${metric(labels.memory,bytes(h.memory_used),`${safe('of','of')} ${bytes(h.memory_total)}`)}${metric(labels.storage,bytes(h.fs_used),`${bytes(h.fs_free)} ${safe('free','free')}`)}${metric(labels.load,String(h.load_1 ?? '—'),safe('one_minute_average','1-minute average'))}</div></section><section class="hi-trends"><div class="hi-trends-heading"><h2>${safe('system_trends_eeef72','System trends')}</h2><div role="group" aria-label="${esc(tr('history_range','History range'))}">${Object.keys(ranges).map(r=>`<button class="btn" type="button" data-hi-range="${r}" aria-pressed="${s.range===r}"${observed ? '' : ' disabled'}>${r}</button>`).join('')}</div></div><div id="hi-history" data-state="loading" aria-busy="true" aria-live="polite">${historyPlaceholder()}</div></section></div>`;
     }
     async function loadHistory() {
       const epoch = s.epoch;
       const range = s.range;
       const [minutes,points] = ranges[range];
+      const root=main()?.querySelector('#hi-history');
+      if(root){root.dataset.state='loading';root.setAttribute('aria-busy','true');}
       try {
         const results=await Promise.all(['cpu_percent','memory_used','storage_bytes'].map(metric=>api('health.history',{subject_kind:'host',subject_id:'host',metric,minutes,points})));
         if(epoch!==s.epoch||range!==s.range)return;
@@ -227,7 +233,8 @@
     }
     function drawHistory() {
       const el=main()?.querySelector('#hi-history'), saved=history.get(s.range);
-      if(!el||!saved)return;
+      if(!el||!saved||summaryResult?.status!=='fulfilled')return;
+      el.dataset.state=saved.error?'failed':'ready';el.setAttribute('aria-busy','false');
       if(saved.error){el.innerHTML=fault(tr('history_unavailable','History unavailable.')+' '+saved.error.message,'history');bindRetries(el);return;}
       el.innerHTML=saved.results.map((r,i)=>chart(r.points,i?pctBytes:pct,[tr('cpu_db9a4c','CPU'),tr('memory_c3963a','Memory'),tr('storage_a69c4d','Storage')][i], {scale:tr('scale','scale'),now:tr('now_ed5eb9','now')})).join('');
     }
@@ -241,32 +248,49 @@
     async function show() {
       const epoch=++s.epoch;
       summaryResult=null;
+      repositoriesReady=false; repositoryError=null; s.repos=[]; s.reports=null; s.reportError=null;
       history.clear();
-      main().innerHTML=`<div class="health-dashboard">${heading()}<p role="status">${safe('loading_health','Loading Health…')}</p><div class="skeleton"></div></div>`;
-      const results=await Promise.allSettled([api('health.summary',{}),api('health.repositories',{}),api('health.incidents',{view:s.view,limit:20})]);
-      if(epoch!==s.epoch||!location.hash.startsWith('#/health')||location.hash.includes('/containers'))return;
-      const [summary,repos,reports]=results;
-      s.reports=reports.status==='fulfilled'?reports.value:null;
-      s.reportError=reports.status==='rejected'?reports.reason.message:null;
-      s.repos=repos.status==='fulfilled'?repos.value.repositories:[];
-      summaryResult=summary;
-      repositoryError=repos.status==='rejected'?repos.reason:null;
       drawDashboard();
-      if(summary.status==='fulfilled')await loadHistory();
+      const settle = (promise, apply) => promise.then(value=>({status:'fulfilled',value}),reason=>({status:'rejected',reason})).then(result=>{
+        if(epoch!==s.epoch||!location.hash.startsWith('#/health')||location.hash.includes('/containers'))return;
+        return apply(result);
+      });
+      await Promise.all([
+        settle(api('health.summary',{}),summary=>{summaryResult=summary;drawHost();}),
+        loadHistory(),
+        settle(api('health.repositories',{}),repos=>{repositoriesReady=true;s.repos=repos.status==='fulfilled'?repos.value.repositories:[];repositoryError=repos.status==='rejected'?repos.reason:null;drawRepositorySection();}),
+        loadIncidents(),
+      ]);
     }
-    function drawDashboard() {
+    function drawHost() {
       const summary=summaryResult;
-      const summaryMarkup=summary.status==='fulfilled'?hostMarkup(summary.value.host):fault((summary.reason.code==='permission_denied'?tr('host_health_admin_only','Host health is administrator-only.') + ' ':tr('host_health_unavailable','Host health unavailable.') + ' ')+summary.reason.message,'all');
-      main().innerHTML=`<div class="health-dashboard">${heading()}${incidentsMarkup()}${summaryMarkup}<section class="hi-repositories" data-ui-region="health-repositories"><div class="hi-repositories-heading"><h2 id="hi-repositories-heading" tabindex="-1">${safe('resources_by_repository','Resources by repository')}</h2><label><span class="sr-only">${safe('search_repositories','Search repositories')}</span><input type="search" data-hi-repo-search placeholder="${esc(tr('find_repository','Find repository'))}" value="${esc(s.repoQuery)}"></label></div><div class="hi-repo-head"><span>${safe('repository_13d6ff','Repository')}</span>${['cpu_percent','memory_bytes','storage_bytes'].map((k,i)=>`<button type="button" data-hi-sort="${k}" aria-pressed="${s.sort===k}">${safe(['cpu_db9a4c','memory_c3963a','storage_a69c4d'][i],['CPU','Memory','Storage'][i])}</button>`).join('')}<span>${safe('deployments_842a46','Deployments')}</span></div>${repositoryError?fault(tr('repository_resources_unavailable','Repository resources unavailable.') + ' '+repositoryError.message,'all'):''}<div id="hi-repository-rows"></div></section>${summary.status==='fulfilled'?attribution(summary.value):''}</div>`;
-      main().querySelector('[data-hi-refresh]').onclick=show;
-      main().querySelectorAll('[data-hi-sort]').forEach(b=>b.onclick=()=>{s.sort=b.dataset.hiSort;drawRepositories();});
-      main().querySelector('[data-hi-repo-search]').oninput=e=>{s.repoQuery=e.target.value;drawRepositories();};
-      main().querySelectorAll('[data-hi-range]').forEach(b=>b.onclick=()=>{s.range=b.dataset.hiRange;main().querySelectorAll('[data-hi-range]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));loadHistory();});
-      drawIncidents();drawRepositories();bindRetries(main());
+      const host=main()?.querySelector('[data-hi-host-slot]');
+      if(!host)return;
+      host.innerHTML=!summary?hostMarkup(null):summary.status==='fulfilled'?hostMarkup(summary.value.host):fault((summary.reason.code==='permission_denied'?tr('host_health_admin_only','Host health is administrator-only.') + ' ':tr('host_health_unavailable','Host health unavailable.') + ' ')+summary.reason.message,'all');
+      host.querySelectorAll('[data-hi-range]').forEach(b=>b.onclick=()=>{s.range=b.dataset.hiRange;host.querySelectorAll('[data-hi-range]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));loadHistory();});
+      main().querySelector('[data-hi-attribution-slot]').innerHTML=summary?.status==='fulfilled'?attribution(summary.value):'';
+      bindRetries(host);
       drawHistory();
     }
+    function drawRepositorySection() {
+      const root=main()?.querySelector('.hi-repositories');
+      if(!root)return;
+      const available=repositoriesReady&&!repositoryError;
+      root.setAttribute('aria-busy',String(!repositoriesReady));
+      root.innerHTML=`<div class="hi-repositories-heading"><h2 id="hi-repositories-heading" tabindex="-1">${safe('resources_by_repository','Resources by repository')}</h2><label><span class="sr-only">${safe('search_repositories','Search repositories')}</span><input type="search" data-hi-repo-search placeholder="${esc(tr('find_repository','Find repository'))}" value="${esc(s.repoQuery)}"${available?'':' disabled'}></label></div><div class="hi-repo-head"><span>${safe('repository_13d6ff','Repository')}</span>${['cpu_percent','memory_bytes','storage_bytes'].map((k,i)=>`<button type="button" data-hi-sort="${k}" aria-pressed="${s.sort===k}"${available?'':' disabled'}>${safe(['cpu_db9a4c','memory_c3963a','storage_a69c4d'][i],['CPU','Memory','Storage'][i])}</button>`).join('')}<span>${safe('deployments_842a46','Deployments')}</span></div>${repositoryError?fault(tr('repository_resources_unavailable','Repository resources unavailable.')+' '+repositoryError.message,'all'):''}<div id="hi-repository-rows">${!repositoriesReady?`<p role="status">${safe('loading_health','Loading Health…')}</p>`:''}</div>`;
+      root.querySelectorAll('[data-hi-sort]').forEach(b=>b.onclick=()=>{s.sort=b.dataset.hiSort;drawRepositories();});
+      root.querySelector('[data-hi-repo-search]').oninput=e=>{s.repoQuery=e.target.value;drawRepositories();};
+      if(available)drawRepositories();
+      bindRetries(root);
+    }
+    function drawDashboard() {
+      main().innerHTML=`<div class="health-dashboard">${heading()}<section class="hi-incidents" aria-busy="true"><p role="status">${safe('loading_health','Loading Health…')}</p></section><div data-hi-host-slot></div><section class="hi-repositories" data-ui-region="health-repositories"></section><div data-hi-attribution-slot></div></div>`;
+      main().querySelector('[data-hi-refresh]').onclick=show;
+      drawHost();drawRepositorySection();
+      if(s.reports||s.reportError)drawIncidents();
+    }
     document.addEventListener('dc2:localechange', () => {
-      if(!summaryResult||!main()?.querySelector('.health-dashboard')||!location.hash.startsWith('#/health')||location.hash.includes('/containers'))return;
+      if(!main()?.querySelector('.health-dashboard')||!location.hash.startsWith('#/health')||location.hash.includes('/containers'))return;
       const root=main(), focused=document.activeElement, scroll={x:scrollX,y:scrollY};
       const inputs=[...root.querySelectorAll('input[data-hi-search],input[data-hi-repo-search]')];
       const expanded=[...root.querySelectorAll('details[open]')].map(node=>node.dataset.hiRepo ? `[data-hi-repo="${CSS.escape(node.dataset.hiRepo)}"]` : node.classList.contains('hi-attribution') ? '.hi-attribution' : '.hi-technical');

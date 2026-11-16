@@ -83,7 +83,7 @@ impl AlertEngine {
         monotonic: Arc<dyn MonotonicClock>,
     ) -> Self {
         let open = database
-            .call(|connection| {
+            .read(|connection| {
                 let mut statement = connection.prepare("SELECT alert_key FROM alerts")?;
                 Ok(statement
                     .query_map([], |row| row.get::<_, String>(0))?
@@ -157,7 +157,7 @@ impl AlertEngine {
     pub fn current(&self) -> Result<Vec<Alert>, ProtocolError> {
         self.inner
             .database
-            .call(|connection| {
+            .read(|connection| {
                 let mut statement = connection.prepare(
                     "SELECT alert_key,kind,subject_kind,subject_id,severity,message,opened_at,last_seen_at FROM alerts ORDER BY severity,opened_at",
                 )?;
@@ -195,8 +195,8 @@ impl AlertEngine {
             .database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT OR REPLACE INTO alerts(alert_key,kind,subject_kind,subject_id,severity,message,opened_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)",
-                    rusqlite::params![condition.key,condition.kind,condition.subject_kind,condition.subject_id,condition.severity,condition.message,now],
+                    "INSERT INTO alerts(alert_key,kind,subject_kind,subject_id,severity,message,opened_at,last_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT(alert_key) DO UPDATE SET kind=excluded.kind,subject_kind=excluded.subject_kind,subject_id=excluded.subject_id,severity=excluded.severity,message=excluded.message,opened_at=excluded.opened_at,last_seen_at=excluded.last_seen_at",
+                    crate::database::params![condition.key,condition.kind,condition.subject_kind,condition.subject_id,condition.severity,condition.message,now],
                 )?;
                 Ok(())
             })
@@ -213,8 +213,8 @@ impl AlertEngine {
             .database
             .transaction(move |transaction| {
                 transaction.execute(
-                    "UPDATE alerts SET last_seen_at=?1,message=?2 WHERE alert_key=?3",
-                    rusqlite::params![now, message, key],
+                    "UPDATE alerts SET last_seen_at=$1,message=$2 WHERE alert_key=$3",
+                    crate::database::params![now, message, key],
                 )?;
                 Ok(())
             })
@@ -226,10 +226,10 @@ impl AlertEngine {
         let row = self
             .inner
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT kind,subject_kind,subject_id,severity,message FROM alerts WHERE alert_key=?1",
+                        "SELECT kind,subject_kind,subject_id,severity,message FROM alerts WHERE alert_key=$1",
                         [&key_owned],
                         |row| {
                             Ok((
@@ -249,7 +249,7 @@ impl AlertEngine {
         self.inner
             .database
             .transaction(move |transaction| {
-                transaction.execute("DELETE FROM alerts WHERE alert_key=?1", [&key_owned])?;
+                transaction.execute("DELETE FROM alerts WHERE alert_key=$1", [&key_owned])?;
                 Ok(())
             })
             .map_err(database_error)?;
@@ -339,7 +339,7 @@ fn database_error(error: DatabaseError) -> ProtocolError {
     }
 }
 
-use rusqlite::OptionalExtension;
+use crate::database::OptionalExtension;
 
 #[cfg(test)]
 mod tests {

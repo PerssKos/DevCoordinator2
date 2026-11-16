@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devcoordinator2_executor_protocol::{
     DiagnosticReportFormat, FailureIndexEntry, LogPhase, LogRef, LogStream, MAX_DIAGNOSTIC_EVENTS,
@@ -411,6 +411,854 @@ pub struct RetentionPruneReceipt {
     pub removed_runs: Vec<String>,
 }
 
+/// Private, rebuildable maintenance metadata. Stream bytes are never indexed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionObservation {
+    pub run_id: String,
+    #[serde(default)]
+    pub test: String,
+    #[serde(default)]
+    pub run_finished_at_ms: Option<u64>,
+    pub components: Vec<String>,
+    pub run_identity: (u64, u64),
+    pub leaf_identity: (u64, u64),
+    pub history_key: String,
+    pub finished_at_ms: u64,
+    pub active: bool,
+    pub complete: bool,
+}
+
+pub struct RetentionDiscoveryStep {
+    pub observations: Vec<RetentionObservation>,
+    pub next_cursor: Option<String>,
+    pub visited_entries: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetentionPruneOutcome {
+    Removed,
+    Missing,
+    Protected,
+    Active,
+    Changed,
+}
+
+pub struct RetentionGarbageStep {
+    pub next_cursor: Option<String>,
+    pub visited_entries: usize,
+    pub removed_trees: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetentionFrame {
+    components: Vec<String>,
+    identity: (u64, u64),
+    cookie: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetentionWalkCursor {
+    version: u8,
+    root_identity: (u64, u64),
+    frames: Vec<RetentionFrame>,
+    run: Option<(RunLogMetadata, bool, (u64, u64))>,
+    #[serde(default)]
+    only_run: Option<String>,
+}
+
+fn retention_roots(worktree: &Path) -> Result<(File, File), LogQueryError> {
+    let root = open_directory_path(worktree)?;
+    let dev = open_dir(&root, ".devcoordinator")?;
+    let test = open_dir(&dev, "test")?;
+    let logs = open_dir(&test, "logs")?;
+    for name in retention_names(&logs, 4)? {
+        if !matches!(name.as_str(), "runs" | ".garbage" | "maintenance.lock") {
+            return Err(LogQueryError::StoreMalformed);
+        }
+    }
+    let runs = required_store_entry(open_dir(&logs, "runs"))?;
+    Ok((logs, runs))
+}
+
+// Directory cookies resume kernel enumeration without rescanning or sorting a
+// potentially enormous directory. Every reopen also checks its exact inode.
+fn retention_next_name(
+    directory: &File,
+    cookie: &mut u64,
+) -> Result<Option<String>, LogQueryError> {
+    unix_fs::seek(directory, unix_fs::SeekFrom::Start(*cookie))
+        .map_err(|_| LogQueryError::CursorStale)?;
+    let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
+    let mut reader = unix_fs::RawDir::new(directory, &mut buffer);
+    while let Some(entry) = reader.next() {
+        let entry = entry.map_err(|_| LogQueryError::Unavailable)?;
+        *cookie = entry.next_entry_cookie();
+        let name = entry
+            .file_name()
+            .to_str()
+            .map_err(|_| LogQueryError::StoreMalformed)?;
+        if matches!(name, "." | "..") {
+            continue;
+        }
+        return Ok(Some(name.to_owned()));
+    }
+    Ok(None)
+}
+
+fn retention_names(directory: &File, limit: usize) -> Result<Vec<String>, LogQueryError> {
+    let mut names = Vec::new();
+    let mut cookie = 0;
+    while let Some(name) = retention_next_name(directory, &mut cookie)? {
+        if names.len() == limit {
+            return Err(LogQueryError::StoreMalformed);
+        }
+        names.push(name);
+    }
+    Ok(names)
+}
+
+fn retention_frame_directory(root: &File, frame: &RetentionFrame) -> Result<File, LogQueryError> {
+    let mut directory = root.try_clone().map_err(|_| LogQueryError::Unavailable)?;
+    for component in &frame.components {
+        if component.is_empty()
+            || matches!(component.as_str(), "." | "..")
+            || component.contains('/')
+            || component.contains('\0')
+        {
+            return Err(LogQueryError::CursorStale);
+        }
+        directory = open_dir(&directory, component).map_err(|error| {
+            if error == LogQueryError::LogNotFound {
+                LogQueryError::CursorStale
+            } else {
+                error
+            }
+        })?;
+    }
+    if file_identity(&directory)? != frame.identity {
+        return Err(LogQueryError::CursorStale);
+    }
+    Ok(directory)
+}
+
+fn retention_cursor(
+    root: &File,
+    cursor: Option<&str>,
+    max_frames: usize,
+) -> Result<RetentionWalkCursor, LogQueryError> {
+    let identity = file_identity(root)?;
+    let cursor = if let Some(encoded) = cursor {
+        if encoded.len() > 64 * 1024 {
+            return Err(LogQueryError::CursorStale);
+        }
+        serde_json::from_str::<RetentionWalkCursor>(encoded)
+            .map_err(|_| LogQueryError::CursorStale)?
+    } else {
+        RetentionWalkCursor {
+            version: 1,
+            root_identity: identity,
+            frames: vec![RetentionFrame {
+                components: vec![],
+                identity,
+                cookie: 0,
+            }],
+            run: None,
+            only_run: None,
+        }
+    };
+    if cursor.version != 1
+        || cursor.root_identity != identity
+        || cursor.frames.len() > max_frames
+        || cursor.frames.is_empty()
+    {
+        return Err(LogQueryError::CursorStale);
+    }
+    for (index, frame) in cursor.frames.iter().enumerate() {
+        if frame.components.len() != index
+            || (index > 0 && frame.components[..index - 1] != cursor.frames[index - 1].components)
+        {
+            return Err(LogQueryError::CursorStale);
+        }
+        let _ = retention_frame_directory(root, frame)?;
+    }
+    Ok(cursor)
+}
+
+fn retention_continuation(cursor: &RetentionWalkCursor) -> Result<Option<String>, LogQueryError> {
+    if cursor.frames.is_empty() {
+        return Ok(None);
+    }
+    let encoded = serde_json::to_string(cursor).map_err(|_| LogQueryError::Unavailable)?;
+    if encoded.len() > 64 * 1024 {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    Ok(Some(encoded))
+}
+
+fn retention_push(
+    cursor: &mut RetentionWalkCursor,
+    components: Vec<String>,
+    directory: &File,
+) -> Result<(), LogQueryError> {
+    cursor.frames.push(RetentionFrame {
+        components,
+        identity: file_identity(directory)?,
+        cookie: 0,
+    });
+    Ok(())
+}
+
+fn retention_run_state(
+    directory: &File,
+    run_id: &str,
+    active_run: Option<&str>,
+) -> Result<(RunLogMetadata, bool), LogQueryError> {
+    let run: RunLogMetadata =
+        required_store_entry(read_json(directory, "run.json", MAX_METADATA_BYTES))?;
+    run.validate().map_err(|_| LogQueryError::StoreMalformed)?;
+    if run.run_id != run_id || run.finished_at_epoch_ms.is_some_and(|at| at > epoch_ms()) {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    if retention_names(directory, 6)?.iter().any(|name| {
+        !matches!(
+            name.as_str(),
+            "active.lock" | "run.json" | "executor" | "checks" | "finalization.pending"
+        )
+    }) {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    let active = active_run == Some(run_id)
+        || unix_fs::statat(directory, "finalization.pending", AtFlags::SYMLINK_NOFOLLOW).is_ok()
+        || required_store_entry(run_is_locked(directory))?;
+    Ok((run, active))
+}
+
+fn retention_leaf_observation(
+    directory: &File,
+    run: &RunLogMetadata,
+    active: bool,
+    run_identity: (u64, u64),
+    selector: LeafSelector,
+    components: Vec<String>,
+) -> Result<RetentionObservation, LogQueryError> {
+    let (complete, finished) = if selector.phase == LogPhase::Executor {
+        let names = retention_names(directory, 3)?;
+        for name in names {
+            if !matches!(name.as_str(), "stdout.log" | "stderr.log") {
+                return Err(LogQueryError::StoreMalformed);
+            }
+            let file = required_store_entry(open_file(directory, &name))?;
+            if !file
+                .metadata()
+                .map_err(|_| LogQueryError::Unavailable)?
+                .is_file()
+            {
+                return Err(LogQueryError::StoreMalformed);
+            }
+        }
+        (
+            run.complete,
+            run.finished_at_epoch_ms.unwrap_or(run.started_at_epoch_ms),
+        )
+    } else {
+        let names = retention_names(directory, 11)?;
+        if names.iter().any(|name| {
+            !matches!(
+                name.as_str(),
+                "leaf.json"
+                    | "stdout.log"
+                    | "stdout.lines"
+                    | "stdout.meta.json"
+                    | "stderr.log"
+                    | "stderr.lines"
+                    | "stderr.meta.json"
+                    | "diagnostics.json"
+                    | "diagnostics"
+                    | "evidence"
+            )
+        }) {
+            return Err(LogQueryError::StoreMalformed);
+        }
+        let metadata: LeafLogMetadata = match read_json(directory, "leaf.json", MAX_METADATA_BYTES)
+        {
+            Ok(metadata) => metadata,
+            Err(LogQueryError::LogNotFound) if active || !run.complete => LeafLogMetadata {
+                schema: 2,
+                selector: selector.clone(),
+                status: devcoordinator2_executor_protocol::LeafStatus::Running,
+                exit: devcoordinator2_executor_protocol::DiagnosticExit::default(),
+                started_at_epoch_ms: run.started_at_epoch_ms,
+                finished_at_epoch_ms: None,
+                process_started: true,
+                complete: false,
+                structured_evidence_formats: vec![],
+                structured_evidence_count: 0,
+            },
+            Err(error) => {
+                return Err(if error == LogQueryError::LogNotFound {
+                    LogQueryError::StoreMalformed
+                } else {
+                    error
+                });
+            }
+        };
+        metadata
+            .validate()
+            .map_err(|_| LogQueryError::StoreMalformed)?;
+        if metadata.selector != selector {
+            return Err(LogQueryError::StoreMalformed);
+        }
+        (
+            metadata.complete,
+            metadata
+                .finished_at_epoch_ms
+                .or(run.finished_at_epoch_ms)
+                .unwrap_or(metadata.started_at_epoch_ms),
+        )
+    };
+    let finished_at_ms = if active { 0 } else { finished };
+    if finished_at_ms > epoch_ms() {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    // JSON escaping preserves the logical NUL-separated incomplete namespace
+    // while keeping the PostgreSQL TEXT key free of embedded zero bytes.
+    let history_key = serde_json::to_string(&(
+        retention_test_key(&run.test, complete),
+        selector.check,
+        format!("{:?}", selector.phase),
+        selector.case_id,
+    ))
+    .map_err(|_| LogQueryError::Unavailable)?;
+    Ok(RetentionObservation {
+        run_id: run.run_id.clone(),
+        test: run.test.clone(),
+        run_finished_at_ms: run.finished_at_epoch_ms,
+        components,
+        run_identity,
+        leaf_identity: file_identity(directory)?,
+        history_key,
+        finished_at_ms,
+        active,
+        complete,
+    })
+}
+
+fn retention_selector(components: &[String]) -> Result<LeafSelector, LogQueryError> {
+    let run = components.first().ok_or(LogQueryError::StoreMalformed)?;
+    validate_run_id(run).map_err(|_| LogQueryError::StoreMalformed)?;
+    if components.len() == 2 && components[1] == "executor" {
+        return LeafSelector::new(None, LogPhase::Executor, None)
+            .map_err(|_| LogQueryError::StoreMalformed);
+    }
+    if components.len() < 4 || components[1] != "checks" || !valid_check(&components[2]) {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    let phase = match components[3].as_str() {
+        "check" if components.len() == 4 => LogPhase::Check,
+        "discovery" if components.len() == 4 => LogPhase::Discovery,
+        "cases" if components.len() == 5 => LogPhase::Case,
+        "fixtures" if components.len() == 5 => LogPhase::Fixture,
+        "cleanup" if components.len() == 5 => LogPhase::Cleanup,
+        _ => return Err(LogQueryError::StoreMalformed),
+    };
+    let case = components.get(4).cloned();
+    if case.as_ref().is_some_and(|case| !valid_case(case)) {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    LeafSelector::new(Some(components[2].clone()), phase, case)
+        .map_err(|_| LogQueryError::StoreMalformed)
+}
+
+/// One bounded filesystem discovery page; no stream is hashed or loaded.
+pub fn discover_retention_step(
+    worktree: &Path,
+    request: &LogPruneRequest,
+    cursor: Option<&str>,
+    max_entries: usize,
+    budget: Duration,
+) -> Result<RetentionDiscoveryStep, LogQueryError> {
+    discover_retention_inner(worktree, request, None, cursor, max_entries, budget)
+}
+
+/// Discover one named run without enumerating or validating its siblings.
+pub fn discover_retention_run_step(
+    worktree: &Path,
+    request: &LogPruneRequest,
+    run_id: &str,
+    cursor: Option<&str>,
+    max_entries: usize,
+    budget: Duration,
+) -> Result<RetentionDiscoveryStep, LogQueryError> {
+    validate_run_id(run_id)?;
+    discover_retention_inner(worktree, request, Some(run_id), cursor, max_entries, budget)
+}
+
+/// Observe only the named run through the same metadata and identity checks as
+/// bounded retention. Explicit cleanup never needs another run's stream bytes.
+pub fn retained_run_observations(
+    worktree: &Path,
+    request: &LogPruneRequest,
+    run_id: &str,
+) -> Result<Vec<RetentionObservation>, LogQueryError> {
+    let mut cursor = None;
+    let mut observations = Vec::new();
+    loop {
+        let step = discover_retention_run_step(
+            worktree,
+            request,
+            run_id,
+            cursor.as_deref(),
+            256,
+            Duration::from_millis(25),
+        )?;
+        observations.extend(step.observations);
+        cursor = step.next_cursor;
+        if cursor.is_none() {
+            return Ok(observations);
+        }
+    }
+}
+
+fn discover_retention_inner(
+    worktree: &Path,
+    request: &LogPruneRequest,
+    only_run: Option<&str>,
+    input: Option<&str>,
+    max_entries: usize,
+    budget: Duration,
+) -> Result<RetentionDiscoveryStep, LogQueryError> {
+    validate_prune_request(request)?;
+    let (_logs, runs) = match retention_roots(worktree) {
+        Ok(roots) => roots,
+        Err(LogQueryError::LogNotFound) => {
+            return Ok(RetentionDiscoveryStep {
+                observations: vec![],
+                next_cursor: None,
+                visited_entries: 0,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let _guard = lock_retention(worktree)?;
+    let mut cursor = retention_cursor(&runs, input, 6)?;
+    if input.is_none() {
+        cursor.only_run = only_run.map(str::to_owned);
+    }
+    if cursor.only_run.as_deref() != only_run
+        || only_run.is_some_and(|run| {
+            cursor
+                .frames
+                .iter()
+                .any(|frame| frame.components.first().is_some_and(|id| id != run))
+        })
+    {
+        return Err(LogQueryError::CursorStale);
+    }
+    if let Some((run, _, _)) = &cursor.run {
+        run.validate().map_err(|_| LogQueryError::CursorStale)?;
+        if only_run.is_some_and(|id| run.run_id != id) {
+            return Err(LogQueryError::CursorStale);
+        }
+    }
+    let started = Instant::now();
+    let mut visited_entries = 0;
+    let mut observations = Vec::new();
+    while !cursor.frames.is_empty()
+        && visited_entries < max_entries.clamp(1, 256)
+        && (visited_entries == 0 || started.elapsed() < budget)
+    {
+        visited_entries += 1;
+        let index = cursor.frames.len() - 1;
+        let directory = retention_frame_directory(&runs, &cursor.frames[index])?;
+        let next = if index == 0 && only_run.is_some() {
+            let frame = &mut cursor.frames[index];
+            if frame.cookie == 0 {
+                frame.cookie = 1;
+                only_run.map(str::to_owned)
+            } else {
+                None
+            }
+        } else {
+            retention_next_name(&directory, &mut cursor.frames[index].cookie)?
+        };
+        let Some(name) = next else {
+            if cursor.frames[index].components.len() == 1 {
+                cursor.run = None;
+            }
+            cursor.frames.pop();
+            continue;
+        };
+        let mut components = cursor.frames[index].components.clone();
+        components.push(name.clone());
+        match components.len() {
+            1 => {
+                validate_run_id(&name).map_err(|_| LogQueryError::StoreMalformed)?;
+                let run_dir = match open_dir(&directory, &name) {
+                    Ok(directory) => directory,
+                    Err(LogQueryError::LogNotFound) if only_run.is_some() => {
+                        cursor.frames.clear();
+                        break;
+                    }
+                    Err(LogQueryError::LogNotFound) => return Err(LogQueryError::StoreMalformed),
+                    Err(error) => return Err(error),
+                };
+                let (run, active) =
+                    retention_run_state(&run_dir, &name, request.active_run_id.as_deref())?;
+                cursor.run = Some((run, active, file_identity(&run_dir)?));
+                retention_push(&mut cursor, components, &run_dir)?;
+            }
+            2 if name == "executor" => {
+                let leaf = required_store_entry(open_dir(&directory, &name))?;
+                if !retention_names(&leaf, 3)?.is_empty() {
+                    let (run, active, identity) =
+                        cursor.run.as_ref().ok_or(LogQueryError::CursorStale)?;
+                    observations.push(retention_leaf_observation(
+                        &leaf,
+                        run,
+                        *active,
+                        *identity,
+                        retention_selector(&components)?,
+                        components,
+                    )?);
+                }
+            }
+            2 if matches!(
+                name.as_str(),
+                "active.lock" | "run.json" | "finalization.pending"
+            ) => {}
+            2 if name == "checks" => {
+                let child = required_store_entry(open_dir(&directory, &name))?;
+                retention_push(&mut cursor, components, &child)?;
+            }
+            3 => {
+                if !valid_check(&name) {
+                    return Err(LogQueryError::StoreMalformed);
+                }
+                let child = required_store_entry(open_dir(&directory, &name))?;
+                retention_push(&mut cursor, components, &child)?;
+            }
+            4 if matches!(name.as_str(), "cases" | "fixtures" | "cleanup") => {
+                let child = required_store_entry(open_dir(&directory, &name))?;
+                retention_push(&mut cursor, components, &child)?;
+            }
+            4 | 5 => {
+                let selector = retention_selector(&components)?;
+                let leaf = required_store_entry(open_dir(&directory, &name))?;
+                let (run, active, identity) =
+                    cursor.run.as_ref().ok_or(LogQueryError::CursorStale)?;
+                observations.push(retention_leaf_observation(
+                    &leaf, run, *active, *identity, selector, components,
+                )?);
+            }
+            _ => return Err(LogQueryError::StoreMalformed),
+        }
+    }
+    let next_cursor = retention_continuation(&cursor)?;
+    Ok(RetentionDiscoveryStep {
+        observations,
+        next_cursor,
+        visited_entries,
+    })
+}
+
+/// Verify one indexed observation without enumerating other runs or payloads.
+/// Protection writers hold `lock_retention` until their database write commits.
+pub fn retention_observation_exists(
+    worktree: &Path,
+    observation: &RetentionObservation,
+) -> Result<bool, LogQueryError> {
+    validate_run_id(&observation.run_id)?;
+    if observation.components.first() != Some(&observation.run_id) {
+        return Err(LogQueryError::CursorStale);
+    }
+    let selector = retention_selector(&observation.components)?;
+    let (_, runs) = match retention_roots(worktree) {
+        Ok(roots) => roots,
+        Err(LogQueryError::LogNotFound) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let run_directory = match open_dir(&runs, &observation.run_id) {
+        Ok(directory) => directory,
+        Err(LogQueryError::LogNotFound) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if file_identity(&run_directory)? != observation.run_identity {
+        return Err(LogQueryError::CursorStale);
+    }
+    let (run, active) = retention_run_state(&run_directory, &observation.run_id, None)?;
+    let mut leaf = run_directory
+        .try_clone()
+        .map_err(|_| LogQueryError::Unavailable)?;
+    for component in observation.components.iter().skip(1) {
+        if component.is_empty()
+            || matches!(component.as_str(), "." | "..")
+            || component.contains('/')
+            || component.contains('\0')
+        {
+            return Err(LogQueryError::CursorStale);
+        }
+        leaf = match open_dir(&leaf, component) {
+            Ok(directory) => directory,
+            Err(LogQueryError::LogNotFound) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+    }
+    if file_identity(&leaf)? != observation.leaf_identity {
+        return Err(LogQueryError::CursorStale);
+    }
+    if selector.phase == LogPhase::Executor && retention_names(&leaf, 3)?.is_empty() {
+        return Ok(false);
+    }
+    retention_leaf_observation(
+        &leaf,
+        &run,
+        active,
+        observation.run_identity,
+        selector,
+        observation.components.clone(),
+    )?;
+    Ok(true)
+}
+
+/// The caller selects age/depth candidates. Physical state and current
+/// protection remain authoritative here, under the existing maintenance lock.
+pub fn prune_retention_observation(
+    worktree: &Path,
+    request: &LogPruneRequest,
+    observation: &RetentionObservation,
+    protected: impl FnOnce() -> Result<bool, LogQueryError>,
+) -> Result<RetentionPruneOutcome, LogQueryError> {
+    validate_prune_request(request)?;
+    let guard = lock_retention(worktree)?;
+    prune_retention_observation_locked(worktree, request, observation, protected, &guard, false)
+}
+
+fn prune_retention_observation_locked(
+    worktree: &Path,
+    request: &LogPruneRequest,
+    observation: &RetentionObservation,
+    protected: impl FnOnce() -> Result<bool, LogQueryError>,
+    _guard: &RetentionLock,
+    remove_payload: bool,
+) -> Result<RetentionPruneOutcome, LogQueryError> {
+    validate_prune_request(request)?;
+    let selector = retention_selector(&observation.components)?;
+    if observation.components[0] != observation.run_id {
+        return Err(LogQueryError::StoreMalformed);
+    }
+    let (logs, runs) = retention_roots(worktree)?;
+    if protected()? {
+        return Ok(RetentionPruneOutcome::Protected);
+    }
+    let location = RetentionLocation {
+        run_id: observation.run_id.clone(),
+        components: observation.components.clone(),
+        run_identity: observation.run_identity,
+        leaf_identity: observation.leaf_identity,
+    };
+    let run = match open_dir(&runs, &observation.run_id) {
+        Ok(run) => run,
+        Err(LogQueryError::LogNotFound) => return Ok(RetentionPruneOutcome::Missing),
+        Err(error) => return Err(error),
+    };
+    if file_identity(&run)? != observation.run_identity {
+        return Ok(RetentionPruneOutcome::Changed);
+    }
+    let leaf = match open_leaf_components(&run, &observation.components[1..]) {
+        Ok(leaf) => leaf,
+        Err(LogQueryError::LogNotFound) => return Ok(RetentionPruneOutcome::Missing),
+        Err(error) => return Err(error),
+    };
+    if file_identity(&leaf)? != observation.leaf_identity {
+        return Ok(RetentionPruneOutcome::Changed);
+    }
+    let Some(_run_guard) =
+        lock_and_revalidate_victim(&runs, &location, request.active_run_id.as_deref())?
+    else {
+        return Ok(RetentionPruneOutcome::Active);
+    };
+    let metadata: RunLogMetadata =
+        required_store_entry(read_json(&run, "run.json", MAX_METADATA_BYTES))?;
+    metadata
+        .validate()
+        .map_err(|_| LogQueryError::StoreMalformed)?;
+    let current = retention_leaf_observation(
+        &leaf,
+        &metadata,
+        false,
+        observation.run_identity,
+        selector,
+        observation.components.clone(),
+    )?;
+    if current.finished_at_ms != observation.finished_at_ms
+        || current.complete != observation.complete
+        || current.history_key != observation.history_key
+    {
+        return Ok(RetentionPruneOutcome::Changed);
+    }
+    let garbage = ensure_dir(&logs, ".garbage")?;
+    if remove_payload {
+        rename_leaf_to_garbage(
+            &runs,
+            &garbage,
+            &observation.components,
+            observation.leaf_identity,
+        )?;
+    } else {
+        let _ = rename_leaf_to_garbage_only(
+            &runs,
+            &garbage,
+            &observation.components,
+            observation.leaf_identity,
+        )?;
+    }
+    Ok(RetentionPruneOutcome::Removed)
+}
+
+/// Resume post-order garbage removal with a bounded frontier and entry budget.
+/// Renamed trees are private owned debris; links are unlinked, never followed.
+pub fn collect_retention_garbage_step(
+    worktree: &Path,
+    cursor: Option<&str>,
+    max_entries: usize,
+    budget: Duration,
+) -> Result<RetentionGarbageStep, LogQueryError> {
+    let (logs, _) = match retention_roots(worktree) {
+        Ok(roots) => roots,
+        Err(LogQueryError::LogNotFound) => {
+            return Ok(RetentionGarbageStep {
+                next_cursor: None,
+                visited_entries: 0,
+                removed_trees: 0,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let _guard = lock_retention(worktree)?;
+    let garbage = match open_dir(&logs, ".garbage") {
+        Ok(directory) => directory,
+        Err(LogQueryError::LogNotFound) => {
+            return Ok(RetentionGarbageStep {
+                next_cursor: None,
+                visited_entries: 0,
+                removed_trees: 0,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let mut cursor = retention_cursor(&garbage, cursor, 256)?;
+    if cursor.only_run.is_some() {
+        return Err(LogQueryError::CursorStale);
+    }
+    if cursor.run.is_some() {
+        return Err(LogQueryError::CursorStale);
+    }
+    if cursor.frames.get(1).is_some_and(|frame| {
+        !frame
+            .components
+            .first()
+            .is_some_and(|name| valid_garbage_name(name))
+    }) {
+        return Err(LogQueryError::CursorStale);
+    }
+    let started = Instant::now();
+    let mut visited_entries = 0;
+    let mut removed_trees = 0;
+    while !cursor.frames.is_empty()
+        && visited_entries < max_entries.clamp(1, 256)
+        && (visited_entries == 0 || started.elapsed() < budget)
+    {
+        visited_entries += 1;
+        let index = cursor.frames.len() - 1;
+        let directory = retention_frame_directory(&garbage, &cursor.frames[index])?;
+        if let Some(name) = retention_next_name(&directory, &mut cursor.frames[index].cookie)? {
+            if index == 0 && !valid_garbage_name(&name) {
+                return Err(LogQueryError::StoreMalformed);
+            }
+            let details = unix_fs::statat(&directory, &name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(map_open_error)?;
+            if FileType::from_raw_mode(details.st_mode) == FileType::Directory {
+                if cursor.frames.len() >= 256 {
+                    return Err(LogQueryError::StoreMalformed);
+                }
+                let child = open_dir(&directory, &name)?;
+                let mut components = cursor.frames[index].components.clone();
+                components.push(name);
+                retention_push(&mut cursor, components, &child)?;
+            } else {
+                unix_fs::unlinkat(&directory, &name, AtFlags::empty()).map_err(map_open_error)?;
+                directory
+                    .sync_all()
+                    .map_err(|_| LogQueryError::Unavailable)?;
+            }
+        } else if index == 0 {
+            // Mutations may invalidate a directory cookie. Completion requires
+            // observing the root empty from a fresh enumeration as well.
+            let mut fresh = 0;
+            if retention_next_name(&directory, &mut fresh)?.is_some() {
+                cursor.frames[index].cookie = 0;
+            } else {
+                cursor.frames.clear();
+            }
+        } else {
+            let frame = cursor.frames.last().ok_or(LogQueryError::CursorStale)?;
+            let parent = retention_frame_directory(&garbage, &cursor.frames[index - 1])?;
+            let name = frame.components.last().ok_or(LogQueryError::CursorStale)?;
+            match unix_fs::unlinkat(&parent, name, AtFlags::REMOVEDIR) {
+                Ok(()) => {
+                    parent.sync_all().map_err(|_| LogQueryError::Unavailable)?;
+                    if index == 1 {
+                        removed_trees += 1;
+                    }
+                    cursor.frames.pop();
+                }
+                Err(error) if error == rustix::io::Errno::NOTEMPTY => {
+                    cursor.frames[index].cookie = 0;
+                }
+                Err(error) => return Err(map_open_error(error)),
+            }
+        }
+    }
+    Ok(RetentionGarbageStep {
+        next_cursor: retention_continuation(&cursor)?,
+        visited_entries,
+        removed_trees,
+    })
+}
+
+/// Remove only the known retention containers after their contents are empty.
+/// Every component is opened without following links and the existing
+/// retention lock serializes this maintenance with log pruning/protection.
+pub fn prune_empty_retention_containers(worktree: &Path) -> Result<u64, LogQueryError> {
+    let guard = lock_retention(worktree)?;
+    let logs = guard.logs();
+    let test = guard.test();
+    let names = retention_names(logs, 4)?;
+    let mut removed = 0;
+    for name in ["runs", ".garbage"] {
+        if !names.iter().any(|entry| entry == name) {
+            continue;
+        }
+        let child = open_dir(logs, name)?;
+        let mut cookie = 0;
+        if retention_next_name(&child, &mut cookie)?.is_some() {
+            continue;
+        }
+        unix_fs::unlinkat(logs, name, AtFlags::REMOVEDIR).map_err(map_open_error)?;
+        removed += 1;
+    }
+    let fresh = retention_names(logs, 4)?;
+    if fresh.as_slice() == ["maintenance.lock"] {
+        unix_fs::unlinkat(logs, "maintenance.lock", AtFlags::empty()).map_err(map_open_error)?;
+        unix_fs::unlinkat(test, "logs", AtFlags::REMOVEDIR).map_err(map_open_error)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 pub fn prune_logs_receipt(
     worktree: &Path,
     request: LogPruneRequest,
@@ -426,8 +1274,36 @@ pub fn remove_retained_run(
     protected_runs: impl FnOnce() -> Result<std::collections::BTreeSet<String>, LogQueryError>,
     run_id: &str,
 ) -> Result<LogPruneResult, LogQueryError> {
-    validate_run_id(run_id)?;
-    prune_logs_internal(worktree, request, protected_runs, Some(run_id), true).map(|r| r.summary)
+    let observations = retained_run_observations(worktree, &request, run_id)?;
+    let mut result = LogPruneResult {
+        removed_leaf_folders: 0,
+        retained_active: 0,
+        next_expiry_at: None,
+        recovered_garbage: 0,
+    };
+    if observations.is_empty() {
+        return Ok(result);
+    }
+    let guard = lock_retention(worktree)?;
+    let protected = protected_runs()?;
+    let (logs, _) = retention_roots(worktree)?;
+    result.recovered_garbage = recover_garbage(&ensure_dir(&logs, ".garbage")?)?;
+    for observation in observations {
+        match prune_retention_observation_locked(
+            worktree,
+            &request,
+            &observation,
+            || Ok(protected.contains(&observation.run_id)),
+            &guard,
+            true,
+        )? {
+            RetentionPruneOutcome::Removed => result.removed_leaf_folders += 1,
+            RetentionPruneOutcome::Active => result.retained_active += 1,
+            RetentionPruneOutcome::Protected | RetentionPruneOutcome::Missing => {}
+            RetentionPruneOutcome::Changed => return Err(LogQueryError::CursorStale),
+        }
+    }
+    Ok(result)
 }
 
 fn prune_logs_internal(
@@ -463,7 +1339,7 @@ fn prune_logs_internal(
         }
         Err(_) => return Err(LogQueryError::Unavailable),
     }
-    let _maintenance_guard = RetentionLock { _file: maintenance };
+    let _maintenance_guard = RetentionFileLock { _file: maintenance };
     let now_ms = epoch_ms();
     let protected_runs = protected_runs()?;
     let policy = RetentionPolicy {
@@ -620,7 +1496,22 @@ pub struct RetentionRunInfo {
 }
 
 pub struct RetentionLock {
+    _root: File,
+    _dev: File,
+    test: File,
+    logs: File,
     _file: File,
+}
+
+// Internal prune paths retain directory bindings in their Inventory.
+struct RetentionFileLock {
+    _file: File,
+}
+
+impl Drop for RetentionFileLock {
+    fn drop(&mut self) {
+        let _ = unix_fs::flock(&self._file, FlockOperation::Unlock);
+    }
 }
 
 impl Drop for RetentionLock {
@@ -628,6 +1519,45 @@ impl Drop for RetentionLock {
         // A child forked before exec can still hold this open-file description,
         // even with CLOEXEC. Closing our descriptor alone would keep the lock.
         let _ = unix_fs::flock(&self._file, FlockOperation::Unlock);
+    }
+}
+
+fn validate_retention_binding(
+    root: &File,
+    dev: &File,
+    test: &File,
+    logs: &File,
+    file: &File,
+) -> Result<(), LogQueryError> {
+    let same = |actual: &File, parent: &File, name: &str, directory: bool| {
+        let current = unix_fs::fstat(actual).map_err(|_| LogQueryError::MaintenanceBusy)?;
+        let named = unix_fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|_| LogQueryError::MaintenanceBusy)?;
+        let expected_type = if directory {
+            FileType::Directory
+        } else {
+            FileType::RegularFile
+        };
+        if (named.st_dev, named.st_ino) != (current.st_dev, current.st_ino)
+            || FileType::from_raw_mode(named.st_mode) != expected_type
+        {
+            return Err(LogQueryError::MaintenanceBusy);
+        }
+        Ok(())
+    };
+    same(dev, root, ".devcoordinator", true)?;
+    same(test, dev, "test", true)?;
+    same(logs, test, "logs", true)?;
+    same(file, logs, "maintenance.lock", false)
+}
+
+impl RetentionLock {
+    pub fn logs(&self) -> &File {
+        &self.logs
+    }
+
+    pub fn test(&self) -> &File {
+        &self.test
     }
 }
 
@@ -640,7 +1570,14 @@ pub fn lock_retention(worktree: &Path) -> Result<RetentionLock, LogQueryError> {
     let file = open_or_create_file(&logs, "maintenance.lock")?;
     unix_fs::flock(&file, FlockOperation::NonBlockingLockExclusive)
         .map_err(|_| LogQueryError::MaintenanceBusy)?;
-    Ok(RetentionLock { _file: file })
+    validate_retention_binding(&root, &dev, &test, &logs, &file)?;
+    Ok(RetentionLock {
+        _root: root,
+        _dev: dev,
+        test,
+        logs,
+        _file: file,
+    })
 }
 
 /// Content-free, read-only inventory using the same leaf model as pruning.
@@ -3392,7 +4329,7 @@ fn run_is_locked(run_dir: &File) -> Result<bool, LogQueryError> {
     let lock = open_file(run_dir, "active.lock")?;
     match unix_fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => {
-            drop(RetentionLock { _file: lock });
+            drop(RetentionFileLock { _file: lock });
             Ok(false)
         }
         Err(error)
@@ -3408,7 +4345,7 @@ fn lock_and_revalidate_victim(
     runs: &File,
     location: &RetentionLocation,
     active_run_id: Option<&str>,
-) -> Result<Option<RetentionLock>, LogQueryError> {
+) -> Result<Option<RetentionFileLock>, LogQueryError> {
     if active_run_id == Some(location.run_id.as_str()) {
         return Ok(None);
     }
@@ -3429,7 +4366,7 @@ fn lock_and_revalidate_victim(
         }
         Err(_) => return Err(LogQueryError::Unavailable),
     }
-    let guard = RetentionLock { _file: lock };
+    let guard = RetentionFileLock { _file: lock };
     let leaf = required_store_entry(open_leaf_components(&run, &location.components[1..]))?;
     if file_identity(&leaf)? != location.leaf_identity {
         return Err(LogQueryError::StoreMalformed);
@@ -3462,6 +4399,18 @@ fn rename_leaf_to_garbage(
     components: &[String],
     expected_identity: (u64, u64),
 ) -> Result<(), LogQueryError> {
+    let name = rename_leaf_to_garbage_only(runs, garbage, components, expected_identity)?;
+    delete_tree_at(garbage, &name)?;
+    garbage.sync_all().map_err(|_| LogQueryError::Unavailable)?;
+    Ok(())
+}
+
+fn rename_leaf_to_garbage_only(
+    runs: &File,
+    garbage: &File,
+    components: &[String],
+    expected_identity: (u64, u64),
+) -> Result<String, LogQueryError> {
     if components.len() < 2 {
         return Err(LogQueryError::StoreMalformed);
     }
@@ -3485,9 +4434,7 @@ fn rename_leaf_to_garbage(
     }
     parent.sync_all().map_err(|_| LogQueryError::Unavailable)?;
     garbage.sync_all().map_err(|_| LogQueryError::Unavailable)?;
-    delete_tree_at(garbage, &garbage_name)?;
-    garbage.sync_all().map_err(|_| LogQueryError::Unavailable)?;
-    Ok(())
+    Ok(garbage_name)
 }
 
 fn delete_tree_at(parent: &File, name: &str) -> Result<(), LogQueryError> {
@@ -4319,6 +5266,442 @@ mod tests {
         );
         drop(active_lease);
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn retention_lock_rejects_an_unlinked_stale_descriptor() {
+        let root = temporary("stale-lock");
+        let guard = lock_retention(&root).expect("initial retention lock");
+        let root_fd = open_directory_path(&root).expect("root fd");
+        let dev = open_dir(&root_fd, ".devcoordinator").expect("dev fd");
+        let test = open_dir(&dev, "test").expect("test fd");
+        let logs = guard.logs();
+        let stale = open_or_create_file(logs, "maintenance.lock").expect("stale fd");
+        unix_fs::unlinkat(logs, "maintenance.lock", AtFlags::empty()).expect("unlink old lock");
+        let replacement = open_or_create_file(logs, "maintenance.lock").expect("new lock");
+        unix_fs::flock(&replacement, FlockOperation::NonBlockingLockExclusive)
+            .expect("new lock acquisition");
+        assert!(matches!(
+            validate_retention_binding(&root_fd, &dev, &test, logs, &stale),
+            Err(LogQueryError::MaintenanceBusy)
+        ));
+        drop(replacement);
+        drop(stale);
+        drop(guard);
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn empty_retention_containers_are_removed_but_nonempty_or_linked_roots_remain() {
+        let root = temporary("empty-containers");
+        let (run, _) = create_run(&root, 51, "metadata", b"retained\n", epoch_ms(), false);
+        assert_eq!(prune_empty_retention_containers(&root).unwrap(), 0);
+        assert!(root.join(".devcoordinator/test/logs/runs").exists());
+        fs::remove_dir_all(root.join(".devcoordinator/test/logs/runs")).unwrap();
+        fs::create_dir(root.join(".devcoordinator/test/logs/runs")).unwrap();
+        assert!(prune_empty_retention_containers(&root).unwrap() >= 1);
+        assert!(!root.join(".devcoordinator/test/logs").exists());
+
+        let linked = temporary("linked-containers");
+        let logs = linked.join(".devcoordinator/test/logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("maintenance.lock"), b"").unwrap();
+        let outside = linked.join("outside");
+        fs::create_dir(&outside).unwrap();
+        let _ = fs::remove_dir(logs.join("runs"));
+        symlink(&outside, logs.join("runs")).unwrap();
+        assert!(prune_empty_retention_containers(&linked).is_err());
+        assert!(outside.exists());
+        let _ = run;
+        fs::remove_dir_all(linked).expect("linked cleanup");
+    }
+
+    #[test]
+    fn bounded_retention_resumes_history_and_garbage_without_losing_protection() {
+        let root = temporary("bounded-retention");
+        let now = epoch_ms();
+        for index in 1..=48 {
+            create_run(
+                &root,
+                index,
+                "case-1",
+                b"retained\n",
+                now - index * 1000,
+                false,
+            );
+        }
+        let (active, lease) = create_run(&root, 49, "case-1", b"running\n", now - 50_000, true);
+        let request = LogPruneRequest {
+            schema: 2,
+            repository_id: "raaaaaaaaaaaaaaaa".into(),
+            max_age_seconds: 100,
+            case_depth: 3,
+            active_run_id: None,
+        };
+        let runs = root.join(".devcoordinator/test/logs/runs");
+        // A large executor stream is metadata-only discovery work.
+        let executor = runs.join(run_id(1)).join("executor");
+        fs::create_dir(&executor).unwrap();
+        let sparse = fs::File::create(executor.join("stdout.log")).unwrap();
+        sparse
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
+        sparse.set_len(512 * 1024 * 1024).unwrap();
+        let outside = root.join("outside");
+        fs::write(&outside, b"valuable").unwrap();
+        let evidence = runs
+            .join(run_id(1))
+            .join("checks/unit/cases/case-1/evidence");
+        fs::create_dir(&evidence).unwrap();
+        for index in 0..80 {
+            fs::write(evidence.join(format!("part-{index:03}")), b"evidence").unwrap();
+        }
+        symlink(&outside, evidence.join("link")).unwrap();
+        let mut cursor = None;
+        let mut observations = Vec::new();
+        let mut turns = 0;
+        loop {
+            let step = discover_retention_step(
+                &root,
+                &request,
+                cursor.as_deref(),
+                3,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            assert!(step.visited_entries <= 3);
+            assert!(step.observations.len() <= 3);
+            observations.extend(step.observations);
+            turns += 1;
+            cursor = step.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(cursor.as_ref().unwrap().len() <= 64 * 1024);
+            assert!(turns < 2000);
+        }
+        assert!(turns > 48);
+        assert_eq!(observations.len(), 50);
+        assert_eq!(
+            observations
+                .iter()
+                .map(|row| row.components.join("/"))
+                .collect::<BTreeSet<_>>()
+                .len(),
+            50
+        );
+        assert!(
+            observations
+                .iter()
+                .all(|row| !row.history_key.contains('\0'))
+        );
+        let sibling_metadata = runs.join(run_id(48)).join("run.json");
+        let sibling_original = fs::read(&sibling_metadata).unwrap();
+        fs::write(&sibling_metadata, b"malformed unrelated metadata").unwrap();
+        let mut exact_cursor = None;
+        let mut exact = Vec::new();
+        let mut exact_turns = 0;
+        loop {
+            let step = discover_retention_run_step(
+                &root,
+                &request,
+                &run_id(1),
+                exact_cursor.as_deref(),
+                2,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            assert!(step.visited_entries <= 2);
+            assert!(step.observations.iter().all(|row| row.run_id == run_id(1)));
+            exact.extend(step.observations);
+            exact_cursor = step.next_cursor;
+            exact_turns += 1;
+            if exact_cursor.is_none() {
+                break;
+            }
+            assert!(exact_turns < 20, "exact scan enumerated unrelated runs");
+        }
+        assert_eq!(exact.len(), 2);
+        let metadata: RunLogMetadata =
+            serde_json::from_slice(&fs::read(runs.join(run_id(1)).join("run.json")).unwrap())
+                .unwrap();
+        for observation in &exact {
+            assert_eq!(observation.test, metadata.test);
+            assert_eq!(
+                observation.run_finished_at_ms,
+                metadata.finished_at_epoch_ms
+            );
+            let _guard = lock_retention(&root).unwrap();
+            assert!(retention_observation_exists(&root, observation).unwrap());
+        }
+        let first = discover_retention_run_step(
+            &root,
+            &request,
+            &run_id(1),
+            None,
+            1,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(matches!(
+            discover_retention_run_step(
+                &root,
+                &request,
+                &run_id(2),
+                first.next_cursor.as_deref(),
+                1,
+                Duration::from_secs(1)
+            ),
+            Err(LogQueryError::CursorStale)
+        ));
+        assert!(matches!(
+            discover_retention_step(
+                &root,
+                &request,
+                first.next_cursor.as_deref(),
+                1,
+                Duration::from_secs(1)
+            ),
+            Err(LogQueryError::CursorStale)
+        ));
+        let missing = discover_retention_run_step(
+            &root,
+            &request,
+            &run_id(999),
+            None,
+            1,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(missing.observations.is_empty() && missing.next_cursor.is_none());
+        fs::write(sibling_metadata, sibling_original).unwrap();
+        let entries = observations
+            .iter()
+            .map(|row| RetentionEntry {
+                run_id: row.run_id.clone(),
+                test: row.history_key.clone(),
+                check: None,
+                phase: LogPhase::Executor,
+                case: None,
+                directory: PathBuf::from(row.components.join("/")),
+                finished_at_ms: row.finished_at_ms,
+                active: row.active,
+            })
+            .collect::<Vec<_>>();
+        let decision = select_expired(
+            &entries,
+            now,
+            RetentionPolicy {
+                max_age_seconds: 100,
+                history_depth: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(decision.victims.len(), 45);
+        let victim = observations
+            .iter()
+            .find(|row| {
+                decision
+                    .victims
+                    .contains(&PathBuf::from(row.components.join("/")))
+            })
+            .unwrap();
+        assert_eq!(
+            prune_retention_observation(&root, &request, victim, || Ok(true)).unwrap(),
+            RetentionPruneOutcome::Protected
+        );
+        let pending = runs.join(&victim.run_id).join("finalization.pending");
+        fs::write(&pending, b"pending").unwrap();
+        assert_eq!(
+            prune_retention_observation(&root, &request, victim, || Ok(false)).unwrap(),
+            RetentionPruneOutcome::Active
+        );
+        fs::remove_file(pending).unwrap();
+        let leaf_metadata = runs.join(victim.components.join("/")).join("leaf.json");
+        let original = fs::read(&leaf_metadata).unwrap();
+        let mut changed: LeafLogMetadata = serde_json::from_slice(&original).unwrap();
+        changed.finished_at_epoch_ms = changed.finished_at_epoch_ms.map(|at| at + 1);
+        fs::write(&leaf_metadata, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert_eq!(
+            prune_retention_observation(&root, &request, victim, || Ok(false)).unwrap(),
+            RetentionPruneOutcome::Changed
+        );
+        fs::write(leaf_metadata, original).unwrap();
+        let active_observation = observations
+            .iter()
+            .find(|row| row.run_id == active)
+            .unwrap();
+        assert_eq!(
+            prune_retention_observation(&root, &request, active_observation, || Ok(false)).unwrap(),
+            RetentionPruneOutcome::Active
+        );
+        for row in &observations {
+            if decision
+                .victims
+                .contains(&PathBuf::from(row.components.join("/")))
+            {
+                assert_eq!(
+                    prune_retention_observation(&root, &request, row, || Ok(false)).unwrap(),
+                    RetentionPruneOutcome::Removed
+                );
+                assert_eq!(
+                    prune_retention_observation(&root, &request, row, || Ok(false)).unwrap(),
+                    RetentionPruneOutcome::Missing
+                );
+                let _guard = lock_retention(&root).unwrap();
+                assert!(!retention_observation_exists(&root, row).unwrap());
+            }
+        }
+        let mut cursor = None;
+        let mut removed = 0;
+        let mut gc_turns = 0;
+        loop {
+            let step =
+                collect_retention_garbage_step(&root, cursor.as_deref(), 3, Duration::from_secs(1))
+                    .unwrap();
+            assert!(step.visited_entries <= 3);
+            removed += step.removed_trees;
+            gc_turns += 1;
+            cursor = step.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(gc_turns < 2000);
+        }
+        assert_eq!(removed, 45);
+        assert!(gc_turns > 45);
+        assert_eq!(fs::read(outside).unwrap(), b"valuable");
+        assert!(
+            fs::read_dir(root.join(".devcoordinator/test/logs/.garbage"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        // Explicit cleanup shares the bounded retention guards and touches
+        // only its selected run, even when another run cannot be decoded.
+        let malformed = runs.join(run_id(48)).join("run.json");
+        fs::write(&malformed, b"malformed unrelated metadata").unwrap();
+        let (manual, _) = create_run(&root, 50, "manual", b"manual evidence\n", now, false);
+        let manual_run = runs.join(&manual);
+        let manual_leaf = manual_run.join("checks/unit/cases/manual");
+        assert_eq!(
+            remove_retained_run(
+                &root,
+                request.clone(),
+                || Ok(BTreeSet::from([manual.clone()])),
+                &manual
+            )
+            .unwrap()
+            .removed_leaf_folders,
+            0
+        );
+        assert!(manual_leaf.is_dir());
+        let pending = manual_run.join("finalization.pending");
+        fs::write(&pending, b"pending").unwrap();
+        assert_eq!(
+            remove_retained_run(&root, request.clone(), || Ok(BTreeSet::new()), &manual)
+                .unwrap()
+                .retained_active,
+            1
+        );
+        fs::remove_file(pending).unwrap();
+        assert_eq!(
+            remove_retained_run(&root, request.clone(), || Ok(BTreeSet::new()), &active)
+                .unwrap()
+                .retained_active,
+            1
+        );
+        let metadata_path = manual_run.join("run.json");
+        let metadata = fs::read(&metadata_path).unwrap();
+        fs::write(&metadata_path, b"malformed selected metadata").unwrap();
+        assert_eq!(
+            remove_retained_run(&root, request.clone(), || Ok(BTreeSet::new()), &manual),
+            Err(LogQueryError::StoreMalformed)
+        );
+        assert!(manual_leaf.is_dir());
+        fs::write(metadata_path, metadata).unwrap();
+        // Stream diagnostics are disposable payloads, not cleanup ownership.
+        // The retained lifecycle metadata and exact filesystem identities
+        // still have to pass, and links inside payloads are never followed.
+        fs::write(
+            manual_leaf.join("stdout.meta.json"),
+            b"damaged stream metadata",
+        )
+        .unwrap();
+        let manual_evidence = manual_leaf.join("evidence");
+        fs::create_dir(&manual_evidence).unwrap();
+        symlink(root.join("outside"), manual_evidence.join("link")).unwrap();
+        assert_eq!(
+            remove_retained_run(&root, request.clone(), || Ok(BTreeSet::new()), &manual)
+                .unwrap()
+                .removed_leaf_folders,
+            1
+        );
+        assert!(!manual_leaf.exists());
+        assert!(
+            retained_run_observations(&root, &request, &manual)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(fs::read(root.join("outside")).unwrap(), b"valuable");
+        assert_eq!(
+            fs::read(malformed).unwrap(),
+            b"malformed unrelated metadata"
+        );
+        assert_eq!(
+            remove_retained_run(&root, request, || Ok(BTreeSet::new()), &manual)
+                .unwrap()
+                .removed_leaf_folders,
+            0
+        );
+        assert!(
+            fs::read_dir(root.join(".devcoordinator/test/logs/.garbage"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        assert!(
+            runs.join(active)
+                .join("checks/unit/cases/case-1/stdout.log")
+                .exists()
+        );
+        drop(lease);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retention_discovery_rejects_replaced_directories_instead_of_skipping_history() {
+        let root = temporary("bounded-retention-replacement");
+        let now = epoch_ms();
+        create_run(&root, 60, "case-1", b"retained", now - 1000, false);
+        let request = LogPruneRequest {
+            schema: 2,
+            repository_id: "raaaaaaaaaaaaaaaa".into(),
+            max_age_seconds: 1,
+            case_depth: 3,
+            active_run_id: None,
+        };
+        let step =
+            discover_retention_step(&root, &request, None, 1, Duration::from_secs(1)).unwrap();
+        let runs = root.join(".devcoordinator/test/logs/runs");
+        let saved = root.join("previous-runs");
+        fs::rename(&runs, &saved).unwrap();
+        fs::create_dir(&runs).unwrap();
+        // The root itself has changed; an old continuation cannot report a
+        // successful empty scan or move a newly created directory.
+        assert!(matches!(
+            discover_retention_step(
+                &root,
+                &request,
+                step.next_cursor.as_deref(),
+                1,
+                Duration::from_secs(1)
+            ),
+            Err(LogQueryError::CursorStale)
+        ));
+        fs::remove_dir(&runs).unwrap();
+        fs::rename(saved, runs).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

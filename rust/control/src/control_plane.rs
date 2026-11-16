@@ -1,4 +1,4 @@
-//! Composed protocol-v2 operation dispatcher.
+//! Composed protocol-v3 operation dispatcher.
 //!
 //! Domain modules stay reusable and transport-free. This layer performs the
 //! one authorization decision, decodes the registry's typed input, invokes the
@@ -7,11 +7,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::database::OptionalExtension;
 use devcoordinator2_api::params;
 use devcoordinator2_api::results;
-use devcoordinator2_api::{EmptyParams, ErrorCode, PingData, ProtocolError};
+use devcoordinator2_api::{ErrorCode, OperationId, PingData, ProtocolError};
 use devcoordinator2_executor_core::log_query::LogQueryOperation;
-use rusqlite::OptionalExtension;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -28,10 +28,11 @@ use crate::deployments::Deployments;
 use crate::events::{EventService, NewEvent};
 use crate::glossary::GlossaryService;
 use crate::health::HealthService;
-use crate::plan::{PlanService, SqliteDeploymentEvidence};
+use crate::plan::{PlanService, PostgresDeploymentEvidence};
 use crate::platform::{Clock, HostClock};
 use crate::progress::ProgressService;
 use crate::repository::Registry;
+use crate::request_deadline::{WaitContext, parse_deadline, wait_deadline_error};
 use crate::routes::RouteFilePublisher;
 use crate::server::ServerService;
 use crate::sketches::SketchService;
@@ -47,206 +48,6 @@ use crate::{DATABASE_SCHEMA_VERSION, SOURCE_COMMIT};
 
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
-
-/// Operations whose domain implementations are installed in this migration
-/// checkpoint. Other registered operations fail visibly until their owning
-/// service is ported; they never report synthetic success.
-pub const FOUNDATION_OPERATIONS: &[&str] = &[
-    "storage.inventory",
-    "storage.artifact.get",
-    "storage.scan",
-    "storage.register",
-    "storage.legacy.register",
-    "storage.protection.set",
-    "storage.policy.get",
-    "storage.policy.set",
-    "storage.roots.list",
-    "storage.roots.set",
-    "storage.cleanup.plan",
-    "storage.cleanup.start",
-    "storage.job.status",
-    "storage.job.cancel",
-    "storage.history",
-    "storage.lease.set",
-    "storage.lease.release",
-    "ping",
-    "ticket.request",
-    "ticket.settings",
-    "ticket.configure",
-    "ticket.remote",
-    "config.get",
-    "config.env.set",
-    "config.reload",
-    "agent.settings.get",
-    "agent.settings.save",
-    "agent.roles.save",
-    "agent.capabilities.report",
-    "agent.instruction.current",
-    "deployment.preflight",
-    "user.whoami",
-    "user.accept_invitation",
-    "user.list",
-    "user.invite",
-    "user.remove",
-    "grant.set",
-    "grant.remove",
-    "repository.register",
-    "repository.list",
-    "repository.status",
-    "repository.presentation.update",
-    "repository.archive",
-    "repository.unarchive",
-    "repository.retire",
-    "server.register",
-    "server.list",
-    "server.stop",
-    "deployment.list",
-    "deployment.status",
-    "deployment.wait",
-    "deployment.apply",
-    "deployment.rollback",
-    "deployment.start",
-    "deployment.stop",
-    "deployment.restart",
-    "deployment.logs",
-    "deployment.remove",
-    "deployment.set_domain",
-    "test.start",
-    "test.container.create",
-    "test.container.start",
-    "test.container.inspect",
-    "test.container.remove",
-    "test.container.retry",
-    "test.admission.status",
-    "test.admission.wait",
-    "test.wait",
-    "test.retry",
-    "test.status",
-    "test.history",
-    "test.stop",
-    "test.list",
-    "test.evidence.get",
-    "test.evidence.lookup",
-    "test.evidence.image",
-    "test.evidence.feedback.create",
-    "test.evidence.feedback.reply",
-    "test.evidence.feedback.edit",
-    "test.evidence.feedback.state",
-    "test.evidence.feedback.delete",
-    "test.log.catalog",
-    "test.log.tail",
-    "test.log.search",
-    "test.log.range",
-    "test.log.failure_context",
-    "test.log.retention.get",
-    "test.log.retention.set",
-    "test.artifact.catalog",
-    "test.artifact.file",
-    "test.capacity.get",
-    "test.capacity.set",
-    "health.summary",
-    "health.incidents",
-    "health.incident.update",
-    "health.repositories",
-    "health.repository",
-    "health.history",
-    "health.containers",
-    "health.container_remove",
-    "usage.repositories",
-    "usage.repository",
-    "usage.rate_card.list",
-    "usage.rate_card.set",
-    "progress.repositories",
-    "progress.repository",
-    "telegram.link",
-    "telegram.subscribe",
-    "telegram.unsubscribe",
-    "telegram.list",
-    "event.wait",
-    "design.sketch.publish",
-    "design.sketch.list",
-    "design.sketch.search",
-    "design.sketch.story",
-    "design.sketch.resolve",
-    "design.sketch.get",
-    "design.sketch.image",
-    "design.sketch.record",
-    "design.sketch.decision",
-    "design.sketch.activate",
-    "design.sketch.description",
-    "design.sketch.annotation.create",
-    "agent.message.poll",
-    "agent.message.claim",
-    "agent.message.ack",
-    "agent.hub.register",
-    "agent.hub.heartbeat",
-    "agent.hub.unregister",
-    "agent.hub.directory",
-    "agent.hub.room.create",
-    "agent.hub.room.list",
-    "agent.hub.room.member.add",
-    "agent.hub.room.member.remove",
-    "agent.hub.send",
-    "agent.hub.receive",
-    "agent.hub.ack",
-    "agent.hub.upload.start",
-    "agent.hub.upload.chunk",
-    "agent.hub.upload.file",
-    "agent.hub.upload.remove",
-    "agent.hub.console.directory",
-    "agent.hub.console.receive",
-    "agent.hub.console.send",
-    "agent.hub.admin.agent.remove",
-    "agent.hub.admin.room.remove",
-    "agent.hub.admin.message.remove",
-    "agent.hub.settings.get",
-    "agent.hub.settings.set",
-    "agent.hub.key.rotate",
-    "agent.hub.activity",
-    "agent.hub.remote",
-    "plan.overview",
-    "completion.check",
-    "plan.recovery",
-    "deployment.recovery",
-    "glossary.list",
-    "glossary.resolve",
-    "glossary.get",
-    "glossary.save",
-    "glossary.configure",
-    "glossary.inherit",
-    "glossary.history",
-    "glossary.check",
-    "glossary.impact",
-    "task.history",
-    "task.search",
-    "task.create",
-    "task.update",
-    "release.create",
-    "release.update",
-    "release.request",
-    "release.deliver",
-    "release.deliver_evidence",
-    "release.evidence_show",
-    "release.evidence",
-    "performance.overview",
-    "performance.reviews",
-    "performance.review",
-    "review.delivery.pending",
-    "review.policy.set",
-    "review.policy.status",
-    "review.delivery.register",
-    "review.prepare",
-    "review.record",
-    "review.show",
-    "review.receipt",
-    "decision.tail",
-    "decision.search",
-    "decision.record",
-    "decision.summarize",
-    "bug.report",
-    "bug.list",
-    "bug.close",
-];
 
 #[derive(Clone)]
 pub struct ControlPlane {
@@ -282,8 +83,25 @@ pub struct ControlPlane {
 }
 
 impl ControlPlane {
+    fn ticket_service(&self) -> Result<&crate::ticket_service::TicketService, ProtocolError> {
+        self.tickets.as_ref().ok_or_else(|| {
+            ProtocolError::new(
+                ErrorCode::ConfigurationInvalid,
+                "ticket service requires DEVCOORDINATOR2_BASE_DOMAIN",
+            )
+        })
+    }
+
     pub fn storage(&self) -> &crate::storage::StorageService {
         &self.storage
+    }
+
+    pub fn database(&self) -> &Database {
+        &self.database
+    }
+
+    pub fn deployments(&self) -> &Deployments {
+        &self.deployments
     }
 
     pub fn new(config: Config, database: Database) -> Result<Self, ProtocolError> {
@@ -292,11 +110,7 @@ impl ControlPlane {
             config.routes_path(),
             config.base_domain.clone(),
         ));
-        let plane = Self::with_adapters(config, database, publisher, Arc::new(HostClock))?;
-        if let Err(error) = plane.deployments.reconcile_routes() {
-            tracing::error!(code=%error.code, "route recovery incomplete");
-        }
-        Ok(plane)
+        Self::with_adapters(config, database, publisher, Arc::new(HostClock))
     }
 
     pub fn with_adapters(
@@ -317,7 +131,7 @@ impl ControlPlane {
         )
         .with_network_capacity(capacity.clone());
         let servers = ServerService::new(database.clone());
-        let evidence = Arc::new(SqliteDeploymentEvidence::new(
+        let evidence = Arc::new(PostgresDeploymentEvidence::new(
             database.clone(),
             config.base_domain.clone(),
         ));
@@ -372,6 +186,10 @@ impl ControlPlane {
             database.clone(),
             artifacts.clone(),
             config.base_domain.clone(),
+            crate::deployment_files::DeploymentFiles::new(
+                config.deployments_dir(),
+                config.secrets_dir(),
+            ),
         )
         .with_native_console(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
@@ -415,6 +233,17 @@ impl ControlPlane {
                     .with("message", event.message);
                 let _ = alert_telegram.enqueue_event(&notification);
             }));
+        let deployment_events = events.clone();
+        let deployment_clock = Arc::clone(&clock);
+        deployments.set_event_sink(Arc::new(move |event| {
+            deployment_events
+                .publish(NewEvent {
+                    occurred_at: event_timestamp(deployment_clock.as_ref()),
+                    dedupe_key: None,
+                    event: results::OwnedEvent::Deployment(event),
+                })
+                .map(|_| ())
+        }));
         let test_telegram = telegram.clone();
         let test_sampler = health.sampler().clone();
         let test_events = events.clone();
@@ -549,6 +378,17 @@ impl ControlPlane {
         Ok(expired)
     }
 
+    pub fn expire_previews_step(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<Option<String>, ProtocolError> {
+        let (expired, next) = self.deployments.expire_previews_step(cursor)?;
+        for deployment in &expired {
+            self.notify(deployment_event("preview.expired", deployment, None));
+        }
+        Ok(next)
+    }
+
     pub fn deliver_review_reminders(&self) -> Result<(), ProtocolError> {
         self.reviews.review_reminders(
             &self.events,
@@ -562,70 +402,68 @@ impl ControlPlane {
             .refresh_capabilities(&self.config, now_ms)
     }
 
+    fn capture_usage_context(&self, params: &Value, caller: &Caller) {
+        if !caller.via_edge
+            && let Some(work) = &caller.work
+            && work.diagnostic.is_none()
+            && work
+                .context
+                .as_ref()
+                .is_some_and(|context| context.operation_id.is_some() && context.validate().is_ok())
+            && let Ok(repository) = self
+                .resolve_registered_repository(
+                    params.get("path").and_then(Value::as_str),
+                    params.get("repository_id").and_then(Value::as_str),
+                    caller,
+                )
+                .or_else(|error| {
+                    // Preserve declaration capture for a first registration. An
+                    // existing worktree's optional accounting never updates it.
+                    if error.code == ErrorCode::RepositoryNotFound {
+                        self.resolve_repository(
+                            params.get("path").and_then(Value::as_str),
+                            params.get("repository_id").and_then(Value::as_str),
+                            caller,
+                            false,
+                        )
+                    } else {
+                        Err(error)
+                    }
+                })
+        {
+            let now = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+            if crate::usage_context::ingest(
+                &self.database,
+                caller.uid,
+                &repository.repository_id,
+                work,
+                now,
+            )
+            .is_err()
+            {
+                self.usage
+                    .binding_failed(caller.uid, repository.repository_id);
+            }
+        }
+    }
+
     fn dispatch_authorized(
         &self,
         operation: &str,
         params: Value,
         caller: &Caller,
     ) -> Result<Value, ProtocolError> {
+        let id = OperationId::from_name(operation)
+            .ok_or_else(|| ProtocolError::new(ErrorCode::OperationUnknown, "unknown operation"))?;
         let now = self.timestamp()?;
         let actor = caller.actor();
-        if operation.starts_with("storage.") {
-            return match operation {
-                "storage.inventory" => encode(self.storage.inventory(decode(params)?)?),
-                "storage.artifact.get" => {
-                    let p: devcoordinator2_api::storage::Reference = decode(params)?;
-                    encode(self.storage.artifact(&p.artifact_id)?)
-                }
-                "storage.scan" => encode(self.storage.scan(decode(params)?, caller)?),
-                "storage.register" => encode(self.storage.register(decode(params)?, caller)?),
-                "storage.legacy.register" => {
-                    encode(self.storage.register_legacy(decode(params)?, caller)?)
-                }
-                "storage.protection.set" => encode(self.storage.protect(decode(params)?, caller)?),
-                "storage.policy.get" => encode(self.storage.policy(decode(params)?)?),
-                "storage.policy.set" => encode(self.storage.set_policy(decode(params)?, caller)?),
-                "storage.roots.list" => encode(self.storage.roots()?),
-                "storage.roots.set" => encode(self.storage.set_root(decode(params)?, caller)?),
-                "storage.cleanup.plan" => encode(self.storage.plan(decode(params)?, caller)?),
-                "storage.cleanup.start" => encode(self.storage.start(decode(params)?, caller)?),
-                "storage.job.status" => {
-                    let p: devcoordinator2_api::storage::JobReference = decode(params)?;
-                    encode(self.storage.job(&p.job_id)?)
-                }
-                "storage.job.cancel" => encode(self.storage.cancel(decode(params)?, caller)?),
-                "storage.history" => encode(self.storage.history(decode(params)?)?),
-                "storage.lease.set" => encode(self.storage.lease(decode(params)?, caller)?),
-                "storage.lease.release" => {
-                    encode(self.storage.release_lease(decode(params)?, caller)?)
-                }
-                _ => Err(ProtocolError::new(
-                    ErrorCode::OperationUnknown,
-                    "unknown storage operation",
-                )),
-            };
-        }
-        if operation.starts_with("ticket.") {
+        let administrator = if operation.starts_with("ticket.") {
             let principal = self.access.principal(caller)?;
-            let administrator = principal.local || principal.administrator;
-            let tickets = self.tickets.as_ref().ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::ConfigurationInvalid,
-                    "configure DEVCOORDINATOR2_BASE_DOMAIN to use feature-request tickets",
-                )
-            })?;
-            return match operation {
-                "ticket.request" => encode(tickets.request(decode(params)?, administrator)?),
-                "ticket.settings" => encode(tickets.settings(administrator)?),
-                "ticket.configure" => encode(tickets.configure(decode(params)?)?),
-                "ticket.remote" => encode(tickets.remote(decode(params)?)?),
-                _ => Err(ProtocolError::new(
-                    ErrorCode::OperationUnknown,
-                    "unknown ticket operation",
-                )),
-            };
-        }
-        if operation.starts_with("glossary.") {
+            principal.local || principal.administrator
+        } else {
+            false
+        };
+        let glossary_repository = if operation.starts_with("glossary.") {
             let path = params.get("path").and_then(Value::as_str);
             let repository_id = params.get("repository_id").and_then(Value::as_str);
             if path.is_some() && repository_id.is_some() {
@@ -639,1208 +477,22 @@ impl ControlPlane {
             } else {
                 None
             };
-            let repository = repository
-                .as_ref()
-                .map(|repository| repository.repository_id.as_str());
-            return match operation {
-                "glossary.list" | "glossary.resolve" => {
-                    encode(self.glossary.list(repository, decode(params)?)?)
-                }
-                "glossary.get" => encode(self.glossary.get(repository, decode(params)?)?),
-                "glossary.save" => {
-                    encode(
-                        self.glossary
-                            .save(repository, decode(params)?, &actor, &now)?,
-                    )
-                }
-                "glossary.configure" => {
-                    encode(
-                        self.glossary
-                            .configure(repository, decode(params)?, &actor, &now)?,
-                    )
-                }
-                "glossary.inherit" => {
-                    encode(
-                        self.glossary
-                            .inherit(repository, decode(params)?, &actor, &now)?,
-                    )
-                }
-                "glossary.history" => encode(self.glossary.history(repository, decode(params)?)?),
-                "glossary.check" => encode(self.glossary.check(repository, decode(params)?)?),
-                "glossary.impact" => encode(self.glossary.impact(decode(params)?)?),
-                _ => Err(ProtocolError::new(
-                    ErrorCode::OperationUnknown,
-                    "Unknown glossary operation",
-                )),
-            };
-        }
-        if operation.starts_with("agent.hub.") {
-            return match operation {
-                "agent.hub.register" => encode(self.agent_hub.register(decode(params)?, caller)?),
-                "agent.hub.heartbeat" => encode(self.agent_hub.heartbeat(decode(params)?, caller)?),
-                "agent.hub.unregister" => {
-                    encode(self.agent_hub.unregister(decode(params)?, caller)?)
-                }
-                "agent.hub.directory" => encode(self.agent_hub.directory(decode(params)?)?),
-                "agent.hub.room.create" => {
-                    encode(self.agent_hub.room_create(decode(params)?, caller)?)
-                }
-                "agent.hub.room.list" => encode(self.agent_hub.room_list(decode(params)?, caller)?),
-                "agent.hub.room.member.add" => {
-                    encode(self.agent_hub.room_member_add(decode(params)?, caller)?)
-                }
-                "agent.hub.room.member.remove" => {
-                    encode(self.agent_hub.room_member_remove(decode(params)?, caller)?)
-                }
-                "agent.hub.send" => encode(self.agent_hub.send(decode(params)?, caller)?),
-                "agent.hub.receive" => encode(self.agent_hub.receive(decode(params)?, caller)?),
-                "agent.hub.ack" => encode(self.agent_hub.ack(decode(params)?, caller)?),
-                "agent.hub.upload.start" => {
-                    encode(self.agent_hub.upload_start(decode(params)?, caller)?)
-                }
-                "agent.hub.upload.chunk" => {
-                    encode(self.agent_hub.upload_chunk(decode(params)?, caller)?)
-                }
-                "agent.hub.upload.file" => {
-                    encode(self.agent_hub.upload_file(decode(params)?, caller)?)
-                }
-                "agent.hub.upload.remove" => {
-                    encode(self.agent_hub.upload_remove(decode(params)?, caller)?)
-                }
-                "agent.hub.console.directory" => {
-                    encode(self.agent_hub.console_directory(decode(params)?)?)
-                }
-                "agent.hub.console.receive" => {
-                    encode(self.agent_hub.console_receive(decode(params)?)?)
-                }
-                "agent.hub.console.send" => encode(self.agent_hub.console_send(decode(params)?)?),
-                "agent.hub.admin.agent.remove" => {
-                    encode(self.agent_hub.admin_remove_agent(decode(params)?)?)
-                }
-                "agent.hub.admin.room.remove" => {
-                    encode(self.agent_hub.admin_remove_room(decode(params)?)?)
-                }
-                "agent.hub.admin.message.remove" => {
-                    encode(self.agent_hub.admin_remove_message(decode(params)?)?)
-                }
-                "agent.hub.settings.get" => {
-                    let _: EmptyParams = decode(params)?;
-                    encode(self.agent_hub.settings()?)
-                }
-                "agent.hub.settings.set" => encode(self.agent_hub.settings_set(decode(params)?)?),
-                "agent.hub.key.rotate" => encode(self.agent_hub.key_rotate(decode(params)?)?),
-                "agent.hub.activity" => encode(self.agent_hub.activity(decode(params)?)?),
-                "agent.hub.remote" => encode(self.agent_hub.remote(decode(params)?, caller)?),
-                _ => Err(ProtocolError::new(
-                    ErrorCode::OperationUnknown,
-                    "unknown agent hub operation",
-                )),
-            };
-        }
-        match operation {
-            "ping" => {
-                let _: EmptyParams = decode(params)?;
-                encode(PingData {
-                    daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
-                    protocol_version: devcoordinator2_api::PROTOCOL_VERSION,
-                    schema_version: DATABASE_SCHEMA_VERSION,
-                    executor_schema: devcoordinator2_executor_protocol::EXECUTOR_SCHEMA,
-                    source_commit: SOURCE_COMMIT.to_owned(),
-                    socket: self.config.socket_path.display().to_string(),
-                })
-            }
-            "agent.settings.get" => {
-                let p: devcoordinator2_api::params::AgentSettingsGet = decode(params)?;
-                if p.scope == devcoordinator2_api::agent_routing::Scope::Repository {
-                    self.repository_by_id(
-                        p.repository_id.as_deref().ok_or_else(|| {
-                            ProtocolError::new(
-                                ErrorCode::ParamsInvalid,
-                                "repository settings require a repository",
-                            )
-                        })?,
-                        false,
-                    )?;
-                }
-                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-                self.agent_routing
-                    .ensure_capability(&self.config, p.harness, now_ms)?;
-                encode(
-                    self.agent_routing
-                        .settings(p.scope, p.repository_id, p.harness, now_ms)?,
-                )
-            }
-            "agent.settings.save" => {
-                let p: devcoordinator2_api::params::AgentSettingsSave = decode(params)?;
-                if p.scope == devcoordinator2_api::agent_routing::Scope::Repository {
-                    self.repository_by_id(
-                        p.repository_id.as_deref().ok_or_else(|| {
-                            ProtocolError::new(
-                                ErrorCode::ParamsInvalid,
-                                "repository settings require a repository",
-                            )
-                        })?,
-                        false,
-                    )?;
-                }
-                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-                encode(self.agent_routing.save_settings(p, &actor, now_ms)?)
-            }
-            "agent.roles.save" => {
-                let p: devcoordinator2_api::params::AgentRolesSave = decode(params)?;
-                let (revision, roles) = self.agent_routing.save_roles(p, &actor)?;
-                encode(results::AgentRolesSaved { revision, roles })
-            }
-            "agent.capabilities.report" => {
-                let p: devcoordinator2_api::params::AgentCapabilitiesReport = decode(params)?;
-                if !caller.is_local() {
-                    return Err(ProtocolError::new(
-                        ErrorCode::PermissionDenied,
-                        "capability reports are accepted from local harnesses only",
-                    ));
-                }
-                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-                encode(self.agent_routing.report_capabilities(
-                    p,
-                    caller.client_kind,
-                    &actor,
-                    now_ms,
-                )?)
-            }
-            "agent.instruction.current" => {
-                let p: devcoordinator2_api::params::AgentInstructionCurrent = decode(params)?;
-                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-                self.agent_routing
-                    .ensure_capability(&self.config, caller.client_kind, now_ms)?;
-                encode(self.agent_routing.instruction(
-                    p.repository_id,
-                    caller.client_kind,
-                    caller.model.clone(),
-                    caller.effort.clone(),
-                    now_ms,
-                )?)
-            }
-            "config.get" => {
-                let _: EmptyParams = decode(params)?;
-                encode(self.deployments.configuration().get()?)
-            }
-            "config.reload" => {
-                let params: devcoordinator2_api::configuration::Revision = decode(params)?;
-                let actor = caller
-                    .identity
-                    .clone()
-                    .unwrap_or_else(|| format!("uid:{}", caller.uid));
-                encode(
-                    self.deployments
-                        .configuration()
-                        .reload(&params.expected_revision, &actor)?,
-                )
-            }
-            "config.env.set" => encode(
-                self.deployments
-                    .set_compose_authorization(decode(params)?, caller)?,
-            ),
-            "deployment.preflight" => {
-                let params: params::DeploymentReference = decode(params)?;
-                encode(self.deployments.preflight(
-                    params.path.as_deref(),
-                    params.name.as_deref(),
-                    params.deployment_id.as_deref(),
-                    caller,
-                )?)
-            }
-            "user.whoami" => {
-                let _: params::Empty = decode(params)?;
-                encode(self.access.who_am_i(caller)?)
-            }
-            "user.accept_invitation" => encode(self.access.accept_invitation(decode(params)?)?),
-            "user.list" => {
-                let _: params::Empty = decode(params)?;
-                encode(self.access.list_users()?)
-            }
-            "user.invite" => {
-                let result = self.access.invite(decode(params)?, caller)?;
-                self.notify(TelegramEvent::new("user.invited").with("email", result.email.clone()));
-                encode(result)
-            }
-            "user.remove" => {
-                let result = self.access.remove_user(decode(params)?, caller)?;
-                self.notify(TelegramEvent::new("user.removed").with("email", result.email.clone()));
-                encode(result)
-            }
-            "grant.set" => {
-                let result = self.access.set_grant(decode(params)?, caller)?;
-                self.notify(
-                    TelegramEvent::new("grant.set")
-                        .with("email", result.email.clone())
-                        .with("deployment_id", result.deployment_id.clone()),
-                );
-                encode(result)
-            }
-            "grant.remove" => {
-                let result = self.access.remove_grant(decode(params)?, caller)?;
-                self.notify(
-                    TelegramEvent::new("grant.removed")
-                        .with("email", result.email.clone())
-                        .with("deployment_id", result.deployment_id.clone()),
-                );
-                encode(result)
-            }
-            "repository.register" => {
-                let params: params::PathOnly = decode(params)?;
-                let result =
-                    self.registry
-                        .register(Path::new(&params.path), caller.uid, caller.gid)?;
-                self.health.sampler().request_storage();
-                if result.registered {
-                    self.publish_owned(
-                        results::OwnedEvent::Other(results::OtherOwnedEvent {
-                            review: None,
-                            kind: "repository.registered".to_owned(),
-                            repository_id: Some(result.repository_id.clone()),
-                            deployment_id: None,
-                            subject_kind: "repository".to_owned(),
-                            subject_id: result.repository_id.clone(),
-                        }),
-                        None,
-                    );
-                }
-                encode(result)
-            }
-            "repository.list" => {
-                let params: params::RepositoryList = decode(params)?;
-                encode(self.registry.list_repositories(params.include_archived)?)
-            }
-            "repository.status" => {
-                let params: params::PathOnly = decode(params)?;
-                let mut result = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
-                result.current_test = self.tests.current_summary_ref(&params.path, caller);
-                encode(result)
-            }
-            "repository.presentation.update" => {
-                let params: params::RepositoryPresentationUpdate = decode(params)?;
-                self.repository_by_id(&params.repository_id, false)?;
-                let result = self.registry.update_presentation(params, caller.uid)?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "repository.presentation.updated".to_owned(),
-                        repository_id: Some(result.repository_id.clone()),
-                        deployment_id: None,
-                        subject_kind: "repository".to_owned(),
-                        subject_id: result.repository_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "repository.archive" => {
-                let params: params::ArchiveRepository = decode(params)?;
-                let result = self.registry.archive(
-                    &params.repository_id,
-                    &params.merged_into_repository_id,
-                    &params.note,
-                    caller.uid,
-                )?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "repository.archived".to_owned(),
-                        repository_id: Some(result.repository_id.clone()),
-                        deployment_id: None,
-                        subject_kind: "repository".to_owned(),
-                        subject_id: result.repository_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "repository.unarchive" => {
-                let params: params::UnarchiveRepository = decode(params)?;
-                let result =
-                    self.registry
-                        .unarchive(&params.repository_id, &params.note, caller.uid)?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "repository.unarchived".to_owned(),
-                        repository_id: Some(result.repository_id.clone()),
-                        deployment_id: None,
-                        subject_kind: "repository".to_owned(),
-                        subject_id: result.repository_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "repository.retire" => {
-                let params: params::RetireRepository = decode(params)?;
-                let result = self.registry.retire(
-                    &params.repository_id,
-                    &params.note,
-                    &params.idempotency_key,
-                    caller.uid,
-                    caller.gid,
-                )?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "repository.retired".to_owned(),
-                        repository_id: Some(result.repository_id.clone()),
-                        deployment_id: None,
-                        subject_kind: "repository".to_owned(),
-                        subject_id: result.repository_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "server.register" => encode(self.servers.register(decode(params)?)?),
-            "server.list" => encode(self.servers.list(decode(params)?)?),
-            "server.stop" => encode(self.servers.stop(decode(params)?)?),
-            "deployment.list" => encode(self.deployments.list(decode(params)?, caller)?),
-            "deployment.status" => {
-                let params: params::DeploymentReference = decode(params)?;
-                encode(self.deployments.status(
-                    params.path.as_deref(),
-                    params.name.as_deref(),
-                    params.deployment_id.as_deref(),
-                    caller,
-                )?)
-            }
-            "test.admission.status" => {
-                let _: params::TestAdmissionStatus = decode(params)?;
-                encode(self.tests.admission_status()?)
-            }
-            "deployment.apply" => {
-                let params: params::DeploymentApply = decode(params)?;
-                let result = self.deployments.apply_request(&params, caller)?;
-                self.health.sampler().request_storage();
-                self.notify(deployment_event("deployment.applied", &result, None));
-                encode(result)
-            }
-            "deployment.rollback" => {
-                let params: params::DeploymentReference = decode(params)?;
-                let result = self.deployments.rollback(
-                    params.path.as_deref(),
-                    params.name.as_deref(),
-                    params.deployment_id.as_deref(),
-                    caller,
-                )?;
-                self.health.sampler().request_storage();
-                self.notify(deployment_event("deployment.rolled_back", &result, None));
-                encode(result)
-            }
-            "deployment.logs" => {
-                let params: params::DeploymentLogs = decode(params)?;
-                encode(self.deployments.logs(
-                    params.path.as_deref(),
-                    params.name.as_deref(),
-                    params.deployment_id.as_deref(),
-                    &params.component,
-                    params.tail_lines,
-                    caller,
-                )?)
-            }
-            "deployment.start" | "deployment.stop" | "deployment.restart" => {
-                let action = operation.split('.').nth(1).unwrap_or_default();
-                let params: params::DeploymentControl = decode(params)?;
-                let result = self.deployments.control(
-                    action,
-                    params.path.as_deref(),
-                    params.name.as_deref(),
-                    params.deployment_id.as_deref(),
-                    params.component.as_deref(),
-                    caller,
-                )?;
-                self.notify(deployment_event(operation, &result, params.component));
-                encode(result)
-            }
-            "deployment.remove" => {
-                let params: params::RemoveDeployment = decode(params)?;
-                let result = self.deployments.remove(
-                    params.path.as_deref(),
-                    params.name.as_deref(),
-                    params.deployment_id.as_deref(),
-                    params.delete_data,
-                    caller,
-                )?;
-                self.health.sampler().request_storage();
-                self.notify(
-                    TelegramEvent::new("deployment.removed")
-                        .with("deployment_id", result.deployment_id.clone())
-                        .with("data_deleted", result.data_deleted),
-                );
-                encode(result)
-            }
-            "deployment.set_domain" => {
-                let params: params::SetDomain = decode(params)?;
-                let deployment_id = params.deployment_id.clone();
-                let result = self.deployments.set_domain(params)?;
-                self.notify(
-                    TelegramEvent::new("deployment.domain_changed")
-                        .with("deployment_id", deployment_id)
-                        .with("domain", result.domain.clone()),
-                );
-                encode(result)
-            }
-            "test.start" => {
-                let result = self.tests.start(decode(params)?, caller)?;
-                encode(result)
-            }
-            "test.container.create" => {
-                encode(self.test_containers.create(decode(params)?, caller)?)
-            }
-            "test.container.start" => encode(self.test_containers.start(decode(params)?, caller)?),
-            "test.container.inspect" => {
-                encode(self.test_containers.inspect(decode(params)?, caller)?)
-            }
-            "test.container.remove" => {
-                encode(self.test_containers.remove(decode(params)?, caller)?)
-            }
-            "test.container.retry" => encode(self.test_containers.retry(decode(params)?, caller)?),
-            "test.retry" => {
-                let result = self.tests.retry(decode(params)?, caller)?;
-                encode(result)
-            }
-            "test.status" => {
-                let params: params::PathOnly = decode(params)?;
-                encode(self.tests.status(&params.path, caller)?)
-            }
-            "test.stop" => {
-                let params: params::StopTest = decode(params)?;
-                encode(self.tests.stop(&params.path, params.reason, caller)?)
-            }
-            "test.history" => encode(self.tests.history(decode(params)?, caller)?),
-            "test.list" => {
-                let params: params::TestList = decode(params)?;
-                let mut result = self.tests.list_current_page(params)?;
-                self.test_evidence.enrich_list(&mut result);
-                encode(result)
-            }
-            "test.evidence.get" => encode(self.test_evidence.get(decode(params)?, caller)?),
-            "test.evidence.lookup" => encode(self.test_evidence.lookup(decode(params)?, caller)?),
-            "test.evidence.image" => encode(self.test_evidence.image(decode(params)?, caller)?),
-            "test.evidence.feedback.create" => {
-                let params: params::CreateFeedback = decode(params)?;
-                let repository_id = self
-                    .test_evidence
-                    .repository_id_for(Path::new(&params.path), caller)?;
-                let result = self.test_evidence.create_feedback(params, caller)?;
-                self.publish_feedback(
-                    "feedback.created",
-                    &repository_id,
-                    &result.feedback,
-                    result
-                        .feedback
-                        .comments
-                        .last()
-                        .map(|comment| comment.comment_id.clone()),
-                );
-                self.publish_planning(
-                    "task.created",
-                    &repository_id,
-                    "task",
-                    &result.task_id,
-                    enum_text(&result.feedback.task_status),
-                );
-                encode(result)
-            }
-            "test.evidence.feedback.reply" => {
-                let params: params::FeedbackReply = decode(params)?;
-                let repository_id = self
-                    .test_evidence
-                    .repository_id_for(Path::new(&params.path), caller)?;
-                let result = self.test_evidence.reply(params, caller)?;
-                self.publish_feedback(
-                    "feedback.replied",
-                    &repository_id,
-                    &result.feedback,
-                    result
-                        .feedback
-                        .comments
-                        .last()
-                        .map(|comment| comment.comment_id.clone()),
-                );
-                encode(result)
-            }
-            "test.evidence.feedback.edit" => {
-                let params: params::FeedbackEdit = decode(params)?;
-                let comment_id = params.comment_id.clone();
-                let repository_id = self
-                    .test_evidence
-                    .repository_id_for(Path::new(&params.path), caller)?;
-                let result = self.test_evidence.edit(params, caller)?;
-                self.publish_feedback(
-                    "feedback.edited",
-                    &repository_id,
-                    &result.feedback,
-                    Some(comment_id),
-                );
-                self.publish_planning(
-                    "task.updated",
-                    &repository_id,
-                    "task",
-                    &result.feedback.task_id,
-                    enum_text(&result.feedback.task_status),
-                );
-                encode(result)
-            }
-            "test.evidence.feedback.state" => {
-                let params: params::FeedbackStateChange = decode(params)?;
-                let repository_id = self
-                    .test_evidence
-                    .repository_id_for(Path::new(&params.path), caller)?;
-                let result = self.test_evidence.set_state(params, caller)?;
-                self.publish_feedback(
-                    "feedback.state_changed",
-                    &repository_id,
-                    &result.feedback,
-                    None,
-                );
-                self.publish_planning(
-                    "task.updated",
-                    &repository_id,
-                    "task",
-                    &result.feedback.task_id,
-                    enum_text(&result.feedback.task_status),
-                );
-                encode(result)
-            }
-            "test.evidence.feedback.delete" => {
-                let params: params::FeedbackDelete = decode(params)?;
-                let repository_id = self
-                    .test_evidence
-                    .repository_id_for(Path::new(&params.path), caller)?;
-                let result = self.test_evidence.delete(params, caller)?;
-                self.publish_feedback("feedback.deleted", &repository_id, &result.feedback, None);
-                self.publish_planning(
-                    "task.updated",
-                    &repository_id,
-                    "task",
-                    &result.feedback.task_id,
-                    enum_text(&result.feedback.task_status),
-                );
-                encode(result)
-            }
-            "design.sketch.publish" => {
-                let params: params::SketchPublish = decode(params)?;
-                let repository_id = params.repository_id.clone();
-                let result = self.sketches.publish(params, caller)?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "sketch.published".to_owned(),
-                        repository_id: Some(repository_id),
-                        deployment_id: None,
-                        subject_kind: "sketch_batch".to_owned(),
-                        subject_id: result.batch_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "design.sketch.list" => encode(self.sketches.list(decode(params)?)?),
-            "design.sketch.search" => encode(self.sketches.search(decode(params)?)?),
-            "design.sketch.story" => encode(self.sketches.story(decode(params)?)?),
-            "design.sketch.resolve" => encode(self.sketches.resolve(decode(params)?)?),
-            "design.sketch.get" => encode(self.sketches.get(decode(params)?, &caller.actor())?),
-            "design.sketch.image" => encode(self.sketches.image(decode(params)?)?),
-            "design.sketch.record" => encode(self.sketches.record(decode(params)?)?),
-            "design.sketch.decision" => {
-                let params: params::SketchDecisionChange = decode(params)?;
-                let repository_id = params.repository_id.clone();
-                let result = self.sketches.decision(params, caller)?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "sketch.decision.changed".to_owned(),
-                        repository_id: Some(repository_id),
-                        deployment_id: None,
-                        subject_kind: "sketch".to_owned(),
-                        subject_id: result.sketch.sketch_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "design.sketch.activate" => {
-                let params: params::SketchActivate = decode(params)?;
-                let repository_id = params.repository_id.clone();
-                let result = self.sketches.activate(params, caller)?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "sketch.activation.changed".to_owned(),
-                        repository_id: Some(repository_id),
-                        deployment_id: None,
-                        subject_kind: "sketch_surface".to_owned(),
-                        subject_id: result.surface_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "design.sketch.description" => {
-                let params: params::SketchDescriptionChange = decode(params)?;
-                let repository_id = params.repository_id.clone();
-                let result = self.sketches.description(params, caller)?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "sketch.description.changed".to_owned(),
-                        repository_id: Some(repository_id),
-                        deployment_id: None,
-                        subject_kind: "sketch".to_owned(),
-                        subject_id: result.sketch.sketch_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "design.sketch.annotation.create" => {
-                let params: params::SketchAnnotationCreate = decode(params)?;
-                let repository_id = params.repository_id.clone();
-                let result = self.sketches.annotation_create(params, caller)?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "sketch.annotation.created".to_owned(),
-                        repository_id: Some(repository_id),
-                        deployment_id: None,
-                        subject_kind: "sketch_annotation".to_owned(),
-                        subject_id: result.annotation.annotation_id.clone(),
-                    }),
-                    None,
-                );
-                encode(result)
-            }
-            "agent.message.poll" => encode(self.sketches.message_poll(decode(params)?)?),
-            "agent.message.claim" => encode(self.sketches.message_claim(decode(params)?, caller)?),
-            "agent.message.ack" => encode(self.sketches.message_ack(decode(params)?, caller)?),
-            "test.log.catalog" => {
-                let params: params::LogCatalog = decode(params)?;
-                self.logs.query(
-                    LogQueryOperation::Catalog,
-                    Path::new(&params.path),
-                    encode(&params)?,
-                    caller,
-                )
-            }
-            "test.log.tail" => {
-                let params: params::LogTail = decode(params)?;
-                self.logs.query(
-                    LogQueryOperation::Tail,
-                    Path::new(&params.path),
-                    encode(&params)?,
-                    caller,
-                )
-            }
-            "test.log.search" => {
-                let params: params::LogSearch = decode(params)?;
-                self.logs.query(
-                    LogQueryOperation::Search,
-                    Path::new(&params.path),
-                    encode(&params)?,
-                    caller,
-                )
-            }
-            "test.log.range" => {
-                let params: params::LogRange = decode(params)?;
-                self.logs.query(
-                    LogQueryOperation::Range,
-                    Path::new(&params.path),
-                    encode(&params)?,
-                    caller,
-                )
-            }
-            "test.log.failure_context" => {
-                let params: params::LogFailureContext = decode(params)?;
-                self.logs.query(
-                    LogQueryOperation::FailureContext,
-                    Path::new(&params.path),
-                    encode(&params)?,
-                    caller,
-                )
-            }
-            "test.log.retention.get" => {
-                let _: params::Empty = decode(params)?;
-                encode(self.logs.retention()?)
-            }
-            "test.log.retention.set" => {
-                let params: params::SetRetention = decode(params)?;
-                encode(self.logs.set_retention(
-                    params.max_age_seconds,
-                    params.case_depth,
-                    &actor,
-                    &now,
-                )?)
-            }
-            "test.artifact.catalog" => encode(self.artifacts.catalog(decode(params)?, caller)?),
-            "test.artifact.file" => encode(self.artifacts.file(decode(params)?, caller)?),
-            "test.capacity.get" => {
-                let _: params::Empty = decode(params)?;
-                encode(self.capacity.snapshot()?)
-            }
-            "test.capacity.set" => {
-                let params: params::SetCapacity = decode(params)?;
-                let cap = match params.cap {
-                    params::CapacityCap::Value(cap) => Some(u32::from(cap)),
-                    params::CapacityCap::Null => None,
-                };
-                encode(self.capacity.set_cap(cap, &actor)?)
-            }
-            "health.summary" => {
-                let _: params::Empty = decode(params)?;
-                encode(self.health.summary()?)
-            }
-            "health.incidents" => encode(self.incidents.list(decode(params)?)?),
-            "health.incident.update" => {
-                let incident = self.incidents.update(decode(params)?, &caller.actor())?;
-                self.publish_owned(
-                    results::OwnedEvent::Other(results::OtherOwnedEvent {
-                        review: None,
-                        kind: "health.incident.changed".into(),
-                        repository_id: incident.repository_id.clone(),
-                        deployment_id: incident.deployment_id.clone(),
-                        subject_kind: "health_incident".into(),
-                        subject_id: incident.incident_id.clone(),
-                    }),
-                    None,
-                );
-                encode(incident)
-            }
-            "health.repositories" => {
-                let _: params::Empty = decode(params)?;
-                encode(self.health.repositories()?)
-            }
-            "health.repository" => {
-                let params: params::PathOnly = decode(params)?;
-                encode(self.health.repository(&params.path, caller)?)
-            }
-            "health.history" => encode(self.health.history(decode(params)?)?),
-            "health.containers" => {
-                let _: params::Empty = decode(params)?;
-                encode(self.health.containers()?)
-            }
-            "health.container_remove" => {
-                let params: params::RemoveContainer = decode(params)?;
-                encode(self.health.remove_container(&params.container_id)?)
-            }
-            "usage.repositories" => encode(self.usage.repositories(decode(params)?)?),
-            "usage.repository" => encode(self.usage.repository(decode(params)?)?),
-            "usage.rate_card.list" => encode(self.rate_cards.list(decode(params)?)?),
-            "usage.rate_card.set" => encode(self.rate_cards.set(decode(params)?, &actor, &now)?),
-            "progress.repositories" => {
-                let _: params::Empty = decode(params)?;
-                encode(self.progress.repositories()?)
-            }
-            "progress.repository" => encode(self.progress.repository(decode(params)?)?),
-            "telegram.link" => {
-                let params: params::TelegramLink = decode(params)?;
-                let principal = self.access.principal(caller)?;
-                let email = params.email.or(principal.identity.clone()).ok_or_else(|| {
-                    ProtocolError::new(ErrorCode::ParamsInvalid, "email is required")
-                })?;
-                let email = email.to_lowercase();
-                if !principal.local
-                    && !principal.administrator
-                    && principal.identity.as_deref() != Some(&email)
-                {
-                    return Err(ProtocolError::new(
-                        ErrorCode::PermissionDenied,
-                        "may only link chats to yourself",
-                    ));
-                }
-                encode(self.telegram.link(&params.code, &email)?)
-            }
-            "telegram.subscribe" => {
-                let params: params::TelegramSubscription = decode(params)?;
-                self.authorize_telegram_chat(caller, params.chat_id)?;
-                self.authorize_telegram_scope(caller, &params.scope)?;
-                encode(self.telegram.subscribe(params)?)
-            }
-            "telegram.unsubscribe" => {
-                let params: params::TelegramSubscription = decode(params)?;
-                self.authorize_telegram_chat(caller, params.chat_id)?;
-                encode(self.telegram.unsubscribe(params)?)
-            }
-            "telegram.list" => {
-                let _: params::Empty = decode(params)?;
-                let principal = self.access.principal(caller)?;
-                let email = (!principal.local && !principal.administrator)
-                    .then_some(principal.identity)
-                    .flatten();
-                encode(self.telegram.list(email.as_deref())?)
-            }
-            "deployment.recovery" => {
-                let request: devcoordinator2_api::runtime_recovery::Request = decode(params)?;
-                self.resolve_repository(None, Some(&request.repository_id), caller, false)?;
-                encode(
-                    self.deployments
-                        .recover_saved_preview(request, caller, &actor, &now)?,
-                )
-            }
-            "plan.recovery" => {
-                let request: devcoordinator2_api::recovery::Request = decode(params)?;
-                self.resolve_repository(None, Some(&request.repository_id), caller, false)?;
-                let result =
-                    crate::planning_recovery::recover(&self.database, request, &actor, &now)?;
-                if result.status == "applied" {
-                    self.publish_planning(
-                        "plan.recovered",
-                        &result.repository_id,
-                        "repository",
-                        &result.repository_id,
-                        Some("recovered".to_owned()),
-                    );
-                }
-                encode(result)
-            }
-            "plan.overview" => {
-                let params: params::PlanReference = decode(params)?;
-                if params.path.is_none() && params.repository_id.is_none() {
-                    return encode(self.plan.overview_page(
-                        None,
-                        params.offset,
-                        params.expected_revision.as_deref(),
-                    )?);
-                }
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    true,
-                )?;
-                encode(self.plan.overview_page(
-                    Some(&repository.repository_id),
-                    params.offset,
-                    params.expected_revision.as_deref(),
-                )?)
-            }
-            "completion.check" => {
-                let params: params::CompletionCheck = decode(params)?;
-                let repository = self.resolve_repository(Some(&params.path), None, caller, true)?;
-                let result = crate::completion::CompletionService::new(self.database.clone())
-                    .check_path(
-                        &repository.repository_id,
-                        Path::new(&params.path),
-                        params.manifest,
-                    )?;
-                encode(result)
-            }
-            "task.search" => {
-                let params: params::TaskSearch = decode(params)?;
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    true,
-                )?;
-                encode(self.plan.search_tasks(&repository.repository_id, params)?)
-            }
-            "task.history" => {
-                let params: params::TaskHistory = decode(params)?;
-                encode(self.plan.task_history(&params.task_id)?)
-            }
-            "task.create" => {
-                let params: params::TaskCreate = decode(params)?;
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    false,
-                )?;
-                let result =
-                    self.plan
-                        .create_task(&repository.repository_id, params, &actor, &now)?;
-                self.publish_planning(
-                    "task.created",
-                    &result.repository_id,
-                    "task",
-                    &result.task_id,
-                    enum_text(&result.status),
-                );
-                encode(result)
-            }
-            "task.update" => {
-                let result = self.plan.update_task(decode(params)?, &actor, &now)?;
-                self.publish_planning(
-                    "task.updated",
-                    &result.repository_id,
-                    "task",
-                    &result.task_id,
-                    enum_text(&result.status),
-                );
-                encode(result)
-            }
-            "release.create" => {
-                let params: params::ReleaseCreate = decode(params)?;
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    false,
-                )?;
-                let result =
-                    self.plan
-                        .create_release(&repository.repository_id, params, &actor, &now)?;
-                self.publish_planning(
-                    "release.created",
-                    &repository.repository_id,
-                    "release",
-                    &result.release_id,
-                    enum_text(&result.status),
-                );
-                encode(result)
-            }
-            "release.update" => {
-                let result = self.plan.update_release(decode(params)?, &actor, &now)?;
-                if let Some(repository_id) = &result.repository_id {
-                    self.publish_planning(
-                        "release.updated",
-                        repository_id,
-                        "release",
-                        &result.release_id,
-                        enum_text(&result.status),
-                    );
-                }
-                encode(result)
-            }
-            "release.request" => {
-                let params: params::ReleaseRequest = decode(params)?;
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    false,
-                )?;
-                let result =
-                    self.plan
-                        .request_release(&repository.repository_id, params, &actor, &now)?;
-                self.publish_planning(
-                    "release.requested",
-                    &repository.repository_id,
-                    "release",
-                    &result.release_id,
-                    enum_text(&result.status),
-                );
-                self.notify(
-                    TelegramEvent::new("release.requested")
-                        .with("repository_id", result.repository_id.clone())
-                        .with("repository_name", repository.display_name)
-                        .with("name", result.name.clone())
-                        .with("release_id", result.release_id.clone()),
-                );
-                encode(result)
-            }
-            "release.deliver" => {
-                let params: params::ReleaseDeliver = decode(params)?;
-                let release_id = params.release_id.clone();
-                let (repository_id, name) = self.release_event_identity(&release_id)?;
-                let result = self.plan.deliver_release(params, &actor, &now)?;
-                self.publish_planning(
-                    "release.delivered",
-                    &repository_id,
-                    "release",
-                    &release_id,
-                    enum_text(&result.status),
-                );
-                let mut event = TelegramEvent::new("release.delivered")
-                    .with("repository_id", repository_id)
-                    .with("release_id", release_id)
-                    .with("name", name)
-                    .with("port", result.port)
-                    .with("dirty", result.dirty);
-                if let Some(url) = &result.url {
-                    event = event.with("url", url.clone());
-                }
-                self.notify(event);
-                encode(result)
-            }
-            "decision.tail" => {
-                let params: params::DecisionTail = decode(params)?;
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    true,
-                )?;
-                encode(self.plan.decision_tail(&repository.repository_id, params)?)
-            }
-            "performance.overview" => encode(
-                self.reviews.performance_overview(
-                    decode(params)?,
-                    self.clock
-                        .now_utc()
-                        .unix_timestamp_nanos()
-                        .div_euclid(1_000_000) as u64,
-                )?,
-            ),
-            "performance.reviews" => encode(self.reviews.performance_reviews(decode(params)?)?),
-            "performance.review" => encode(
-                self.reviews.performance_review(
-                    decode(params)?,
-                    self.clock
-                        .now_utc()
-                        .unix_timestamp_nanos()
-                        .div_euclid(1_000_000) as u64,
-                )?,
-            ),
-            "review.delivery.pending" => {
-                self.deliver_review_reminders()?;
-                encode(self.reviews.delivery_pending(
-                    decode(params)?,
-                    (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
-                )?)
-            }
-            "review.policy.set" => encode(self.reviews.policy_set(
-                decode(params)?,
-                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
-            )?),
-            "review.policy.status" => encode(self.reviews.policy_status(
-                decode(params)?,
-                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
-            )?),
-            "review.delivery.register" => encode(self.reviews.delivery_register(
-                decode(params)?,
-                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
-                crate::review::RegistrationMode::Replace,
-            )?),
-            "review.prepare" => encode(
-                self.reviews.prepare(
-                    decode(params)?,
-                    self.clock
-                        .now_utc()
-                        .unix_timestamp_nanos()
-                        .div_euclid(1_000_000) as u64,
-                )?,
-            ),
-            "review.record" => encode(
-                self.reviews.record(
-                    decode(params)?,
-                    &actor,
-                    self.clock
-                        .now_utc()
-                        .unix_timestamp_nanos()
-                        .div_euclid(1_000_000) as u64,
-                )?,
-            ),
-            "review.show" => encode(self.reviews.show(decode(params)?)?),
-            "review.receipt" => encode(self.reviews.receipt(decode(params)?)?),
-            "release.evidence" => encode(self.deliveries.receipt(decode(params)?)?),
-            "release.deliver_evidence" => encode(
-                self.deliveries.deliver(
-                    decode(params)?,
-                    caller,
-                    &actor,
-                    self.clock
-                        .now_utc()
-                        .unix_timestamp_nanos()
-                        .div_euclid(1_000_000) as u64,
-                )?,
-            ),
-            "release.evidence_show" => encode(self.deliveries.show(decode(params)?)?),
-            "decision.search" => {
-                let params: params::DecisionSearch = decode(params)?;
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    true,
-                )?;
-                encode(
-                    self.plan
-                        .search_decisions(&repository.repository_id, params)?,
-                )
-            }
-            "decision.record" => {
-                let params: params::DecisionRecord = decode(params)?;
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    false,
-                )?;
-                let result =
-                    self.plan
-                        .record_decision(&repository.repository_id, params, &actor, &now)?;
-                self.publish_planning(
-                    "decision.recorded",
-                    &repository.repository_id,
-                    "decision",
-                    &result.decision_id,
-                    None,
-                );
-                encode(result)
-            }
-            "decision.summarize" => {
-                let params: params::DecisionSummarize = decode(params)?;
-                let repository = self.resolve_repository(
-                    params.path.as_deref(),
-                    params.repository_id.as_deref(),
-                    caller,
-                    false,
-                )?;
-                let result = self.plan.summarize_decisions(
-                    &repository.repository_id,
-                    params,
-                    &actor,
-                    &now,
-                )?;
-                self.publish_planning(
-                    "decision.summarized",
-                    &repository.repository_id,
-                    "decision_summary",
-                    &result.covers_through_seq.to_string(),
-                    None,
-                );
-                encode(result)
-            }
-            "bug.report" => {
-                let params: params::BugReport = decode(params)?;
-                let result =
-                    bugs::report(&self.config.bugs_dir, &params, &actor).map_err(bug_error)?;
-                if !result.duplicate {
-                    let mut event = TelegramEvent::new("bug.opened")
-                        .with("component", result.component.clone())
-                        .with("summary", result.summary.clone());
-                    if let Some(repository_id) = &result.correlations.repository_id {
-                        event = event.with("repository_id", repository_id.clone());
-                    }
-                    if let Some(deployment_id) = &result.correlations.deployment_id {
-                        event = event.with("deployment_id", deployment_id.clone());
-                    }
-                    self.notify(event);
-                }
-                encode(result)
-            }
-            "bug.list" => {
-                let _: params::Empty = decode(params)?;
-                encode(results::BugList {
-                    bugs: bugs::list_open(&self.config.bugs_dir).map_err(bug_error)?,
-                    // The backing host path is deliberately private.
-                    store: None,
-                })
-            }
-            "bug.close" => {
-                let params: params::BugClose = decode(params)?;
-                let result =
-                    bugs::close(&self.config.bugs_dir, &params.bug_id).map_err(bug_error)?;
-                self.notify(
-                    TelegramEvent::new("bug.closed")
-                        .with("component", result.component.clone())
-                        .with("summary", result.summary.clone()),
-                );
-                encode(result)
-            }
-            _ => Err(ProtocolError::new(
-                ErrorCode::InternalError,
-                "operation handler is not installed in this migration checkpoint",
-            )),
-        }
+            repository.map(|value| value.repository_id)
+        } else {
+            None
+        };
+        devcoordinator2_api::dispatch_operation(
+            self,
+            id,
+            params,
+            &HandlerContext {
+                caller,
+                now,
+                actor,
+                administrator,
+                repository: glossary_repository,
+            },
+        )
     }
 
     fn resolve_repository(
@@ -1888,6 +540,51 @@ impl ControlPlane {
         })
     }
 
+    fn resolve_registered_repository(
+        &self,
+        path: Option<&str>,
+        repository_id: Option<&str>,
+        caller: &Caller,
+    ) -> Result<RepositoryIdentity, ProtocolError> {
+        if let Some(repository_id) = repository_id {
+            return self.repository_by_id(repository_id, false);
+        }
+        let path = path
+            .filter(|path| Path::new(path).is_absolute())
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "an absolute project path or identity is required",
+                )
+            })?;
+        let path = std::fs::canonicalize(path).map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::RepositoryNotFound,
+                "no registered worktree matches this request",
+            )
+        })?;
+        let registered = if let Some(registered) = self.registry.registered_worktree(&path)? {
+            registered
+        } else {
+            // Subdirectories and file paths retain Git's canonical repository
+            // semantics; the normal exact-root read requires no subprocess.
+            let source =
+                crate::repository::resolve_worktree(&path, Some((caller.uid, caller.gid)))?;
+            self.registry
+                .registered_worktree(&source.worktree_root)?
+                .ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::RepositoryNotFound,
+                        "no registered worktree matches this request",
+                    )
+                })?
+        };
+        Ok(RepositoryIdentity {
+            repository_id: registered.repository_id,
+            display_name: registered.display_name,
+        })
+    }
+
     fn repository_by_id(
         &self,
         repository_id: &str,
@@ -1897,10 +594,10 @@ impl ControlPlane {
         let lookup = repository_id.clone();
         let state = self
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT archived_at,merged_into_repository_id,display_name FROM repositories WHERE repository_id=?1",
+                        "SELECT archived_at,merged_into_repository_id,display_name FROM repositories WHERE repository_id=$1",
                         [&lookup],
                         |row| {
                             Ok((
@@ -1968,10 +665,10 @@ impl ControlPlane {
         let release_id = release_id.to_owned();
         let lookup = release_id.clone();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 connection
                     .query_row(
-                        "SELECT repository_id,name FROM releases WHERE release_id=?1",
+                        "SELECT repository_id,name FROM releases WHERE release_id=$1",
                         [&lookup],
                         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                     )
@@ -2009,11 +706,11 @@ impl ControlPlane {
             }
             TelegramScope::Repository(repository_id) => {
                 let deployments = principal.grants.keys().cloned().collect::<Vec<_>>();
-                let visible = self.database.call(move |connection| {
+                let visible = self.database.read(move |connection| {
                     for deployment in deployments {
                         let found = connection.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM deployments WHERE deployment_id=?1 AND repository_id=?2) OR EXISTS(SELECT 1 FROM observed_deployments WHERE observed_deployment_id=?1 AND repository_id=?2)",
-                            rusqlite::params![deployment, repository_id],
+                            "SELECT EXISTS(SELECT 1 FROM deployments WHERE deployment_id=$1 AND repository_id=$2) OR EXISTS(SELECT 1 FROM observed_deployments WHERE observed_deployment_id=$1 AND repository_id=$2)",
+                            crate::database::params![deployment, repository_id],
                             |row| row.get::<_, i64>(0),
                         )? != 0;
                         if found {
@@ -2092,7 +789,1270 @@ impl ControlPlane {
     }
 }
 
+struct HandlerContext<'a> {
+    caller: &'a Caller,
+    now: String,
+    actor: String,
+    administrator: bool,
+    repository: Option<String>,
+}
+macro_rules! handlers {
+    ($this:ident,$params:ident,$caller:ident,$now:ident,$actor:ident,$administrator:ident,$repository:ident,$operation:ident;
+     $($id:ident => $body:expr;)*) => {
+        impl<'a> devcoordinator2_api::OperationHandler<HandlerContext<'a>> for ControlPlane {
+            $(#[allow(non_snake_case,unused_variables)]
+            fn $id(&$this,$params:<devcoordinator2_api::operation_types::$id as devcoordinator2_api::OperationContract>::Input,
+                context:&HandlerContext<'a>)->Result<<devcoordinator2_api::operation_types::$id as devcoordinator2_api::OperationContract>::Output,ProtocolError> {
+                let $caller=context.caller;let $now=context.now.clone();let $actor=context.actor.clone();
+                let $administrator=context.administrator;let $repository=context.repository.as_deref();
+                let $operation=<devcoordinator2_api::operation_types::$id as devcoordinator2_api::OperationContract>::NAME;
+                $body
+            })*
+        }
+    };
+}
+handlers! { self,params,caller,now,actor,administrator,repository,operation;
+    StorageInventory => self.storage.inventory(params);
+    StorageArtifactGet => {
+                let p: devcoordinator2_api::storage::Reference = params;
+                self.storage.artifact(&p.artifact_id)
+            };
+    StorageScan => self.storage.scan(params, caller);
+    StorageRegister => self.storage.register(params, caller);
+    StorageLegacyRegister => {
+                self.storage.register_legacy(params, caller)
+            };
+    StorageProtectionSet => {
+                self.storage.protect(params, caller)
+            };
+    StoragePolicyGet => self.storage.policy(params);
+    StoragePolicySet => {
+                self.storage.set_policy(params, caller)
+            };
+    StorageRootsList => self.storage.roots();
+    StorageRootsSet => self.storage.set_root(params, caller);
+    StorageCleanupPlan => self.storage.plan(params, caller);
+    StorageCleanupStart => {
+                self.storage.start(params, caller)
+            };
+    StorageJobStatus => {
+                let p: devcoordinator2_api::storage::JobReference = params;
+                self.storage.job(&p.job_id)
+            };
+    StorageJobCancel => self.storage.cancel(params, caller);
+    StorageHistory => self.storage.history(params);
+    StorageLeaseSet => self.storage.lease(params, caller);
+    StorageLeaseRelease => {
+                self.storage.release_lease(params, caller)
+            };
+    TicketRequest => {
+                self.ticket_service()?.request(params, administrator)
+            };
+    TicketSettings => self.ticket_service()?.settings(administrator);
+    TicketConfigure => self.ticket_service()?.configure(params);
+    TicketRemote => self.ticket_service()?.remote(params);
+    GlossaryList => {
+                self.glossary.list(repository, params)
+            };
+    GlossaryResolve => {
+                self.glossary.list(repository, params)
+            };
+    GlossaryGet => self.glossary.get(repository, params);
+    GlossarySave => {
+                self.glossary
+                        .save(repository, params, &actor, &now)
+            };
+    GlossaryConfigure => {
+                self.glossary
+                        .configure(repository, params, &actor, &now)
+            };
+    GlossaryInherit => {
+                self.glossary
+                        .inherit(repository, params, &actor, &now)
+            };
+    GlossaryHistory => {
+                self.glossary.history(repository, params)
+            };
+    GlossaryCheck => self.glossary.check(repository, params);
+    GlossaryImpact => self.glossary.impact(params);
+    AgentHubRegister => {
+                self.agent_hub.register(params, caller)
+            };
+    AgentHubHeartbeat => {
+                self.agent_hub.heartbeat(params, caller)
+            };
+    AgentHubUnregister => {
+                self.agent_hub.unregister(params, caller)
+            };
+    AgentHubDirectory => self.agent_hub.directory(params);
+    AgentHubRoomCreate => {
+                self.agent_hub.room_create(params, caller)
+            };
+    AgentHubRoomList => {
+                self.agent_hub.room_list(params, caller)
+            };
+    AgentHubRoomMemberAdd => {
+                self.agent_hub.room_member_add(params, caller)
+            };
+    AgentHubRoomMemberRemove => {
+                self.agent_hub.room_member_remove(params, caller)
+            };
+    AgentHubSend => self.agent_hub.send(params, caller);
+    AgentHubReceive => {
+                self.agent_hub.receive(params, caller)
+            };
+    AgentHubAck => self.agent_hub.ack(params, caller);
+    AgentHubUploadStart => {
+                self.agent_hub.upload_start(params, caller)
+            };
+    AgentHubUploadChunk => {
+                self.agent_hub.upload_chunk(params, caller)
+            };
+    AgentHubUploadFile => {
+                self.agent_hub.upload_file(params, caller)
+            };
+    AgentHubUploadRemove => {
+                self.agent_hub.upload_remove(params, caller)
+            };
+    AgentHubConsoleDirectory => {
+                self.agent_hub.console_directory(params)
+            };
+    AgentHubConsoleReceive => {
+                self.agent_hub.console_receive(params)
+            };
+    AgentHubConsoleSend => {
+                self.agent_hub.console_send(params)
+            };
+    AgentHubAdminAgentRemove => {
+                self.agent_hub.admin_remove_agent(params)
+            };
+    AgentHubAdminRoomRemove => {
+                self.agent_hub.admin_remove_room(params)
+            };
+    AgentHubAdminMessageRemove => {
+                self.agent_hub.admin_remove_message(params)
+            };
+    AgentHubSettingsGet => {
+
+                self.agent_hub.settings()
+            };
+    AgentHubSettingsSet => {
+                self.agent_hub.settings_set(params)
+            };
+    AgentHubKeyRotate => self.agent_hub.key_rotate(params);
+    AgentHubActivity => self.agent_hub.activity(params);
+    AgentHubRemote => self.agent_hub.remote(params, caller);
+    Ping => {
+
+                Ok(PingData {
+                    daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+                    protocol_version: devcoordinator2_api::PROTOCOL_VERSION,
+                    schema_version: DATABASE_SCHEMA_VERSION,
+                    executor_schema: devcoordinator2_executor_protocol::EXECUTOR_SCHEMA,
+                    source_commit: SOURCE_COMMIT.to_owned(),
+                    socket: self.config.socket_path.display().to_string(),
+                })
+            };
+    AgentSettingsGet => {
+                let p: devcoordinator2_api::params::AgentSettingsGet = params;
+                if p.scope == devcoordinator2_api::agent_routing::Scope::Repository {
+                    self.repository_by_id(
+                        p.repository_id.as_deref().ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::ParamsInvalid,
+                                "repository settings require a repository",
+                            )
+                        })?,
+                        false,
+                    )?;
+                }
+                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                self.agent_routing
+                        .settings(p.scope, p.repository_id, p.harness, now_ms)
+            };
+    AgentSettingsSave => {
+                let p: devcoordinator2_api::params::AgentSettingsSave = params;
+                if p.scope == devcoordinator2_api::agent_routing::Scope::Repository {
+                    self.repository_by_id(
+                        p.repository_id.as_deref().ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::ParamsInvalid,
+                                "repository settings require a repository",
+                            )
+                        })?,
+                        false,
+                    )?;
+                }
+                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                self.agent_routing.save_settings(p, &actor, now_ms)
+            };
+    AgentRolesSave => {
+                let p: devcoordinator2_api::params::AgentRolesSave = params;
+                let (revision, roles) = self.agent_routing.save_roles(p, &actor)?;
+                Ok(results::AgentRolesSaved { revision, roles })
+            };
+    AgentCapabilitiesReport => {
+                let p: devcoordinator2_api::params::AgentCapabilitiesReport = params;
+                if !caller.is_local() {
+                    return Err(ProtocolError::new(
+                        ErrorCode::PermissionDenied,
+                        "capability reports are accepted from local harnesses only",
+                    ));
+                }
+                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                self.agent_routing.report_capabilities(
+                    p,
+                    caller.client_kind,
+                    &actor,
+                    now_ms,
+                )
+            };
+    AgentInstructionCurrent => {
+                let p: devcoordinator2_api::params::AgentInstructionCurrent = params;
+                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                self.agent_routing.instruction(
+                    p.repository_id,
+                    caller.client_kind,
+                    caller.model.clone(),
+                    caller.effort.clone(),
+                    now_ms,
+                )
+            };
+    ConfigGet => {
+
+                self.deployments.configuration().get()
+            };
+    ConfigReload => {
+                let actor = caller
+                    .identity
+                    .clone()
+                    .unwrap_or_else(|| format!("uid:{}", caller.uid));
+                self.deployments
+                        .configuration()
+                        .reload(&params.expected_revision, &actor)
+            };
+    ConfigEnvSet => self.deployments
+                    .set_compose_authorization(params, caller);
+    DeploymentPreflight => {
+                self.deployments.preflight(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    params.candidate.as_ref(),
+                    caller,
+                )
+            };
+    UserWhoami => {
+
+                self.access.who_am_i(caller)
+            };
+    UserAcceptInvitation => {
+                self.access.accept_invitation(params)
+            };
+    UserList => {
+
+                self.access.list_users()
+            };
+    UserInvite => {
+                let result = self.access.invite(params, caller)?;
+                self.notify(TelegramEvent::new("user.invited").with("email", result.email.clone()));
+                Ok(result)
+            };
+    UserRemove => {
+                let result = self.access.remove_user(params, caller)?;
+                self.notify(TelegramEvent::new("user.removed").with("email", result.email.clone()));
+                Ok(result)
+            };
+    GrantSet => {
+                let result = self.access.set_grant(params, caller)?;
+                self.notify(
+                    TelegramEvent::new("grant.set")
+                        .with("email", result.email.clone())
+                        .with("deployment_id", result.deployment_id.clone()),
+                );
+                Ok(result)
+            };
+    GrantRemove => {
+                let result = self.access.remove_grant(params, caller)?;
+                self.notify(
+                    TelegramEvent::new("grant.removed")
+                        .with("email", result.email.clone())
+                        .with("deployment_id", result.deployment_id.clone()),
+                );
+                Ok(result)
+            };
+    RepositoryRegister => {
+                let result =
+                    self.registry
+                        .register(Path::new(&params.path), caller.uid, caller.gid)?;
+                self.health.sampler().request_storage();
+                if result.registered {
+                    self.publish_owned(
+                        results::OwnedEvent::Other(results::OtherOwnedEvent {
+                            review: None,
+                            kind: "repository.registered".to_owned(),
+                            repository_id: Some(result.repository_id.clone()),
+                            deployment_id: None,
+                            subject_kind: "repository".to_owned(),
+                            subject_id: result.repository_id.clone(),
+                        }),
+                        None,
+                    );
+                }
+                Ok(result)
+            };
+    RepositoryList => {
+                self.registry.list_repositories_page(params)
+            };
+    RepositoryStatus => {
+                let mut result = self
+                    .registry
+                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                result.current_test = self.tests.current_summary_ref(&params.path, caller);
+                Ok(result)
+            };
+    RepositoryPresentationUpdate => {
+                self.repository_by_id(&params.repository_id, false)?;
+                let result = self.registry.update_presentation(params, caller.uid)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "repository.presentation.updated".to_owned(),
+                        repository_id: Some(result.repository_id.clone()),
+                        deployment_id: None,
+                        subject_kind: "repository".to_owned(),
+                        subject_id: result.repository_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    RepositoryArchive => {
+                let result = self.registry.archive(
+                    &params.repository_id,
+                    &params.merged_into_repository_id,
+                    &params.note,
+                    caller.uid,
+                )?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "repository.archived".to_owned(),
+                        repository_id: Some(result.repository_id.clone()),
+                        deployment_id: None,
+                        subject_kind: "repository".to_owned(),
+                        subject_id: result.repository_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    RepositoryUnarchive => {
+                let result =
+                    self.registry
+                        .unarchive(&params.repository_id, &params.note, caller.uid)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "repository.unarchived".to_owned(),
+                        repository_id: Some(result.repository_id.clone()),
+                        deployment_id: None,
+                        subject_kind: "repository".to_owned(),
+                        subject_id: result.repository_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    RepositoryRetire => {
+                let result = self.registry.retire(
+                    &params.repository_id,
+                    &params.note,
+                    &params.idempotency_key,
+                    caller.uid,
+                    caller.gid,
+                )?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "repository.retired".to_owned(),
+                        repository_id: Some(result.repository_id.clone()),
+                        deployment_id: None,
+                        subject_kind: "repository".to_owned(),
+                        subject_id: result.repository_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    ServerRegister => self.servers.register(params);
+    ServerList => self.servers.list(params);
+    ServerStop => self.servers.stop(params);
+    DeploymentList => self.deployments.list(params, caller);
+    DeploymentStatus => {
+                self.deployments.status(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    caller,
+                )
+            };
+    TestAdmissionStatus => {
+                let _: params::TestAdmissionStatus = params;
+                self.tests.admission_status()
+            };
+    DeploymentApply => {
+                let result = self.deployments.apply_request(&params, caller)?;
+                self.health.sampler().request_storage();
+                self.notify(deployment_event("deployment.applied", &result, None));
+                Ok(result)
+            };
+    DeploymentRollback => {
+                let result = self.deployments.rollback(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    caller,
+                )?;
+                self.health.sampler().request_storage();
+                self.notify(deployment_event("deployment.rolled_back", &result, None));
+                Ok(result)
+            };
+    DeploymentLogs => {
+                self.deployments.logs(params, caller)
+            };
+    DeploymentStart => {
+                let action = operation.split('.').nth(1).unwrap_or_default();
+                let result = self.deployments.control(
+                    action,
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    params.component.as_deref(),
+                    caller,
+                )?;
+                self.notify(deployment_event(operation, &result, params.component));
+                Ok(result)
+            };
+    DeploymentStop => {
+                let action = operation.split('.').nth(1).unwrap_or_default();
+                let result = self.deployments.control(
+                    action,
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    params.component.as_deref(),
+                    caller,
+                )?;
+                self.notify(deployment_event(operation, &result, params.component));
+                Ok(result)
+            };
+    DeploymentRestart => {
+                let action = operation.split('.').nth(1).unwrap_or_default();
+                let result = self.deployments.control(
+                    action,
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    params.component.as_deref(),
+                    caller,
+                )?;
+                self.notify(deployment_event(operation, &result, params.component));
+                Ok(result)
+            };
+    DeploymentRemove => {
+                let result = self.deployments.remove(
+                    params.path.as_deref(),
+                    params.name.as_deref(),
+                    params.deployment_id.as_deref(),
+                    params.delete_data,
+                    caller,
+                )?;
+                self.health.sampler().request_storage();
+                self.notify(
+                    TelegramEvent::new("deployment.removed")
+                        .with("deployment_id", result.deployment_id.clone())
+                        .with("data_deleted", result.data_deleted),
+                );
+                Ok(result)
+            };
+    DeploymentSetDomain => {
+                let deployment_id = params.deployment_id.clone();
+                let result = self.deployments.set_domain(params)?;
+                self.notify(
+                    TelegramEvent::new("deployment.domain_changed")
+                        .with("deployment_id", deployment_id)
+                        .with("domain", result.domain.clone()),
+                );
+                Ok(result)
+            };
+    TestStart => {
+                let result = self.tests.start(params, caller)?;
+                Ok(result)
+            };
+    TestContainerCreate => {
+                self.test_containers.create(params, caller)
+            };
+    TestContainerStart => {
+                self.test_containers.start(params, caller)
+            };
+    TestContainerInspect => {
+                self.test_containers.inspect(params, caller)
+            };
+    TestContainerDiagnostic => {
+                self.test_containers.diagnostic(params, caller)
+            };
+    TestContainerRemove => {
+                self.test_containers.remove(params, caller)
+            };
+    TestContainerRetry => {
+                self.test_containers.retry(params, caller)
+            };
+    TestRetry => {
+                let result = self.tests.retry(params, caller)?;
+                Ok(result)
+            };
+    TestStatus => {
+                self.tests.status(&params.path, caller)
+            };
+    TestStop => {
+                self.tests.stop(&params.path, params.reason, caller)
+            };
+    TestHistory => self.tests.history(params, caller);
+    TestList => {
+                let mut result = self.tests.list_current_page(params)?;
+                self.test_evidence.enrich_list(&mut result);
+                Ok(result)
+            };
+    TestEvidenceGet => {
+                self.test_evidence.get(params, caller)
+            };
+    TestEvidenceLookup => {
+                self.test_evidence.lookup(params, caller)
+            };
+    TestEvidenceImage => {
+                self.test_evidence.image(params, caller)
+            };
+    TestEvidenceFeedbackCreate => {
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
+                let result = self.test_evidence.create_feedback(params, caller)?;
+                self.publish_feedback(
+                    "feedback.created",
+                    &repository_id,
+                    &result.feedback,
+                    result
+                        .feedback
+                        .comments
+                        .last()
+                        .map(|comment| comment.comment_id.clone()),
+                );
+                self.publish_planning(
+                    "task.created",
+                    &repository_id,
+                    "task",
+                    &result.task_id,
+                    enum_text(&result.feedback.task_status),
+                );
+                Ok(result)
+            };
+    TestEvidenceFeedbackReply => {
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
+                let result = self.test_evidence.reply(params, caller)?;
+                self.publish_feedback(
+                    "feedback.replied",
+                    &repository_id,
+                    &result.feedback,
+                    result
+                        .feedback
+                        .comments
+                        .last()
+                        .map(|comment| comment.comment_id.clone()),
+                );
+                Ok(result)
+            };
+    TestEvidenceFeedbackEdit => {
+                let comment_id = params.comment_id.clone();
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
+                let result = self.test_evidence.edit(params, caller)?;
+                self.publish_feedback(
+                    "feedback.edited",
+                    &repository_id,
+                    &result.feedback,
+                    Some(comment_id),
+                );
+                self.publish_planning(
+                    "task.updated",
+                    &repository_id,
+                    "task",
+                    &result.feedback.task_id,
+                    enum_text(&result.feedback.task_status),
+                );
+                Ok(result)
+            };
+    TestEvidenceFeedbackState => {
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
+                let result = self.test_evidence.set_state(params, caller)?;
+                self.publish_feedback(
+                    "feedback.state_changed",
+                    &repository_id,
+                    &result.feedback,
+                    None,
+                );
+                self.publish_planning(
+                    "task.updated",
+                    &repository_id,
+                    "task",
+                    &result.feedback.task_id,
+                    enum_text(&result.feedback.task_status),
+                );
+                Ok(result)
+            };
+    TestEvidenceFeedbackDelete => {
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
+                let result = self.test_evidence.delete(params, caller)?;
+                self.publish_feedback("feedback.deleted", &repository_id, &result.feedback, None);
+                self.publish_planning(
+                    "task.updated",
+                    &repository_id,
+                    "task",
+                    &result.feedback.task_id,
+                    enum_text(&result.feedback.task_status),
+                );
+                Ok(result)
+            };
+    DesignSketchPublish => {
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.publish(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.published".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch_batch".to_owned(),
+                        subject_id: result.batch_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    DesignSketchList => self.sketches.list(params);
+    DesignSketchSearch => self.sketches.search(params);
+    DesignSketchStory => self.sketches.story(params);
+    DesignSketchResolve => self.sketches.resolve(params);
+    DesignSketchGet => {
+                self.sketches.get(params, &caller.actor())
+            };
+    DesignSketchImage => self.sketches.image(params);
+    DesignSketchRecord => self.sketches.record(params);
+    DesignSketchDecision => {
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.decision(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.decision.changed".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch".to_owned(),
+                        subject_id: result.sketch.sketch_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    DesignSketchActivate => {
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.activate(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.activation.changed".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch_surface".to_owned(),
+                        subject_id: result.surface_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    DesignSketchDescription => {
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.description(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.description.changed".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch".to_owned(),
+                        subject_id: result.sketch.sketch_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    DesignSketchAnnotationCreate => {
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.annotation_create(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.annotation.created".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch_annotation".to_owned(),
+                        subject_id: result.annotation.annotation_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(result)
+            };
+    AgentMessagePoll => self.sketches.message_poll(params);
+    AgentMessageClaim => {
+                self.sketches.message_claim(params, caller)
+            };
+    AgentMessageAck => {
+                self.sketches.message_ack(params, caller)
+            };
+    TestLogCatalog => {
+                decode_result(self.logs.query(
+                    LogQueryOperation::Catalog,
+                    Path::new(&params.path),
+                    encode(&params)?,
+                    caller,
+                )?)
+            };
+    TestLogTail => {
+                decode_result(self.logs.query(
+                    LogQueryOperation::Tail,
+                    Path::new(&params.path),
+                    encode(&params)?,
+                    caller,
+                )?)
+            };
+    TestLogSearch => {
+                decode_result(self.logs.query(
+                    LogQueryOperation::Search,
+                    Path::new(&params.path),
+                    encode(&params)?,
+                    caller,
+                )?)
+            };
+    TestLogRange => {
+                decode_result(self.logs.query(
+                    LogQueryOperation::Range,
+                    Path::new(&params.path),
+                    encode(&params)?,
+                    caller,
+                )?)
+            };
+    TestLogFailureContext => {
+                decode_result(self.logs.query(
+                    LogQueryOperation::FailureContext,
+                    Path::new(&params.path),
+                    encode(&params)?,
+                    caller,
+                )?)
+            };
+    TestLogRetentionGet => {
+
+                self.logs.retention()
+            };
+    TestLogRetentionSet => {
+                self.logs.set_retention(
+                    params.max_age_seconds,
+                    params.case_depth,
+                    &actor,
+                    &now,
+                )
+            };
+    TestArtifactCatalog => {
+                self.artifacts.catalog(params, caller)
+            };
+    TestArtifactFile => self.artifacts.file(params, caller);
+    TestCapacityGet => {
+
+                self.capacity.snapshot()
+            };
+    TestCapacitySet => {
+                let cap = match params.cap {
+                    params::CapacityCap::Value(cap) => Some(u32::from(cap)),
+                    params::CapacityCap::Null => None,
+                };
+                self.capacity.set_cap(cap, &actor)
+            };
+    HealthSummary => {
+
+                self.health.summary()
+            };
+    HealthIncidents => self.incidents.list(params);
+    HealthIncidentUpdate => {
+                let incident = self.incidents.update(params, &caller.actor())?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "health.incident.changed".into(),
+                        repository_id: incident.repository_id.clone(),
+                        deployment_id: incident.deployment_id.clone(),
+                        subject_kind: "health_incident".into(),
+                        subject_id: incident.incident_id.clone(),
+                    }),
+                    None,
+                );
+                Ok(incident)
+            };
+    HealthRepositories => {
+
+                self.health.repositories()
+            };
+    HealthRepository => {
+                self.health.repository(&params.path, caller)
+            };
+    HealthHistory => self.health.history(params);
+    HealthContainers => {
+
+                self.health.containers()
+            };
+    HealthContainerRemove => {
+                self.health.remove_container(&params.container_id)
+            };
+    UsageRepositories => self.usage.repositories(params);
+    UsageRepository => self.usage.repository(params);
+    UsageRateCardList => self.rate_cards.list(params);
+    UsageRateCardSet => {
+                self.rate_cards.set(params, &actor, &now)
+            };
+    ProgressRepositories => {
+
+                self.progress.repositories()
+            };
+    ProgressRepository => self.progress.repository(params);
+    TelegramLink => {
+                let principal = self.access.principal(caller)?;
+                let email = params.email.or(principal.identity.clone()).ok_or_else(|| {
+                    ProtocolError::new(ErrorCode::ParamsInvalid, "email is required")
+                })?;
+                let email = email.to_lowercase();
+                if !principal.local
+                    && !principal.administrator
+                    && principal.identity.as_deref() != Some(&email)
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::PermissionDenied,
+                        "may only link chats to yourself",
+                    ));
+                }
+                self.telegram.link(&params.code, &email)
+            };
+    TelegramSubscribe => {
+                self.authorize_telegram_chat(caller, params.chat_id)?;
+                self.authorize_telegram_scope(caller, &params.scope)?;
+                self.telegram.subscribe(params)
+            };
+    TelegramUnsubscribe => {
+                self.authorize_telegram_chat(caller, params.chat_id)?;
+                self.telegram.unsubscribe(params)
+            };
+    TelegramList => {
+
+                let principal = self.access.principal(caller)?;
+                let email = (!principal.local && !principal.administrator)
+                    .then_some(principal.identity)
+                    .flatten();
+                self.telegram.list(email.as_deref())
+            };
+    DeploymentRecovery => {
+                let request: devcoordinator2_api::runtime_recovery::Request = params;
+                self.resolve_repository(None, Some(&request.repository_id), caller, false)?;
+                self.deployments
+                        .recover_saved_preview(request, caller, &actor, &now)
+            };
+    PlanRecovery => {
+                let request: devcoordinator2_api::recovery::Request = params;
+                self.resolve_repository(None, Some(&request.repository_id), caller, false)?;
+                let result =
+                    crate::planning_recovery::recover(&self.database, request, &actor, &now)?;
+                if result.status == "applied" {
+                    self.publish_planning(
+                        "plan.recovered",
+                        &result.repository_id,
+                        "repository",
+                        &result.repository_id,
+                        Some("recovered".to_owned()),
+                    );
+                }
+                Ok(result)
+            };
+    PlanOverview => {
+                if params.path.is_none() && params.repository_id.is_none() {
+                    return self.plan.overview_page(None, params);
+                }
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    true,
+                )?;
+                self.plan
+                        .overview_page(Some(&repository.repository_id), params)
+            };
+    CompletionCheck => {
+                let repository = self.resolve_repository(Some(&params.path), None, caller, true)?;
+                let result = crate::completion::CompletionService::new(self.database.clone())
+                    .check_path(
+                        &repository.repository_id,
+                        Path::new(&params.path),
+                        params.manifest,
+                    )?;
+                Ok(result)
+            };
+    TaskSearch => {
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    true,
+                )?;
+                self.plan.search_tasks(&repository.repository_id, params)
+            };
+    TaskHistory => {
+                self.plan.task_history(&params.task_id)
+            };
+    TaskCreate => {
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    false,
+                )?;
+                let result =
+                    self.plan
+                        .create_task(&repository.repository_id, params, &actor, &now)?;
+                self.publish_planning(
+                    "task.created",
+                    &result.repository_id,
+                    "task",
+                    &result.task_id,
+                    enum_text(&result.status),
+                );
+                Ok(result)
+            };
+    TaskUpdate => {
+                let result = self.plan.update_task(params, &actor, &now)?;
+                self.publish_planning(
+                    "task.updated",
+                    &result.repository_id,
+                    "task",
+                    &result.task_id,
+                    enum_text(&result.status),
+                );
+                Ok(result)
+            };
+    ReleaseCreate => {
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    false,
+                )?;
+                let result =
+                    self.plan
+                        .create_release(&repository.repository_id, params, &actor, &now)?;
+                self.publish_planning(
+                    "release.created",
+                    &repository.repository_id,
+                    "release",
+                    &result.release_id,
+                    enum_text(&result.status),
+                );
+                Ok(result)
+            };
+    ReleaseUpdate => {
+                let result = self.plan.update_release(params, &actor, &now)?;
+                if let Some(repository_id) = &result.repository_id {
+                    self.publish_planning(
+                        "release.updated",
+                        repository_id,
+                        "release",
+                        &result.release_id,
+                        enum_text(&result.status),
+                    );
+                }
+                Ok(result)
+            };
+    ReleaseRequest => {
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    false,
+                )?;
+                let result =
+                    self.plan
+                        .request_release(&repository.repository_id, params, &actor, &now)?;
+                self.publish_planning(
+                    "release.requested",
+                    &repository.repository_id,
+                    "release",
+                    &result.release_id,
+                    enum_text(&result.status),
+                );
+                self.notify(
+                    TelegramEvent::new("release.requested")
+                        .with("repository_id", result.repository_id.clone())
+                        .with("repository_name", repository.display_name)
+                        .with("name", result.name.clone())
+                        .with("release_id", result.release_id.clone()),
+                );
+                Ok(result)
+            };
+    ReleaseDeliver => {
+                let release_id = params.release_id.clone();
+                let (repository_id, name) = self.release_event_identity(&release_id)?;
+                let result = self.plan.deliver_release(params, &actor, &now)?;
+                self.publish_planning(
+                    "release.delivered",
+                    &repository_id,
+                    "release",
+                    &release_id,
+                    enum_text(&result.status),
+                );
+                let mut event = TelegramEvent::new("release.delivered")
+                    .with("repository_id", repository_id)
+                    .with("release_id", release_id)
+                    .with("name", name)
+                    .with("port", result.port)
+                    .with("dirty", result.dirty);
+                if let Some(url) = &result.url {
+                    event = event.with("url", url.clone());
+                }
+                self.notify(event);
+                Ok(result)
+            };
+    DecisionTail => {
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    true,
+                )?;
+                self.plan.decision_tail(&repository.repository_id, params)
+            };
+    PerformanceOverview => self.reviews.performance_overview(
+                    params,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                );
+    PerformanceReviews => {
+                self.reviews.performance_reviews(params)
+            };
+    PerformanceReview => self.reviews.performance_review(
+                    params,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                );
+    ReviewDeliveryPending => {
+                self.deliver_review_reminders()?;
+                self.reviews.delivery_pending(
+                    params,
+                    (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+                )
+            };
+    ReviewPolicySet => self.reviews.policy_set(
+                params,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+            );
+    ReviewPolicyStatus => self.reviews.policy_status(
+                params,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+            );
+    ReviewDeliveryRegister => self.reviews.delivery_register(
+                params,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+                crate::review::RegistrationMode::Replace,
+            );
+    ReviewPrepare => self.reviews.prepare(
+                    params,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                );
+    ReviewRecord => self.reviews.record(
+                    params,
+                    &actor,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                );
+    ReviewShow => self.reviews.show(params);
+    ReviewReceipt => self.reviews.receipt(params);
+    ReleaseEvidence => self.deliveries.receipt(params);
+    ReleaseDeliverEvidence => self.deliveries.deliver(
+                    params,
+                    caller,
+                    &actor,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                );
+    ReleaseEvidenceShow => self.deliveries.show(params);
+    DecisionSearch => {
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    true,
+                )?;
+                self.plan
+                        .search_decisions(&repository.repository_id, params)
+            };
+    DecisionRecord => {
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    false,
+                )?;
+                let result =
+                    self.plan
+                        .record_decision(&repository.repository_id, params, &actor, &now)?;
+                self.publish_planning(
+                    "decision.recorded",
+                    &repository.repository_id,
+                    "decision",
+                    &result.decision_id,
+                    None,
+                );
+                Ok(result)
+            };
+    DecisionSummarize => {
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    false,
+                )?;
+                let result = self.plan.summarize_decisions(
+                    &repository.repository_id,
+                    params,
+                    &actor,
+                    &now,
+                )?;
+                self.publish_planning(
+                    "decision.summarized",
+                    &repository.repository_id,
+                    "decision_summary",
+                    &result.covers_through_seq.to_string(),
+                    None,
+                );
+                Ok(result)
+            };
+    BugReport => {
+                let result =
+                    bugs::report(&self.config.bugs_dir, &params, &actor).map_err(bug_error)?;
+                if !result.duplicate {
+                    let mut event = TelegramEvent::new("bug.opened")
+                        .with("component", result.component.clone())
+                        .with("summary", result.summary.clone());
+                    if let Some(repository_id) = &result.correlations.repository_id {
+                        event = event.with("repository_id", repository_id.clone());
+                    }
+                    if let Some(deployment_id) = &result.correlations.deployment_id {
+                        event = event.with("deployment_id", deployment_id.clone());
+                    }
+                    self.notify(event);
+                }
+                Ok(result)
+            };
+    BugList => {
+
+                Ok(results::BugList {
+                    bugs: bugs::list_open(&self.config.bugs_dir).map_err(bug_error)?,
+                    // The backing host path is deliberately private.
+                    store: None,
+                })
+            };
+    BugClose => {
+                let result =
+                    bugs::close(&self.config.bugs_dir, &params.bug_id).map_err(bug_error)?;
+                self.notify(
+                    TelegramEvent::new("bug.closed")
+                        .with("component", result.component.clone())
+                        .with("summary", result.summary.clone()),
+                );
+                Ok(result)
+            };
+    EventWait => Err(ProtocolError::new(
+                ErrorCode::InternalError,
+                "passive waits require deferred dispatch",
+            ));
+    TestWait => Err(ProtocolError::new(
+                ErrorCode::InternalError,
+                "passive waits require deferred dispatch",
+            ));
+    TestAdmissionWait => Err(ProtocolError::new(
+                ErrorCode::InternalError,
+                "passive waits require deferred dispatch",
+            ));
+    DeploymentWait => Err(ProtocolError::new(
+                ErrorCode::InternalError,
+                "passive waits require deferred dispatch",
+            ));
+}
+
 impl OperationExecutor for ControlPlane {
+    fn prepare_admission(
+        &self,
+        operation: &str,
+        params: Value,
+        caller: &Caller,
+    ) -> Option<crate::daemon::AdmissionPreparation> {
+        let definition = devcoordinator2_api::operation(operation)?;
+        // Admission follows the catalog's deployment scope and execution
+        // profile. Saved-runtime recovery is server-scoped but has the same
+        // exact deployment target and mutation exclusion.
+        if !definition.long_running()
+            || (definition.policy.scope != devcoordinator2_api::Scope::Deployment
+                && definition.id != OperationId::DeploymentRecovery)
+        {
+            return None;
+        }
+        let plane = self.clone();
+        let operation = operation.to_owned();
+        let caller = caller.clone();
+        Some(Box::new(move || {
+            let authorization = plane.access.authorize(&operation, &params, &caller)?;
+            plane.deployments.prepare_mutation_admission(
+                authorization.params.get("path").and_then(Value::as_str),
+                authorization.params.get("name").and_then(Value::as_str),
+                authorization
+                    .params
+                    .get("deployment_id")
+                    .and_then(Value::as_str),
+                &caller,
+            )
+        }))
+    }
+
     fn execute(
         &self,
         operation: &str,
@@ -2100,20 +2060,25 @@ impl OperationExecutor for ControlPlane {
         caller: &Caller,
     ) -> Result<Value, ProtocolError> {
         let authorization = self.access.authorize(operation, &params, caller)?;
+        self.capture_usage_context(&authorization.params, caller);
         let result = self.dispatch_authorized(operation, authorization.params.clone(), caller)?;
         // Only an actual native capability selects the alarm route; client names do not.
         if !caller.via_edge
             && !operation.starts_with("review.delivery.")
+            && !self
+                .config
+                .socket_path
+                .with_file_name("daemon.pre-cutover.sock")
+                .exists()
             && let Some(work) = caller.work.as_ref().and_then(|work| work.context.as_ref())
             && let Some(capability) = &work.alarm
-            && let Ok(repository) = self.resolve_repository(
+            && let Ok(repository) = self.resolve_registered_repository(
                 authorization.params.get("path").and_then(Value::as_str),
                 authorization
                     .params
                     .get("repository_id")
                     .and_then(Value::as_str),
                 caller,
-                false,
             )
         {
             let now = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
@@ -2156,28 +2121,23 @@ impl OperationExecutor for ControlPlane {
         if !caller.via_edge
             && !operation.starts_with("event.")
             && !operation.starts_with("agent.message.")
-            && let Ok(repository) = self.resolve_repository(
+            && let Ok(repository) = self.resolve_registered_repository(
                 params.get("path").and_then(Value::as_str),
                 params.get("repository_id").and_then(Value::as_str),
                 caller,
-                false,
             )
-        {
-            if let Err(error) = self.deliver_review_reminders() {
-                tracing::warn!(code=%error.code,"review reminders temporarily unavailable");
-            }
-            if let Ok(messages) = self.sketches.message_poll_kind(
+            && let Ok(messages) = self.sketches.message_poll_kind(
                 params::AgentMessagePoll {
                     repository_id: repository.repository_id,
                     after_id: None,
                     limit: 2,
                 },
                 Some("performance_review.reminder"),
-            ) && !messages.messages.is_empty()
-                && let Some(object) = result.as_object_mut()
-            {
-                object.insert("_agent_messages".into(), encode(messages.messages)?);
-            }
+            )
+            && !messages.messages.is_empty()
+            && let Some(object) = result.as_object_mut()
+        {
+            object.insert("_agent_messages".into(), encode(messages.messages)?);
         }
         Ok(result)
     }
@@ -2187,24 +2147,29 @@ impl OperationExecutor for ControlPlane {
         operation: &str,
         params: Value,
         caller: &Caller,
+        wait: WaitContext,
     ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
         if !devcoordinator2_api::is_deferred_wait(operation) {
             return None;
         }
         Some((|| {
             let authorization = self.access.authorize(operation, &params, caller)?;
+            self.capture_usage_context(&authorization.params, caller);
             if operation == "test.admission.wait" {
                 let request: params::TestAdmissionWait = decode(authorization.params)?;
                 let deadline = parse_deadline(&request.deadline_at)?;
                 let runtime = self.tests.admission_runtime_dir();
                 let tests = self.tests.clone();
                 return Ok(Box::pin(async move {
-                    let wait = tokio::time::timeout_at(
+                    let admission_wait = tokio::time::timeout_at(
                         deadline,
                         crate::test_admission::wait_for_admission_open(runtime),
                     );
-                    match wait.await {
-                        Ok(Ok(())) => encode(tests.admission_status()?),
+                    match admission_wait.await {
+                        Ok(Ok(())) => {
+                            wait.blocking(move || encode(tests.admission_status()?))
+                                .await
+                        }
                         Ok(Err(error)) => Err(ProtocolError::new(
                             ErrorCode::InternalError,
                             "test admission watcher failed",
@@ -2235,7 +2200,7 @@ impl OperationExecutor for ControlPlane {
                     }) as crate::daemon::DeferredOperation);
                 }
                 let repository =
-                    self.resolve_repository(Some(&request.path), None, caller, false)?;
+                    self.resolve_registered_repository(Some(&request.path), None, caller)?;
                 let events = self.events.clone();
                 let access = self.access.clone();
                 let wait_caller = caller.clone();
@@ -2243,64 +2208,50 @@ impl OperationExecutor for ControlPlane {
                 let run_id = request.run_id.clone();
                 let path = request.path.clone();
                 let deadline = request.deadline_at.clone();
+                let deadline_at = parse_deadline(&deadline)?;
                 let status_caller = caller.clone();
                 return Ok(Box::pin(async move {
                     loop {
-                        let access_for_wait = access.clone();
-                        let caller_for_wait = wait_caller.clone();
-                        let subscription = events.subscribe_with_visibility(
-                            params::EventWait {
-                                cursor: None,
-                                filters: vec![params::EventFilter {
-                                    filter_id: "test-wait".into(),
-                                    categories: vec![params::EventCategory::Test],
-                                    kinds: vec!["test.finished".into()],
-                                    repository_ids: vec![repository.repository_id.clone()],
-                                    deployment_ids: vec![],
-                                    deadline_at: Some(deadline.clone()),
-                                }],
-                                limit: 10,
-                            },
-                            Arc::new(move || access_for_wait.event_visibility(&caller_for_wait)),
-                        )?;
-                        // The run may finish between the initial status read and
-                        // subscription creation. Re-check immediately after the
-                        // subscription is installed so the completion event is
-                        // not required to be observed by this connection.
-                        let latest = tests.status(&path, &status_caller)?;
-                        if latest.run_id != run_id {
-                            return Err(test_wait_run_changed(&run_id, &latest));
-                        }
-                        if latest.status != results::TestStatus::Running {
-                            return encode(results::TestWaitResult {
-                                completed: true,
-                                timed_out: false,
-                                status: latest,
-                            });
-                        }
-                        let result = subscription.receive().await?;
-                        if !result.heartbeat_due.is_empty() {
-                            let latest = tests.status(&path, &status_caller)?;
-                            if latest.run_id == run_id
-                                && latest.status != results::TestStatus::Running
-                            {
-                                return encode(results::TestWaitResult {
-                                    completed: true,
-                                    timed_out: false,
-                                    status: latest,
-                                });
-                            }
-                            if latest.run_id != run_id {
-                                return Err(test_wait_run_changed(&run_id, &latest));
-                            }
+                        if tokio::time::Instant::now() >= deadline_at {
                             return Err(wait_deadline_error(
                                 "test run did not finish before the requested deadline",
-                                Some(format!("{:?}", latest.status)),
+                                Some("running".into()),
                                 Some(run_id.clone()),
                                 None,
                             ));
                         }
-                        let latest = tests.status(&path, &status_caller)?;
+                        let access_for_wait = access.clone();
+                        let caller_for_wait = wait_caller.clone();
+                        let subscription_events = events.clone();
+                        let subscription_repository = repository.repository_id.clone();
+                        let subscription_deadline =
+                            crate::request_deadline::observation_deadline(&deadline)?;
+                        let subscription = wait
+                            .blocking(move || {
+                                subscription_events.subscribe_with_visibility(
+                                    params::EventWait {
+                                        cursor: None,
+                                        filters: vec![params::EventFilter {
+                                            filter_id: "test-wait".into(),
+                                            categories: vec![params::EventCategory::Test],
+                                            kinds: vec!["test.finished".into()],
+                                            repository_ids: vec![subscription_repository],
+                                            deployment_ids: vec![],
+                                            deadline_at: Some(subscription_deadline),
+                                        }],
+                                        limit: 10,
+                                    },
+                                    Arc::new(move || {
+                                        access_for_wait.event_visibility(&caller_for_wait)
+                                    }),
+                                )
+                            })
+                            .await?;
+                        // The run may finish between the initial status read and
+                        // subscription creation. Re-check immediately after the
+                        // subscription is installed so the completion event is
+                        // not required to be observed by this connection.
+                        let latest = test_wait_status(&tests, &path, &status_caller, &wait).await?;
                         if latest.run_id != run_id {
                             return Err(test_wait_run_changed(&run_id, &latest));
                         }
@@ -2311,85 +2262,21 @@ impl OperationExecutor for ControlPlane {
                                 status: latest,
                             });
                         }
+                        let _ = subscription.receive().await?;
                     }
                 }) as crate::daemon::DeferredOperation);
             }
             if operation == "deployment.wait" {
                 let request: params::DeploymentWait = decode(authorization.params.clone())?;
-                let current = self.deployments.status(
-                    request.path.as_deref(),
-                    request.name.as_deref(),
-                    request.deployment_id.as_deref(),
-                    caller,
-                )?;
-                if deployment_wait_satisfied(&current, request.state) {
-                    return Ok(Box::pin(async move {
-                        encode(results::DeploymentWaitResult {
-                            completed: true,
-                            timed_out: false,
-                            status: current,
-                        })
-                    }) as crate::daemon::DeferredOperation);
-                }
-                let events = self.events.clone();
                 let access = self.access.clone();
                 let wait_caller = caller.clone();
-                let deployments = self.deployments.clone();
-                let path = request.path.clone();
-                let name = request.name.clone();
-                let deployment_id = request.deployment_id.clone();
-                let deadline = request.deadline_at.clone();
-                let target_deployment_id = current.deployment_id.clone();
-                let state = request.state;
-                let status_caller = caller.clone();
-                return Ok(Box::pin(async move {
-                    loop {
-                        let access_for_wait = access.clone();
-                        let caller_for_wait = wait_caller.clone();
-                        let subscription = events.subscribe_with_visibility(
-                            params::EventWait {
-                                cursor: None,
-                                filters: vec![params::EventFilter {
-                                    filter_id: "deployment-wait".into(),
-                                    categories: vec![params::EventCategory::Deployment],
-                                    kinds: vec![
-                                        "deployment.applied".into(),
-                                        "deployment.failed".into(),
-                                        "deployment.start".into(),
-                                        "deployment.restart".into(),
-                                    ],
-                                    repository_ids: vec![],
-                                    deployment_ids: vec![target_deployment_id.clone()],
-                                    deadline_at: Some(deadline.clone()),
-                                }],
-                                limit: 10,
-                            },
-                            Arc::new(move || access_for_wait.event_visibility(&caller_for_wait)),
-                        )?;
-                        let result = subscription.receive().await?;
-                        let latest = deployments.status(
-                            path.as_deref(),
-                            name.as_deref(),
-                            deployment_id.as_deref(),
-                            &status_caller,
-                        )?;
-                        if deployment_wait_satisfied(&latest, state) {
-                            return encode(results::DeploymentWaitResult {
-                                completed: true,
-                                timed_out: false,
-                                status: latest,
-                            });
-                        }
-                        if !result.heartbeat_due.is_empty() {
-                            return Err(wait_deadline_error(
-                                "deployment did not reach the requested state before the deadline",
-                                Some(latest.state.clone()),
-                                None,
-                                Some(latest.deployment_id.clone()),
-                            ));
-                        }
-                    }
-                }) as crate::daemon::DeferredOperation);
+                return self.deployments.prepare_wait(
+                    request,
+                    caller.clone(),
+                    self.events.clone(),
+                    Arc::new(move || access.event_visibility(&wait_caller)),
+                    wait,
+                );
             }
             let request: params::EventWait = decode(authorization.params)?;
             let access = self.access.clone();
@@ -2406,57 +2293,16 @@ impl OperationExecutor for ControlPlane {
     }
 }
 
-fn parse_deadline(value: &str) -> Result<tokio::time::Instant, ProtocolError> {
-    let parsed = time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-        .map_err(|_| {
-            ProtocolError::new(
-                ErrorCode::ParamsInvalid,
-                "deadline_at must be an RFC 3339 timestamp",
-            )
-        })?;
-    let now = time::OffsetDateTime::now_utc();
-    let duration = parsed - now;
-    Ok(tokio::time::Instant::now() + duration.try_into().unwrap_or_default())
-}
-
-fn wait_deadline_error(
-    reason: &str,
-    state: Option<String>,
-    run_id: Option<String>,
-    deployment_id: Option<String>,
-) -> ProtocolError {
-    ProtocolError::new(
-        ErrorCode::WaitDeadlineReached,
-        "the requested wait deadline was reached",
-    )
-    .with_recovery(devcoordinator2_api::recovery::Guidance {
-        class: devcoordinator2_api::recovery::Class::Transient,
-        retryable: false,
-        waitable: true,
-        safe_to_continue: true,
-        state,
-        reason: reason.into(),
-        run_id,
-        deployment_id,
-        generation: None,
-        repository_id: None,
-        options: vec![devcoordinator2_api::recovery::RecoveryOption {
-            id: "inspect".into(),
-            action: devcoordinator2_api::recovery::Action::Inspect,
-            operation: None,
-            effect:
-                "Read the latest status and choose whether to wait again or continue elsewhere."
-                    .into(),
-            target: None,
-            cost: Some("immediate".into()),
-            risk: Some("none".into()),
-            prerequisites: vec![],
-            independent_work_safe: true,
-            user_action_required: false,
-        }],
-        field_errors: vec![],
-        example: None,
-    })
+async fn test_wait_status(
+    tests: &TestLifecycle,
+    path: &str,
+    caller: &Caller,
+    wait: &WaitContext,
+) -> Result<results::TestSummary, ProtocolError> {
+    let tests = tests.clone();
+    let path = path.to_owned();
+    let caller = caller.clone();
+    wait.blocking(move || tests.status(&path, &caller)).await
 }
 
 fn test_wait_run_changed(requested_run_id: &str, current: &results::TestSummary) -> ProtocolError {
@@ -2494,25 +2340,6 @@ fn test_wait_run_changed(requested_run_id: &str, current: &results::TestSummary)
         field_errors: vec![],
         example: None,
     })
-}
-
-fn deployment_wait_satisfied(
-    status: &results::DeploymentStatus,
-    state: params::DeploymentWaitState,
-) -> bool {
-    match state {
-        params::DeploymentWaitState::Applied => {
-            status.current_generation.is_some() && status.state != "applying"
-        }
-        params::DeploymentWaitState::Ready => status.readiness.as_ref().is_some_and(|r| r.ready),
-        params::DeploymentWaitState::SourceCurrent => status
-            .readiness
-            .as_ref()
-            .is_some_and(|r| r.pending_apply == Some(false)),
-        params::DeploymentWaitState::RouteAcknowledged => {
-            status.route_port.is_some() && status.state == "running"
-        }
-    }
 }
 
 struct RepositoryIdentity {
@@ -2556,6 +2383,15 @@ fn enum_text(value: &impl Serialize) -> Option<String> {
     serde_json::to_value(value)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
+}
+
+fn decode_result<T: DeserializeOwned>(value: Value) -> Result<T, ProtocolError> {
+    serde_json::from_value(value).map_err(|_| {
+        ProtocolError::new(
+            ErrorCode::InternalError,
+            "domain result does not match the operation schema",
+        )
+    })
 }
 
 fn encode<T: Serialize>(result: T) -> Result<Value, ProtocolError> {
@@ -2839,6 +2675,7 @@ mod tests {
             _ => unreachable!(),
         };
         tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let wait_context = || WaitContext::new(Arc::new(tokio::sync::Semaphore::new(2)), None);
             for operation in [
                 "event.wait",
                 "test.admission.wait",
@@ -2846,7 +2683,12 @@ mod tests {
                 "deployment.wait",
             ] {
                 let mut waiting = plane
-                    .defer(operation, parameters(operation, &future), &caller)
+                    .defer(
+                        operation,
+                        parameters(operation, &future),
+                        &caller,
+                        wait_context(),
+                    )
                     .unwrap()
                     .unwrap();
                 std::future::poll_fn(|context| {
@@ -2861,7 +2703,12 @@ mod tests {
                 // subscription, not only the socket fixture's stand-in future.
                 drop(waiting);
                 let expired = plane
-                    .defer(operation, parameters(operation, &past), &caller)
+                    .defer(
+                        operation,
+                        parameters(operation, &past),
+                        &caller,
+                        wait_context(),
+                    )
                     .unwrap()
                     .unwrap();
                 let result = tokio::time::timeout(std::time::Duration::from_secs(2), expired)
@@ -2906,6 +2753,7 @@ mod tests {
                     "test.admission.wait",
                     parameters("test.admission.wait", &future),
                     &caller,
+                    wait_context(),
                 )
                 .unwrap()
                 .unwrap()
@@ -2921,7 +2769,6 @@ mod tests {
             DecisionState, ElaborationRequest, PlanDetail, PlanRelease, PlanTask, PreviewRequest,
         };
         use devcoordinator2_api::{ResponseEnvelope, encode_response};
-        use sha2::{Digest, Sha256};
 
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
@@ -2929,11 +2776,13 @@ mod tests {
         let mut expected = PlanDetail {
             repository_id: repository_id.into(),
             display_name: "Большой план".into(),
+            repository_source: None,
+            presentation: None,
             archived: false,
             merged_into_repository_id: None,
             releases: Vec::new(),
             tasks: Vec::new(),
-            tasks_truncated: true,
+            tasks_truncated: false,
             elaboration_requests: Vec::new(),
             preview_requested: Vec::new(),
             decisions: DecisionState {
@@ -2941,7 +2790,8 @@ mod tests {
                 summary_due: false,
             },
             revision: String::new(),
-            next_offset: None,
+            next_sequence: None,
+            next_release_sequence: None,
         };
         for seq in 1..=160 {
             let release_id = format!("v{seq:016x}");
@@ -2999,13 +2849,13 @@ mod tests {
         }
         let fixture = expected.clone();
         database.transaction(move |transaction| {
-            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo',?2,'t',1000,'t')", rusqlite::params![fixture.repository_id, fixture.display_name])?;
-            transaction.execute("INSERT INTO worktrees VALUES('w1111111111111111',?1,'/repo','t','t')", [&fixture.repository_id])?;
+            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES($1,'/repo',$2,'t',1000,'t')", crate::database::params![fixture.repository_id, fixture.display_name])?;
+            transaction.execute("INSERT INTO worktrees VALUES('w1111111111111111',$1,'/repo','t','t')", [&fixture.repository_id])?;
             for release in fixture.releases {
-                transaction.execute("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,note,requested_at,created_at,created_by,updated_at) VALUES(?1,?2,?3,?4,'preview','requested',?5,'t','t','uid:1000','t')", rusqlite::params![release.release_id, fixture.repository_id, release.seq, release.name, release.note])?;
+                transaction.execute("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,note,requested_at,created_at,created_by,updated_at) VALUES($1,$2,$3,$4,'preview','requested',$5,'t','t','uid:1000','t')", crate::database::params![release.release_id, fixture.repository_id, release.seq, release.name, release.note])?;
             }
             for task in fixture.tasks {
-                transaction.execute("INSERT INTO tasks(task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'goal','planned',120,?10,'t','uid:1000','t')", rusqlite::params![task.task_id, fixture.repository_id, task.parent_task_id, task.release_id, task.seq, task.position, task.title, "Результат ".repeat(180), task.impact, task.elaboration_needed])?;
+                transaction.execute("INSERT INTO tasks(task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'goal','planned',120,$10,'t','uid:1000','t')", crate::database::params![task.task_id, fixture.repository_id, task.parent_task_id, task.release_id, task.seq, task.position, task.title, "Результат ".repeat(180), task.impact, task.elaboration_needed])?;
             }
             Ok(())
         }).expect("large multilingual persisted plan");
@@ -3016,10 +2866,16 @@ mod tests {
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
         )
         .expect("control plane");
-        expected.revision = Sha256::digest(serde_json::to_vec(&expected).unwrap())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        expected.revision = plane
+            .execute(
+                "plan.overview",
+                serde_json::json!({"repository_id": repository_id}),
+                &local(),
+            )
+            .unwrap()["revision"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let oversized = ResponseEnvelope::success("unpaged", &expected).unwrap();
         assert!(
             serde_json::to_vec(&oversized).unwrap().len() > devcoordinator2_api::MAX_RESPONSE_BYTES
@@ -3036,11 +2892,12 @@ mod tests {
         merged.tasks.clear();
         merged.elaboration_requests.clear();
         merged.preview_requested.clear();
-        let mut offset = 0;
+        let mut after_sequence = 0;
+        let mut after_release_sequence = 0;
         let mut pages = 0;
         let mut first_next = None;
         loop {
-            let value = plane.execute("plan.overview", serde_json::json!({"repository_id": repository_id, "offset": offset, "expected_revision": (offset != 0).then_some(&expected.revision)}), &local()).expect("page dispatch");
+            let value = plane.execute("plan.overview", serde_json::json!({"repository_id": repository_id, "after_sequence": after_sequence, "after_release_sequence": after_release_sequence, "expected_revision": expected.revision}), &local()).expect("page dispatch");
             let encoded = encode_response(&ResponseEnvelope::success("plan-page", &value).unwrap());
             assert!(encoded.len() <= devcoordinator2_api::MAX_RESPONSE_BYTES);
             let envelope: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
@@ -3057,7 +2914,7 @@ mod tests {
                 page.merged_into_repository_id,
                 expected.merged_into_repository_id
             );
-            assert_eq!(page.tasks_truncated, expected.tasks_truncated);
+            assert_eq!(page.tasks_truncated, page.next_sequence.is_some());
             assert_eq!(page.decisions, expected.decisions);
             let count = page.releases.len()
                 + page.tasks.len()
@@ -3072,15 +2929,20 @@ mod tests {
             merged.preview_requested.extend(page.preview_requested);
             pages += 1;
             if pages == 1 {
-                first_next = page.next_offset;
+                first_next = Some((
+                    page.next_sequence.unwrap_or(u32::MAX),
+                    page.next_release_sequence.unwrap_or(u32::MAX),
+                ));
             }
-            match page.next_offset {
-                Some(next) => {
-                    assert_eq!(next, offset + count as u32);
-                    offset = next;
-                }
-                None => break,
+            if page.next_sequence.is_none() && page.next_release_sequence.is_none() {
+                break;
             }
+            let next = page.next_sequence.unwrap_or(u32::MAX);
+            let next_release = page.next_release_sequence.unwrap_or(u32::MAX);
+            assert!(next >= after_sequence && next_release >= after_release_sequence);
+            assert!(next > after_sequence || next_release > after_release_sequence);
+            after_sequence = next;
+            after_release_sequence = next_release;
             assert!(pages < 30, "finite traversal");
         }
         assert!(
@@ -3091,15 +2953,11 @@ mod tests {
             merged, expected,
             "paging preserves every projected field, parent and aggregate"
         );
-        let total = expected.releases.len()
-            + expected.tasks.len()
-            + expected.elaboration_requests.len()
-            + expected.preview_requested.len();
         for params in [
             serde_json::json!({"repository_id": repository_id, "offset": 1}),
-            serde_json::json!({"repository_id": repository_id, "offset": total, "expected_revision": expected.revision}),
-            serde_json::json!({"repository_id": repository_id, "offset": u32::MAX, "expected_revision": expected.revision}),
-            serde_json::json!({"offset": 1, "expected_revision": expected.revision}),
+            serde_json::json!({"repository_id": repository_id, "limit": 0}),
+            serde_json::json!({"repository_id": repository_id, "limit": 201}),
+            serde_json::json!({"repository_id": repository_id, "headers_only": true}),
         ] {
             assert_eq!(
                 plane
@@ -3116,8 +2974,8 @@ mod tests {
                 &local(),
             )
             .expect("real persisted mutation");
-        for offset in [0, first_next.unwrap()] {
-            assert_eq!(plane.execute("plan.overview", serde_json::json!({"repository_id": repository_id, "offset": offset, "expected_revision": expected.revision}), &local()).unwrap_err().code, ErrorCode::CursorStale);
+        for (after_sequence, after_release_sequence) in [(0, 0), first_next.unwrap()] {
+            assert_eq!(plane.execute("plan.overview", serde_json::json!({"repository_id": repository_id, "after_sequence": after_sequence, "after_release_sequence": after_release_sequence, "expected_revision": expected.revision}), &local()).unwrap_err().code, ErrorCode::CursorStale);
         }
         let fresh = plane
             .execute(
@@ -3130,7 +2988,7 @@ mod tests {
         database
             .transaction(|transaction| {
                 transaction.execute(
-                    "UPDATE releases SET note=?1 WHERE release_id='v0000000000000001'",
+                    "UPDATE releases SET note=$1 WHERE release_id='v0000000000000001'",
                     ["x".repeat(192 * 1024)],
                 )?;
                 Ok(())
@@ -3146,7 +3004,7 @@ mod tests {
         assert_eq!(no_progress.code, ErrorCode::InternalError);
         assert_eq!(
             no_progress.message,
-            "a plan record exceeds the response page budget"
+            "one plan record exceeds the response budget"
         );
     }
 
@@ -3313,6 +3171,7 @@ mod tests {
             native.client_session.as_ref().unwrap().as_str()
         );
 
+        plane.deliver_review_reminders().unwrap();
         let pending = plane
             .execute(
                 "review.delivery.pending",
@@ -3327,6 +3186,15 @@ mod tests {
         );
         // The same Codex client name without the capability uses normal messages.
         let fallback=plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official","review_interval_ms":100,"active":true,"window_start_ms":now-100}),&local()).unwrap();
+        assert_eq!(fallback["due"], true);
+        plane.deliver_review_reminders().unwrap();
+        let fallback = plane
+            .execute(
+                "review.policy.status",
+                serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official"}),
+                &local(),
+            )
+            .unwrap();
         let envelope = serde_json::to_value(
             devcoordinator2_api::ResponseEnvelope::success("fixture", fallback).unwrap(),
         )
@@ -3439,19 +3307,6 @@ mod tests {
     }
 
     #[test]
-    fn every_foundation_operation_exists_in_the_exhaustive_registry() {
-        let implemented = FOUNDATION_OPERATIONS
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>();
-        let registered = devcoordinator2_api::OPERATIONS
-            .iter()
-            .map(|operation| operation.name)
-            .collect::<HashSet<_>>();
-        assert_eq!(implemented, registered);
-    }
-
-    #[test]
     fn native_mutation_events_follow_commits_and_reject_rolled_back_changes() {
         let temporary = tempdir().unwrap();
         let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
@@ -3473,7 +3328,7 @@ mod tests {
                 .call(move |connection| {
                     connection
                         .query_row(
-                            "SELECT COUNT(*) FROM owned_events WHERE kind=?1",
+                            "SELECT COUNT(*) FROM owned_events WHERE kind=$1",
                             [kind],
                             |row| row.get::<_, i64>(0),
                         )
@@ -3508,7 +3363,7 @@ mod tests {
             ),
         ] {
             let trigger = format!(
-                "CREATE TRIGGER reject_event_fixture BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT,'isolated transaction failure'); END;"
+                "CREATE OR REPLACE FUNCTION reject_event_fixture_func() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'isolated transaction failure'; END; $$; CREATE TRIGGER reject_event_fixture BEFORE INSERT ON {table} FOR EACH ROW EXECUTE FUNCTION reject_event_fixture_func();"
             );
             database
                 .call(move |connection| {
@@ -3529,7 +3384,8 @@ mod tests {
             );
             database
                 .call(|connection| {
-                    connection.execute_batch("DROP TRIGGER reject_event_fixture")?;
+                    connection
+                        .execute_batch(&format!("DROP TRIGGER reject_event_fixture ON {table}"))?;
                     Ok(())
                 })
                 .unwrap();
@@ -3551,12 +3407,12 @@ mod tests {
             active: true,
             sustain_seconds: 0.0,
         };
-        database.call(|connection| {connection.execute_batch("CREATE TRIGGER reject_alert_fixture BEFORE INSERT ON alerts BEGIN SELECT RAISE(ABORT,'isolated alert failure'); END;")?; Ok(())}).unwrap();
+        database.call(|connection| {connection.execute_batch("CREATE FUNCTION reject_alert_fixture_func() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'isolated alert failure'; END; $$; CREATE TRIGGER reject_alert_fixture BEFORE INSERT ON alerts FOR EACH ROW EXECUTE FUNCTION reject_alert_fixture_func();")?; Ok(())}).unwrap();
         assert!(alerts.evaluate(&[condition.clone()]).is_err());
         assert_eq!(count("alert.opened"), 0);
         database
             .call(|connection| {
-                connection.execute_batch("DROP TRIGGER reject_alert_fixture")?;
+                connection.execute_batch("DROP TRIGGER reject_alert_fixture ON alerts")?;
                 Ok(())
             })
             .unwrap();

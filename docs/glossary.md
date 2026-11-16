@@ -85,29 +85,24 @@ confirmed same-owner and public Console boundaries in security-assumptions.md.
 
 ## CLI and MCP
 
-Omit a scope to address the shared glossary. Use `--path` for a local project
-checkout or `--repository-id` for an existing project; never both. Public
-readers use authorized repository identities rather than implicit registration.
+Omit scope fields for the shared glossary. Supply JSON `path` for a local
+checkout or `repository_id` for an existing project; never both. Public readers
+use authorized repository identities rather than implicit registration.
 
-```text
-devcoordinator2 glossary list --query execution --language ru
-devcoordinator2 glossary resolve --path /absolute/project --limit 25
-devcoordinator2 glossary get CONCEPT_ID --repository-id REPOSITORY_ID
-devcoordinator2 glossary history --concept-id CONCEPT_ID
-devcoordinator2 glossary save --expected-revision REVISION --file concept.json
-devcoordinator2 glossary configure --path /absolute/project --expected-revision REVISION --file guidance.json
-devcoordinator2 glossary inherit CONCEPT_ID --repository-id REPOSITORY_ID --expected-revision REVISION
-devcoordinator2 glossary check --path /absolute/project --file usages.json
-devcoordinator2 glossary impact
+```sh
+devcoordinator2 operations --prefix glossary.
+devcoordinator2 schema glossary.save
+devcoordinator2 call glossary.list --params '{"query":"execution","language":"ru"}'
+devcoordinator2 call glossary.resolve --params '{"path":"/absolute/project","limit":25}'
+devcoordinator2 call glossary.get --params '{"concept_id":"CONCEPT_ID","repository_id":"REPOSITORY_ID"}'
+devcoordinator2 call glossary.save --params-file /absolute/save-request.json
 ```
 
-Save input is one concept object. Configure input has `languages`, `guidelines`
-and optionally `baseline_revision`; it cannot change the CLI's target scope.
-Check input is an array of `{concept_id, language, term}` usages. JSON here is
-the CLI transport, not a requirement on the project's localization storage.
-MCP exposes `glossary_list`, `glossary_resolve`, `glossary_get`, `glossary_save`,
-`glossary_configure`, `glossary_inherit`, `glossary_history`, `glossary_check`
-and `glossary_impact` with the corresponding strict typed schemas.
+Each file contains the complete typed operation parameters, including scope and
+`expected_revision`. Save wraps its concept in `concept`; configure and check
+use their operation schema. JSON is the transport, not a requirement on a
+project's localization storage. MCP uses `operation_schema` and `call_operation`
+with the identical names and parameters.
 
 List/resolve default to ten concepts, allow at most 25 per page and return
 `next_offset`; a byte-bounded page may contain fewer than the requested count.

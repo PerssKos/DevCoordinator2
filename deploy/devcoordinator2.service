@@ -6,7 +6,8 @@
 #   - create the client group named there and add trusted accounts
 [Unit]
 Description=DevCoordinator2 coordinator daemon
-After=network.target
+Requires=devcoordinator2-postgres.service
+After=network.target devcoordinator2-postgres.service
 
 [Service]
 Type=exec

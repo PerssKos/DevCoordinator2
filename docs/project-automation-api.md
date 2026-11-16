@@ -1,9 +1,11 @@
 # Review and delivery evidence API
 
-These protocol-v2 operations are passive Coordinator services. Codex owns
-purpose changes, review jobs, delivery requests, deadline revisions, timers,
-postponements and implementation admission. Coordinator does not schedule
-agents, store a second usage ledger or change a clock when a review completes.
+These protocol-v3 operations retain review decisions and qualified delivery
+receipts in PostgreSQL. Coordinator owns review policies, schedules, windows,
+reminder generation, escalation, and completion receipts. Native runtimes supply
+generic alarms and wakeups; other clients receive Coordinator agent messages.
+A delivered or acknowledged reminder does not complete a review. Runtime-owned
+implementation delivery alarms remain separate from review schedules.
 
 ## Caller work context
 
@@ -61,12 +63,13 @@ Unknown later versions remain unavailable, never zero usage. The configured
 Codex executable must also support its collector's database version when it
 resolves repository identities.
 These bindings remain in the canonical collector; Coordinator adds no usage
-mirror, timer or scheduler.
+mirror; its review scheduler reads the canonical collector through bounded APIs.
 
 ## Parent integration: exact read-only receipts
 
-`devcoordinator2 review show RECORD_ID@REVISION --format json` calls
-`review.receipt` / MCP `review_receipt` with `{"reference":"RECORD_ID@REVISION"}`.
+`devcoordinator2 call review.receipt --params '{"reference":"RECORD_ID@REVISION"}'` calls
+`review.receipt` with `{"reference":"RECORD_ID@REVISION"}`; MCP uses
+`call_operation` with the same dotted operation name and parameters.
 It returns the exact permanent revision, never an alias for the newest revision.
 Require envelope `ok: true`, `data.completed: true`, and matching
 `data.record.repositoryId`, `data.record.workstreamId` and review window
@@ -74,8 +77,8 @@ Require envelope `ok: true`, `data.completed: true`, and matching
 reference returned by `review.record`; do not substitute a decision ID or a
 caller-written statement. `data.record.projectId` equals `repositoryId`.
 
-`devcoordinator2 release evidence RECEIPT_ID --format json` calls
-`release.evidence` / MCP `release_evidence` with `{"reference":"RECEIPT_ID"}`.
+`devcoordinator2 call release.evidence --params '{"reference":"RECEIPT_ID"}'` calls
+`release.evidence` with `{"reference":"RECEIPT_ID"}`; MCP uses `call_operation`.
 Require envelope `ok: true`, `data.qualified: true`, matching
 `data.repository_id`, `data.target`, and expected `data.source_sha256`.
 `data.verified_at_ms` is the actual retained delivery observation timestamp;
@@ -119,11 +122,13 @@ does not publish a private deployment or alter access policy. Other origins,
 ports, credentials, query strings and fragments are refused. The service validates
 retained evidence and owned routing metadata; it does not perform network requests.
 
-Use the existing `release deliver-evidence --file request.json` operation with a
-new planned/requested release and the real retained catalog identities. Its
-qualified receipt is then read by `release evidence RECEIPT_ID`, including by
-native delivery clocks. A legacy `release deliver` record is not silently
-upgraded; new qualification requires retained verification evidence. Existing
+Use `devcoordinator2 call release.deliver_evidence --params-file request.json`
+with a new planned/requested release and the real retained catalog identities.
+Read its qualified receipt with
+`devcoordinator2 call release.evidence --params '{"reference":"RECEIPT_ID"}'`.
+Native delivery clocks consume that receipt. A legacy `release.deliver`
+metadata record is not silently upgraded; new qualification requires retained
+verification evidence. Existing
 artifact, registry-package and local-executable contracts are unchanged.
 
 ### Native Console observations
@@ -182,14 +187,15 @@ window or hard-stop into new work. Historical clock actions are retained in
 Coordinator history. Legacy runtime state marked `schedulingActive:false` is
 migration evidence only and cannot block Coordinator implementation.
 
-`review.prepare` / `review_prepare` accepts:
+`review.prepare` accepts:
 
 ```json
 {"repository_id":"project-alpha","workstream_id":"spec","window_start_ms":1000000,"window_end_ms":605800000,"offset":0,"limit":10,"before_decision_seq":null}
 ```
 
-CLI: `review prepare --repository-id ID --window-start-ms MS --window-end-ms MS`
-with optional `--workstream-id`, `--offset`, `--limit`, `--before-decision-seq`.
+CLI: `devcoordinator2 call review.prepare --params-file /absolute/prepare.json`,
+using the complete object above. Optional fields are `workstream_id`, `offset`,
+`limit`, and `before_decision_seq`.
 The window is half-open, nonempty, within nonnegative signed-64-bit Unix
 milliseconds, and never in the future. There is no calendar-duration cap:
 coalesced offline/specification gaps keep the entire original start/end pair.
@@ -234,10 +240,11 @@ User waits and intentional repeated release validation are not inferred waste.
 
 ## Record and revisions
 
-`review.record` / `review_record` accepts
+`review.record` accepts
 `{record_id?: string, expected_revision: integer, record: ReviewRecord}`.
-CLI: `review record --file record.json --expected-revision 0` creates a record;
-add `--record-id ID --expected-revision N` to append revision N+1. All writes
+CLI: `devcoordinator2 call review.record --params-file /absolute/record-request.json`.
+Use `expected_revision:0` for creation, or `record_id` and the current
+`expected_revision` to append revision N+1. All writes
 retain prior revisions. A stale revision fails atomically. Repository,
 workstream and window identity cannot change across revisions.
 
@@ -304,19 +311,19 @@ Dispositions: `proposed | applied | retained | reverted | inconclusive | unchang
 run/release evidence. Unchanged requires a specific reason and observations;
 "no change needed" alone fails. Review completion never marks an outcome or
 release delivered. Text/reference counts are bounded; each record is at most
-8 KiB. `review.show` / `review_show` takes
+8 KiB. `review.show` takes
 `{repository_id, record_id?, offset:0, limit:10}`; CLI
-`review list --repository-id ID [--record-id ID]`. Pages are at most ten
+`call review.show --params-file FILE`. Pages are at most ten
 revisions and 24 KiB of record bodies, ordered append-first, with `next_offset`.
 
 ## Delivery evidence
 
-The existing `release.deliver` / `release_deliver` deployment request and reply
-remain unchanged. New `release.deliver_evidence` / `release_deliver_evidence`
-and CLI `release deliver-evidence --file delivery.json` take:
+The `release.deliver` deployment request records release metadata.
+Qualified delivery uses `release.deliver_evidence` through MCP `call_operation`
+or CLI `call release.deliver_evidence --params-file FILE` with:
 
 ```json
-{"release_id":"RELEASE_ID","path":"/absolute/registered/worktree","run_id":"RUN_ID","check":"build","artifact":"package","manifest_sha256":"64-hex-digest","source_sha256":"64-hex-digest","target":"linux-cli","kind":"local-executable","verification_file":"delivery.json"}
+{"release_id":"RELEASE_ID","path":"/absolute/registered/worktree","run_id":"RUN_ID","check":"build","artifact":"package","manifest_sha256":"64-hex-digest","source_sha256":"64-hex-digest","target":"linux-cli","kind":"local-executable","verification_file":"delivery.json","completion_file":"completion.json"}
 ```
 
 Kinds: `artifact | registry-package | local-executable | web-deployment | native-console`.
@@ -368,8 +375,8 @@ the same receipt and original timestamps; new evidence cannot redeliver an
 already delivered release. Receipts survive retained-tree expiry as compact
 historical evidence, not a new usage/artifact mirror.
 
-`release.evidence_show` / `release_evidence_show` takes
-`{release_id, offset:0, limit:10}`; CLI `release evidence-show RELEASE_ID`.
+`release.evidence_show` takes
+`{release_id, offset:0, limit:10}`; CLI `call release.evidence_show --params-file FILE`.
 Use its returned receipt ID with the exact cheap lookup described first.
 
 All new operations retain trusted-local/administrator authorization, governed
@@ -396,7 +403,7 @@ immutable revisions through `usage.rate_card.list` and `usage.rate_card.set`;
 each card records model pattern, processing/context tiers, effective dates and
 the published source reference.
 
-Three read-only repository-administrator operations expose the existing review/accounting data. They are available through protocol v2 and matching `performance_overview`, `performance_reviews`, and `performance_review` MCP tools.
+Three read-only repository-administrator operations expose the existing review/accounting data. Protocol v3 and MCP `call_operation` use `performance.overview`, `performance.reviews`, and `performance.review`.
 
 - `performance.overview`: `{repository_id, window_start_ms, window_end_ms, outcome_cursor?, outcome_limit?, totals_only?}`. Windows are half-open UTC milliseconds. Normal results contain full-scope totals and paginated outcomes; `totals_only:true` uses the narrow provider-total reader (including an all-recorded window starting at zero), without loading outcome details.
 - `performance.reviews`: `{repository_id, before?, limit?, record_id?}`. Lists newest logical reviews, one latest revision each, or immutable revisions of one `record_id`. `total_reviews` counts logical records, not revisions. Pages have at most ten records and 24 KiB of record bodies; `next_before` continues the bounded read.

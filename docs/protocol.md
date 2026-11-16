@@ -1,13 +1,18 @@
 # Local Unix-Socket JSON Protocol
 
-Version: `protocol: 2`. One generated request/response/data contract serves
+Version: `protocol: 3`. One generated request/response/data contract serves
 the CLI, MCP server, and Console API. The committed JSON Schema 2020-12 bundle
-is `contracts/devcoordinator2-v2.schema.json`; `contract-commands.md` explains
+is `contracts/devcoordinator2-v3.schema.json`; `contract-commands.md` explains
 the domain operations.
 
-Purpose-aware automation clients use the passive [review and delivery evidence
-API](project-automation-api.md). Scheduling and deadlines remain client-owned;
-Coordinator stores structured review revisions and verified delivery receipts.
+Automation clients use the [review and delivery evidence API](project-automation-api.md).
+Coordinator owns review schedules, escalation and completion receipts. Runtime
+alarms deliver reminders; they do not complete reviews or own review workers.
+The generic CLI is `devcoordinator2 call <operation> --params JSON` (or bounded
+`--params-file FILE`, with `-` for stdin). `operations --prefix PREFIX` and
+`schema <operation>` are local catalog reads. MCP exposes `operations`,
+`operation_schema` and `call_operation`; the edge consumes generated operation
+metadata from that same Rust catalog. No v2 fallback is retained.
 
 ## Transport and framing
 
@@ -48,11 +53,37 @@ by the client or bounded daemon cleanup. A processing file left by a daemon
 restart receives a `daemon_unavailable` response; accepted mutations are
 re-queried rather than replayed.
 
+## Admission and maintenance isolation
+
+The daemon admits at most 16 ordinary request workers and four long-operation
+workers, with eight bounded wait-preparation slots. Overload returns `busy`
+before execution. Accepted mutations retain their permit until the real operation
+finishes, including after client disconnect. Passive waits release preparation
+capacity after registering their subscription. At most 256 sockets are retained.
+
+Read, write, and maintenance connections have separate bounded pools (8/4/2).
+Two maintenance workers use a 32-entry priority queue with FIFO ties, persisted
+leases/cursors/retry state and cooperative cancellation. A transaction ends at
+each batch. History retention and filesystem discovery do not run on request
+workers. Explicit bounded reminder lookup and native alarm registration preserve
+agent delivery without generating reminders inside unrelated requests.
+
+Collection endpoints return continuation cursors; callers must follow them to
+claim complete coverage. Repository pages also include per-repository worktree
+cursors. Plan detail has independent task and release sequence cursors.
+
+For repository navigation, `plan.overview` with `headers_only: true` returns a
+bounded `headers` collection with repository identity, presentation and source
+grouping, without calculating or returning Plan totals. This mode accepts no
+repository ID or path and uses the usual repository cursor and viewer access
+filter. The default overview still returns full aggregates; scoped detail also
+includes saved presentation and source grouping.
+
 ## Request
 
 ```json
 {
-  "protocol": 2,
+  "protocol": 3,
   "id": "<client-generated opaque string, echoed back>",
   "operation": "test.start",
   "params": { },
@@ -72,18 +103,18 @@ re-queried rather than replayed.
 - `model` and `effort` are optional current-runtime metadata. They are used by
   `agent.instruction.current` for conditional routing and are never inferred
   when absent.
-- Unknown envelope or operation-parameter fields are rejected. Protocol 1 is
+- Unknown envelope or operation-parameter fields are rejected. Protocols 1 and 2 are
   rejected with `protocol_unsupported` and is never translated or executed.
 
 ## Response
 
-Success: `{"protocol": 2, "id": "…", "ok": true, "data": { }}`
+Success: `{"protocol": 3, "id": "…", "ok": true, "data": { }}`
 
 Failure:
 
 ```json
 {
-  "protocol": 2, "id": "…", "ok": false,
+  "protocol": 3, "id": "…", "ok": false,
   "error": {
     "code": "test_start_failed",
     "message": "<one sentence>",
@@ -108,7 +139,7 @@ Stable snake_case, terminal (no retry/queue semantics):
 | code | meaning |
 |---|---|
 | `protocol_invalid` | malformed JSON or invalid/missing envelope fields |
-| `protocol_unsupported` | protocol is absent or is not version 2 |
+| `protocol_unsupported` | protocol is absent or is not version 3 |
 | `request_too_large` | request frame over 64 KiB |
 | `operation_unknown` | operation is not in the exhaustive registry |
 | `params_invalid` | parameters fail the generated operation schema |
@@ -182,13 +213,18 @@ A mixed Compose component waits for safe finite siblings to settle even if
 another finite service exits unsuccessfully. Cancellation and the declared
 readiness deadline still stop the operation. To retrieve retained results after
 an unsuccessful apply, declare the evidence service in `independent_services`
-and use `deployment start --component <component>/<evidence-service>`
-with the exact deployment identity. This starts the existing evidence container
+and call `deployment.start` with the exact `deployment_id` and
+`component: "<component>/<evidence-service>"`. This starts the existing evidence container
 without rerunning the finite calculations; the failed apply remains failed.
 
 `test.list` returns compact current-run summaries and a `next_worktree_id` cursor.
 Pass it as `after_worktree_id`, with optional `limit` (1–50), for the next page.
+An optional `repository_id` restricts the scan to that exact registered repository.
+Each page bounds both the worktrees inspected and the returned summaries. A page
+can therefore contain no runs and still have a continuation cursor; continue
+until the cursor is absent, rather than treating an empty page as completion.
 Pages stay below the response budget; list rows include up to eight checks and
 omit case streams and detailed failure payloads. Truncation flags remain explicit.
 Use `test.status` for one current run's details. Console follows list cursors and
-loads additional check details when their disclosure opens.
+shows the initial scoped results before loading later pages. It loads additional
+check details when their disclosure opens.

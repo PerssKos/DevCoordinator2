@@ -808,6 +808,13 @@ function normalizeWaitFor(value, name) {
       normalized[key] = value[key].trim();
     }
   }
+  if (value.responseStatus !== undefined) {
+    const status = Number(value.responseStatus);
+    if (!normalized.responseUrl || !Number.isInteger(status) || status < 100 || status > 599) {
+      throw new Error(`${name}.responseStatus requires responseUrl and an HTTP status integer`);
+    }
+    normalized.responseStatus = status;
+  }
   if (value.loadState !== undefined) {
     if (!["load", "domcontentloaded", "networkidle"].includes(value.loadState)) {
       throw new Error(`${name}.loadState must be one of load, domcontentloaded, networkidle`);
@@ -951,23 +958,34 @@ async function waitForRenderFrames(page, count, timeoutMs = 10000) {
   }), { frames: count, timeout: timeoutMs });
 }
 
-async function applyWaitFor(page, waitFor, armed = null, onCompleted = null) {
-  const evidence = [];
+async function applyWaitFor(page, waitFor, armed = null, evidence = [], onCompleted = null) {
   const timeout = waitFor.timeoutMs ?? 10000;
   const record = async (kind, operation, detail = {}) => {
     const started = Date.now();
-    const value = await operation();
-    evidence.push({ kind, durationMs: Date.now() - started, ...detail });
-    onCompleted?.({ kind, durationMs: Date.now() - started });
-    return value;
+    let outcome = "completed";
+    try {
+      const value = await operation();
+      onCompleted?.({ kind, durationMs: Date.now() - started });
+      return value;
+    } catch (error) {
+      outcome = error?.name === "TimeoutError" ? "timed_out" : "failed";
+      throw error;
+    } finally {
+      evidence.push({ kind, durationMs: Date.now() - started, ...detail, outcome });
+    }
   };
   const handles = armed || armWaitFor(page, waitFor);
   if (waitFor.responseUrl) {
+    const detail = { matcher: waitFor.responseUrl };
     await record("response", async () => {
       const result = await handles.response;
       if (result.error) throw result.error;
+      detail.status = result.value.status();
+      if (waitFor.responseStatus !== undefined && detail.status !== waitFor.responseStatus) {
+        throw new Error(`response status ${detail.status} did not match ${waitFor.responseStatus}`);
+      }
       return result.value;
-    }, { matcher: waitFor.responseUrl });
+    }, detail);
   }
   if (waitFor.url) {
     await record("url", async () => {
@@ -1084,6 +1102,39 @@ function normalizeActionList(value, name, { allowEmpty = false } = {}) {
       ownerState: ownerState?.trim() || null,
     };
   });
+}
+
+function normalizeCleanup(value, name) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).some((key) => !["actions", "waitFor"].includes(key))) {
+    throw new Error(`${name} must contain only actions and optional waitFor`);
+  }
+  const actions = normalizeActionList(value.actions, `${name}.actions`);
+  if (actions.length > 32 || actions.some((action) =>
+    action.ownerJourney || action.ownerState || action.timeoutMs <= 0 || action.timeoutMs > 30000)) {
+    throw new Error(`${name} requires at most 32 unconditional actions with 1..30000 ms deadlines`);
+  }
+  const waitFor = normalizeWaitFor(value.waitFor, `${name}.waitFor`);
+  for (const key of ["timeoutMs", "loadStateTimeoutMs"]) {
+    if (waitFor[key] !== undefined && (waitFor[key] <= 0 || waitFor[key] > 30000)) {
+      throw new Error(`${name}.waitFor.${key} must be between 1 and 30000 ms`);
+    }
+  }
+  return { actions, waitFor };
+}
+
+function publicCleanup(cleanup) {
+  if (!cleanup) return undefined;
+  return {
+    actions: cleanup.actions.map((action) => ({
+      ...action,
+      ...(Object.hasOwn(action, "value") ? { value: "<redacted>" } : {}),
+    })),
+    waitFor: cleanup.waitFor?.readback && Object.hasOwn(cleanup.waitFor.readback, "equals")
+      ? { ...cleanup.waitFor, readback: { ...cleanup.waitFor.readback, equals: "<redacted>" } }
+      : cleanup.waitFor,
+  };
 }
 
 function normalizeExecution(value, name, base = null) {
@@ -1308,6 +1359,7 @@ function normalizeTargetDefaults(value) {
       value.performance,
       "targetDefaults.performance",
     ),
+    cleanup: normalizeCleanup(value.cleanup, "targetDefaults.cleanup"),
   };
 }
 
@@ -1344,6 +1396,7 @@ function normalizeTargets(config, cli) {
       return {
         name: state.name.trim(),
         actions,
+        cleanup: normalizeCleanup(state.cleanup, `target.states[${stateIndex}].cleanup`),
         waitFor: normalizeWaitFor(state.waitFor, `target.states[${stateIndex}].waitFor`),
         afterFailureWaitFor: normalizeWaitFor(
           state.afterFailureWaitFor,
@@ -1452,6 +1505,9 @@ function normalizeTargets(config, cli) {
             `targets[${targetIndex}].execution`,
             targetDefaults.execution,
           ),
+          cleanup: item.cleanup === undefined
+            ? targetDefaults.cleanup
+            : normalizeCleanup(item.cleanup, `targets[${targetIndex}].cleanup`),
           authProfile: item.authProfile === undefined
             ? targetDefaults.authProfile
             : normalizeAuthProfileName(item.authProfile, `targets[${targetIndex}].authProfile`),
@@ -1778,6 +1834,7 @@ function privacySafeConfigContract(config) {
     : waitFor;
   const redactActions = (states) => (states || []).map((state) => ({
     ...state,
+    cleanup: publicCleanup(state.cleanup),
     waitFor: redactWaitFor(state.waitFor),
     afterFailureWaitFor: redactWaitFor(state.afterFailureWaitFor),
     actions: (state.actions || []).map((action) => ({
@@ -1788,6 +1845,7 @@ function privacySafeConfigContract(config) {
   const targets = (config.targets || []).map((target) => ({
     ...target,
     initialReadinessDiagnostics: publicInitialReadinessDiagnostics(target.initialReadinessDiagnostics),
+    cleanup: publicCleanup(target.cleanup),
     waitFor: redactWaitFor(target.waitFor),
     states: redactActions(target.states),
   }));
@@ -1799,6 +1857,7 @@ function privacySafeConfigContract(config) {
     targets,
     targetDefaults: config.targetDefaults ? {
       ...config.targetDefaults,
+      cleanup: publicCleanup(config.targetDefaults.cleanup),
       initialReadinessDiagnostics: publicInitialReadinessDiagnostics(config.targetDefaults.initialReadinessDiagnostics),
     } : config.targetDefaults,
     viewports: config.viewports,
@@ -2080,6 +2139,7 @@ function publicExecutionPlan(cells, maxPageCount, selection = null, requiredCove
 function publicTarget(target) {
   const { states, verificationState, includeBase, repositoryRoot, targetGroupId, baseTargetName, initialReadinessDiagnostics, ...safe } = target;
   const diagnostics = publicInitialReadinessDiagnostics(initialReadinessDiagnostics);
+  safe.cleanup = publicCleanup(target.cleanup);
   return diagnostics ? { ...safe, initialReadinessDiagnostics: diagnostics } : safe;
 }
 
@@ -2123,6 +2183,7 @@ function expandTargetStates(targets) {
         ],
         continuation: state.continuation,
         afterFailureWaitFor: state.afterFailureWaitFor,
+        cleanup: state.cleanup ?? target.cleanup,
         execution: normalizeExecution(state.execution, `state ${state.name}.execution`, target.execution),
         authProfile: state.authProfile ?? target.authProfile,
         performance: {
@@ -2374,6 +2435,7 @@ function prepareTargetContracts(targets, config) {
         ...(Object.hasOwn(action, "value") ? { value: "<redacted>" } : {}),
       })),
       afterFailureWaitFor: target.afterFailureWaitFor || null,
+      cleanup: publicCleanup(target.cleanup),
       execution: target.execution,
       authProfile: target.authProfile || null,
     };
@@ -2614,14 +2676,17 @@ async function applyInteractionState(page, state, target = null) {
       // without copying action payloads (which can be credentials or PII).
       let afterFailureObservation = null;
       if (Object.keys(state.afterFailureWaitFor || {}).length) {
+        const observationEvidence = [];
         try {
+          await applyWaitFor(page, state.afterFailureWaitFor, failureArmed, observationEvidence);
           afterFailureObservation = {
             checked: true,
-            waitEvidence: await applyWaitFor(page, state.afterFailureWaitFor, failureArmed),
+            waitEvidence: observationEvidence,
           };
         } catch (observationError) {
           afterFailureObservation = {
             checked: false,
+            waitEvidence: observationEvidence,
             error: String(observationError?.message || observationError).slice(0, 512),
           };
         }
@@ -2647,7 +2712,7 @@ async function applyInteractionState(page, state, target = null) {
     }
   }
   try {
-    waitEvidence.push(...await applyWaitFor(page, state.waitFor || {}, armed));
+    await applyWaitFor(page, state.waitFor || {}, armed, waitEvidence);
   } catch (error) {
     return {
       beforeContinuation,
@@ -2979,8 +3044,8 @@ async function launchWorkerBrowsers(chromium, first, launchOptions, count) {
 function coordinatorTargets(config) {
   if (!config.fromCoordinator) return [];
   const command = config.coordinatorCommand || "devcoordinator2";
-  const args = ["deployment", "list"];
-  if (config.coordinatorProject) args.push(config.coordinatorProject);
+  const params = config.coordinatorProject ? {path: config.coordinatorProject} : {};
+  const args = ["call", "deployment.list", "--params", JSON.stringify(params)];
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -2990,7 +3055,7 @@ function coordinatorTargets(config) {
     throw new Error(`Coordinator deployment discovery failed:\n${result.stderr || result.stdout}`);
   }
   const response = JSON.parse(result.stdout);
-  if (!response || response.protocol !== 2 || response.ok !== true || !response.data) {
+  if (!response || response.protocol !== 3 || response.ok !== true || !response.data) {
     throw new Error("Coordinator deployment discovery returned an invalid response");
   }
   const deployments = Array.isArray(response.data.deployments)
@@ -3460,6 +3525,23 @@ function pageVerifier() {
     }
     return null;
   };
+  const hasEmptyPaintClip = (el) => {
+    for (let node = el; node; node = composedParent(node)) {
+      const style = cs(node);
+      // Legacy clip only applies to absolutely/fixed-positioned boxes. A
+      // zero-area clip also hides descendants whose layout boxes stay large,
+      // as with nested text in a screen-reader-only label.
+      if (style.display === "contents" || !["absolute", "fixed"].includes(style.position)) continue;
+      const match = /^rect\(([^)]+)\)$/.exec(style.clip);
+      if (!match) continue;
+      const edges = match[1].split(/[,\s]+/).filter(Boolean);
+      if (edges.length !== 4) continue;
+      const values = edges.map(value => /^-?(?:\d+(?:\.\d*)?|\.\d+)px$/.test(value) ? Number.parseFloat(value) : null);
+      if ((values[0] !== null && values[2] !== null && values[2] <= values[0]) ||
+          (values[1] !== null && values[3] !== null && values[1] <= values[3])) return true;
+    }
+    return false;
+  };
   const rendered = (el) => {
     const style = cs(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
@@ -3469,6 +3551,7 @@ function pageVerifier() {
     // boxes for content the browser does not render; checkVisibility() is the
     // only reliable signal that such content is not actually shown.
     if (typeof el.checkVisibility === "function" && !el.checkVisibility()) return false;
+    if (hasEmptyPaintClip(el)) return false;
     const rect = nowRect(el);
     return rect.width > 1 && rect.height > 1;
   };
@@ -4032,6 +4115,51 @@ function pageVerifier() {
     return false;
   };
 
+  const textInkFitsEllipsisLine = (el, owner, clip) => {
+    const ownerStyle = cs(owner);
+    // Decorations can paint through descendants without appearing in the
+    // descendant's computed text-decoration. Canvas glyph metrics omit them.
+    for (let node = el; node; node = composedParent(node)) {
+      const style = cs(node);
+      if (style.textShadow !== "none" || style.textDecorationLine !== "none" ||
+          px(style.webkitTextStrokeWidth) > 0) return false;
+    }
+    for (let node = el; node && node !== owner; node = composedParent(node)) {
+      const style = cs(node);
+      if (isControl(node) || style.display !== "inline" || style.position !== "static" ||
+          style.verticalAlign !== "baseline" || style.transform !== "none" ||
+          [style.translate, style.rotate, style.scale].some(value => value && value !== "none") ||
+          style.writingMode !== "horizontal-tb" || style.direction !== "ltr" ||
+          style.textTransform !== "none" || style.fontFeatureSettings !== "normal" ||
+          style.fontVariationSettings !== "normal" || style.fontVariantCaps !== "normal" ||
+          ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight"].some(key => style[key] !== ownerStyle[key])) return false;
+    }
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return false;
+    const style = cs(el);
+    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    context.textBaseline = "alphabetic";
+    let measured = false;
+    for (const node of el.childNodes) {
+      if (node.nodeType !== Node.TEXT_NODE || !node.textContent?.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const fragments = [...range.getClientRects()];
+      range.detach?.();
+      if (!fragments.length || fragments.some(rect => rect.top !== fragments[0].top || rect.bottom !== fragments[0].bottom)) return false;
+      const rect = fragments[0];
+      const metrics = context.measureText(node.textContent);
+      const { fontBoundingBoxAscent: ascent, fontBoundingBoxDescent: descent,
+        actualBoundingBoxAscent: inkAscent, actualBoundingBoxDescent: inkDescent } = metrics;
+      if (![ascent, descent, inkAscent, inkDescent].every(Number.isFinite) ||
+          rect.height !== ascent + descent) return false;
+      const baseline = rect.top + ascent;
+      if (baseline - inkAscent < clip.top || baseline + inkDescent > clip.bottom) return false;
+      measured = true;
+    }
+    return measured;
+  };
+
   // Walks ancestors and reports content cut off by an ancestor's overflow
   // clipping. This is the common real-world crop: the element itself has
   // overflow visible, but a parent with overflow hidden/clip cuts it. Scrollable
@@ -4086,6 +4214,11 @@ function pageVerifier() {
         const visY = clipsY ? Math.max(0, Math.min(box.bottom, clip.bottom) - Math.max(box.top, clip.top)) / height : 1;
         const cutFraction = 1 - visX * visY;
         if (maxCut > 4 && cutFraction > 0.08) {
+          const ellipsisText = style.textOverflow === "ellipsis" && style.whiteSpace === "nowrap" && !isControl(el);
+          // Inline font fragments can extend beyond the line even when every
+          // glyph is painted inside it. Measure ink before excusing a vertical
+          // fragment cut; line-height or a one-pixel tolerance is not proof.
+          const inlineInkWithinClip = ellipsisText && (cutTop > 0 || cutBottom > 0) && textInkFitsEllipsisLine(el, node, clip);
           report.cut = {
             clipperSelector: selectorPath(node),
             cutLeft: round(cutLeft),
@@ -4095,7 +4228,8 @@ function pageVerifier() {
             cutFraction: round(cutFraction),
             fullyHidden: visX <= 0 || visY <= 0,
             singleLineEllipsis:
-              style.textOverflow === "ellipsis" && style.whiteSpace === "nowrap" && cutTop === 0 && cutBottom === 0,
+              ellipsisText && ((cutTop === 0 && cutBottom === 0) || inlineInkWithinClip),
+            inlineInkWithinClip,
             lineClamp: Boolean(style.webkitLineClamp && style.webkitLineClamp !== "none"),
             carouselContext,
             overflowX: style.overflowX,
@@ -4168,7 +4302,7 @@ function pageVerifier() {
       const cut = geo.cut;
       if (cut) {
         const evidence = { evidence: cut };
-        if (cut.singleLineEllipsis && !config.rules.strictTruncation && cut.cutTop === 0 && cut.cutBottom === 0) {
+        if (cut.singleLineEllipsis && !config.rules.strictTruncation) {
           if (ellipsisTruncations.length < 100) {
             ellipsisTruncations.push({ selector: selectorPath(el), textSnippet: snippet(el), kind: "ancestor-text-overflow-ellipsis" });
           }
@@ -4514,19 +4648,26 @@ function pageVerifier() {
       clip = scrollAncestorClipBox(el);
       if (rect.width <= 1 || rect.height <= 1) return;
     }
-    const insetX = Math.min(8, Math.max(2, rect.width / 4));
-    const insetY = Math.min(8, Math.max(2, rect.height / 4));
+    // A wrapped inline's union includes empty areas occupied by neighboring
+    // badges or text. Sample its rendered text fragments instead. Controls
+    // and block/container candidates retain their full interaction boxes.
+    const textFragments = !isControl(el) && cs(el).display === "inline" ? directTextRects(el) : [];
+    const sampleRects = textFragments.length > 1 ? textFragments : [rect];
     const sampleLeft = Math.max(0, clip.left);
     const sampleTop = Math.max(0, clip.top);
     const sampleRight = Math.min(window.innerWidth, clip.right);
     const sampleBottom = Math.min(window.innerHeight, clip.bottom);
-    const points = [
-      { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
-      { x: rect.left + insetX, y: rect.top + insetY },
-      { x: rect.right - insetX, y: rect.top + insetY },
-      { x: rect.left + insetX, y: rect.bottom - insetY },
-      { x: rect.right - insetX, y: rect.bottom - insetY },
-    ].filter((point) => point.x >= sampleLeft && point.y >= sampleTop && point.x <= sampleRight && point.y <= sampleBottom);
+    const points = sampleRects.flatMap((fragment) => {
+      const insetX = Math.min(8, Math.max(2, fragment.width / 4));
+      const insetY = Math.min(8, Math.max(2, fragment.height / 4));
+      return [
+        { x: fragment.left + fragment.width / 2, y: fragment.top + fragment.height / 2 },
+        { x: fragment.left + insetX, y: fragment.top + insetY },
+        { x: fragment.right - insetX, y: fragment.top + insetY },
+        { x: fragment.left + insetX, y: fragment.bottom - insetY },
+        { x: fragment.right - insetX, y: fragment.bottom - insetY },
+      ];
+    }).filter((point) => point.x >= sampleLeft && point.y >= sampleTop && point.x <= sampleRight && point.y <= sampleBottom);
     if (points.length < 2) return;
     let covered = 0;
     const contextualCovers = new Map();
@@ -5706,10 +5847,10 @@ async function verifyTarget(page, target, viewport, config, cellId, sessionFixtu
     ));
     if (sessionFixture) await sessionFixture.verify();
     initialStage = "initial-readiness";
-    result.waitEvidence.push(...await stage(
+    await stage(
       "initial-readiness",
-      () => applyWaitFor(page, initialWait, initialArmed, diagnostics?.completedWait),
-    ));
+      () => applyWaitFor(page, initialWait, initialArmed, result.waitEvidence, diagnostics?.completedWait),
+    );
   } catch (error) {
     result.skipped = true;
     result.outcome = "navigation_error";
@@ -7132,11 +7273,13 @@ function cacheSecretDigest(config, target) {
       selector: action.selector,
       value: action.value,
     })),
+    cleanupActions: target.cleanup?.actions,
     readbackExpectations: [
       config.waitFor?.readback?.equals,
       target.waitFor?.readback?.equals,
       target.verificationState?.waitFor?.readback?.equals,
       target.verificationState?.afterFailureWaitFor?.readback?.equals,
+      target.cleanup?.waitFor?.readback?.equals,
       authProfile?.waitFor?.readback?.equals,
     ],
   }));
@@ -7417,7 +7560,8 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
   if (profile && !profile.ok) {
     const page = syntheticCellResult(cell, "auth_setup_error", `authentication profile failed: ${profile.error}`);
     page.execution = execution;
-    page.cleanup = { status: "not-required" };
+    page.cleanup = { status: "not-required", ...(cell.target.cleanup
+      ? { postCapture: { status: "skipped", reason: "authentication-not-ready" } } : {}) };
     return {
       page,
       unsafeStop: cell.target.execution.stopOnFailure
@@ -7430,13 +7574,18 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
     cacheRead = readCachedCell(cell, config, browserLabel, cacheRoot);
     if (cacheRead.hit) {
       cacheRead.page.execution = execution;
-      cacheRead.page.cleanup = { status: "not-required" };
+      cacheRead.page.cleanup = { status: "not-required", ...(cell.target.cleanup
+        ? { postCapture: { status: "skipped", reason: "cached-cell" } } : {}) };
       return { page: cacheRead.page, unsafeStop: null };
     }
   }
   let context = null;
+  let page = null;
   let pageResult = null;
   let cleanupError = null;
+  let postCapture = cell.target.cleanup
+    ? { status: "not-applicable", reason: "page-not-created" }
+    : null;
   try {
     context = await browser.newContext({
       ...cell.viewport.contextOptions,
@@ -7444,7 +7593,7 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
       ...(config.ignoreHttpsErrors ? { ignoreHTTPSErrors: true } : {}),
     });
     if (!profile?.preserveCookies) await applyConfiguredCookies(context, config.cookies, cell.target.url);
-    const page = await context.newPage();
+    page = await context.newPage();
     const fixture = profile?.sessionStorage ? await installSessionStorageFixture(page, profile.sessionStorage) : null;
     try {
       pageResult = await verifyTarget(page, cell.target, cell.viewport, config, cell.cellId, fixture);
@@ -7458,11 +7607,28 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
       `cell execution failed: ${String(error?.message || error).slice(0, 512)}`,
     );
   } finally {
+    if (page && cell.target.cleanup) {
+      try {
+        const cleanup = await applyInteractionState(page, {
+          ...cell.target.cleanup,
+          // Arm all cleanup response waits before the first action.
+          continuation: { triggerActionIndex: 0 },
+        });
+        postCapture = {
+          status: cleanup.failure ? "failed" : "completed",
+          actions: cleanup.actionTimings,
+          waits: cleanup.waitEvidence,
+          ...(cleanup.failure ? { failure: cleanup.failure } : {}),
+        };
+      } catch (error) {
+        postCapture = { status: "failed", reason: `cleanup execution failed (${error?.name || "error"})` };
+      }
+    }
     if (context) {
       try {
         await context.close();
       } catch (error) {
-        cleanupError = String(error?.message || error).slice(0, 512);
+        cleanupError = `context close failed (${error?.name || "error"})`;
       }
     }
   }
@@ -7470,11 +7636,16 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
   pageResult.cleanup = cleanupError
     ? { status: "failed", error: cleanupError }
     : { status: "completed" };
+  if (postCapture) {
+    pageResult.cleanup.contextStatus = cleanupError ? "failed" : "completed";
+    pageResult.cleanup.postCapture = postCapture;
+    if (postCapture.status !== "completed") pageResult.cleanup.status = "failed";
+  }
   pageResult.cache = { hit: false, reason: cacheRead.reason, key: cacheRead.key || null };
-  if (cleanupError && pageResult.outcome === "checked") {
+  if (pageResult.cleanup.status === "failed" && pageResult.outcome === "checked") {
     pageResult.skipped = true;
     pageResult.outcome = "cleanup_error";
-    pageResult.skipReason = `isolated browser context cleanup failed: ${cleanupError}`;
+    pageResult.skipReason = cleanupError || "declared post-capture UI cleanup failed";
   }
   if (cacheRoot) {
     try {
@@ -7583,7 +7754,8 @@ async function executePlan(
         stopOnFailure: cell.target.execution.stopOnFailure,
         stopReason: cell.target.execution.stopReason,
       };
-      page.cleanup = { status: "not-required" };
+      page.cleanup = { status: "not-required", ...(cell.target.cleanup
+        ? { postCapture: { status: "skipped", reason: "unsafe-stop-unexecuted" } } : {}) };
       results.set(cell.planIndex, page);
       appendProgress(config, page);
     }

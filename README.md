@@ -1,5 +1,11 @@
 # DevCoordinator2
 
+The v3 control plane uses a dedicated local PostgreSQL authority store and one
+generated operation catalog. Discover operations with `devcoordinator2 operations`,
+inspect `devcoordinator2 schema <operation>`, and invoke
+`devcoordinator2 call <operation> --params JSON`. Full cutover requirements are
+in [the v3 acceptance contract](docs/acceptance-v3.md).
+
 DevCoordinator2 is the server-wide authority for governed development tests,
 deployments, health, planning work, and agent-facing operational coordination.
 This repository is also the canonical source for six reusable agent skills and
@@ -66,9 +72,9 @@ and runtime files are preserved.
 
 ## Recovering saved planning history
 
-`devcoordinator2 plan recovery` prepares a repository-scoped import from an
-explicit activation snapshot. Supply `--repository-id`, `--transaction-dir`,
-and the inspected `--backup-sha256`. The response contains counts, original-to-new
+`devcoordinator2 call plan.recovery` prepares a repository-scoped import from an
+explicit activation snapshot. Supply JSON `repository_id`, `transaction_dir`,
+and the inspected `backup_sha256` through `--params` or `--params-file`. The response contains counts, original-to-new
 display-number mappings, and a `live_sha256`; it contains no saved record text.
 `existing_counts` identifies matching records that will remain untouched;
 `counts` excludes those duplicates. Events are matched by content and occurrence
@@ -76,16 +82,16 @@ count, not their database-local IDs. Different saved/live versions return
 `status: conflicted`, a total `conflict_count`, and at most 64 `conflicts` naming
 record IDs, changed fields and hashes without their values. Conflicts still
 block application; a preview is not permission to overwrite either version.
-Repeat the same command with `--apply --expected-live-sha256 <live_sha256>` only
+Repeat the same command with JSON `apply:true` and `expected_live_sha256` only
 for the reviewed result. Changed inputs and identity conflicts reject the entire
 operation. Identical overlaps are retained separately as provenance without
 turning existing releases into historical releases. A repeat of a completed import returns its permanent receipt without
 replaying it.
 
 For reviewed task conflicts limited to status, update timestamp and list position,
-`--preserve-live-tasks <json-file>` accepts at most 64 objects with `task_id`,
+The `preserve_live_tasks` array accepts at most 64 objects with `task_id`,
 `saved_sha256`, and `live_sha256` from the current conflict plan. Supply that
-plan's `--expected-live-sha256` when preparing and applying this choice. Every
+plan's `expected_live_sha256` when preparing and applying this choice. Every
 live task field stays untouched; both complete versions are retained as recovery
 provenance. Other conflicts remain blocking. Counts and sequence mappings include
 only missing records. `conflict_count` includes resolved conflicts, whose exact
@@ -107,13 +113,11 @@ rollback or restores unrelated runtime, account, route or credential data.
 component bindings and ports for one explicit repository/deployment pair. It uses
 the same immutable, hash-verified activation backup reader as planning recovery.
 
-`devcoordinator2 deployment recovery --repository-id <id> --deployment-id <id>
---transaction-dir <saved-activation> --backup-sha256 <hash>` prepares recovery of
+`devcoordinator2 call deployment.recovery --params-file /absolute/recovery-request.json` prepares recovery of
 a private worktree preview containing processes and one owned PostgreSQL database.
 It checks the exact running database, volume, private credential binding, original
 ports and current ownership. Newer deployment generations and competing ports or
-routes block recovery. Apply only the reviewed plan with `--apply
---expected-live-sha256 <hash>`.
+routes block recovery. Apply only the reviewed plan with JSON `apply:true` and `expected_live_sha256`.
 
 Application data is streamed to a private PostgreSQL archive, validated and hashed
 before ownership changes. Recovery keeps complete prior and saved metadata in an

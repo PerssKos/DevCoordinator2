@@ -13,6 +13,7 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use crate::database::OptionalExtension;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use devcoordinator2_api::params::{
     CreateFeedback, EvidenceImage, EvidenceReference, FeedbackDelete, FeedbackEdit, FeedbackReply,
@@ -27,7 +28,6 @@ use devcoordinator2_api::results::{
 };
 use devcoordinator2_api::{ErrorCode, MAX_RESPONSE_BYTES, ProtocolError, ResponseEnvelope};
 use regex::Regex;
-use rusqlite::OptionalExtension;
 use rustix::fs::{self as unix_fs, Dir, Mode, OFlags};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -131,7 +131,7 @@ impl TestEvidenceService {
         if let Some(image_id) = &params.image_id {
             validate_digest(image_id, "image_id")?;
         }
-        let worktrees = self.database.call(|connection| {
+        let worktrees = self.database.read(|connection| {
             let mut statement = connection.prepare("SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id ORDER BY w.worktree_id")?;
             Ok(statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?.collect::<Result<Vec<_>, _>>()?)
         }).map_err(database_error)?;
@@ -361,10 +361,10 @@ impl TestEvidenceService {
             let requested = path.to_string_lossy().into_owned();
             return self
                 .database
-                .call(move |connection| {
+                .read(move |connection| {
                     connection
                         .query_row(
-                            "SELECT worktree_path,worktree_id,repository_id FROM worktrees WHERE worktree_path=?1",
+                            "SELECT worktree_path,worktree_id,repository_id FROM worktrees WHERE worktree_path=$1",
                             [&requested],
                             |row| {
                                 Ok(ResolvedWorktree {
@@ -565,8 +565,8 @@ fn evidence_page_result(
     let mut feedback = Vec::new();
     for unit in units {
         match unit {
-            EvidencePageUnit::Bundle(bundle) => bundles.push((**bundle).clone()),
-            EvidencePageUnit::Feedback(row) => feedback.push((**row).clone()),
+            EvidencePageUnit::Bundle(bundle) => bundles.push(bundle.as_ref().clone()),
+            EvidencePageUnit::Feedback(row) => feedback.push(row.as_ref().clone()),
         }
     }
     EvidenceGet {
@@ -1776,18 +1776,23 @@ impl TestEvidenceService {
         let result_id = feedback_id.clone();
         self.database
             .transaction(move |transaction| {
+                transaction.query_row(
+                    "SELECT feedback_id FROM visual_feedback WHERE feedback_id=$1 FOR UPDATE",
+                    [&feedback_id],
+                    |_| Ok(()),
+                )?;
                 let seq: u32 = transaction.query_row(
-                    "SELECT COALESCE(MAX(seq),0)+1 FROM visual_feedback_comments WHERE feedback_id=?1",
+                    "SELECT COALESCE(MAX(seq),0)+1 FROM visual_feedback_comments WHERE feedback_id=$1",
                     [&feedback_id],
                     |row| row.get(0),
                 )?;
                 transaction.execute(
-                    "INSERT INTO visual_feedback_comments(comment_id,feedback_id,seq,body,created_at,created_by,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?5)",
-                    rusqlite::params![comment_id, feedback_id, seq, body, now, actor],
+                    "INSERT INTO visual_feedback_comments(comment_id,feedback_id,seq,body,created_at,created_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$5)",
+                    crate::database::params![comment_id, feedback_id, seq, body, now, actor],
                 )?;
                 transaction.execute(
-                    "UPDATE visual_feedback SET updated_at=?1 WHERE feedback_id=?2",
-                    rusqlite::params![now, feedback_id],
+                    "UPDATE visual_feedback SET updated_at=$1 WHERE feedback_id=$2",
+                    crate::database::params![now, feedback_id],
                 )?;
                 append_feedback_event(
                     transaction,
@@ -1836,14 +1841,14 @@ impl TestEvidenceService {
         let comment_id = params.comment_id.clone();
         let comment = self
             .database
-            .call({
+            .read({
                 let feedback_id = feedback_id.clone();
                 let comment_id = comment_id.clone();
                 move |connection| {
                     connection
                         .query_row(
-                            "SELECT body,created_by,deleted_at FROM visual_feedback_comments WHERE comment_id=?1 AND feedback_id=?2",
-                            rusqlite::params![comment_id, feedback_id],
+                            "SELECT body,created_by,deleted_at FROM visual_feedback_comments WHERE comment_id=$1 AND feedback_id=$2",
+                            crate::database::params![comment_id, feedback_id],
                             |row| {
                                 Ok(CommentOwner {
                                     body: row.get(0)?,
@@ -1869,13 +1874,14 @@ impl TestEvidenceService {
         let result_id = feedback_id.clone();
         self.database
             .transaction(move |transaction| {
+                crate::plan::lock_repository(transaction, &feedback.repository_id)?;
                 transaction.execute(
-                    "UPDATE visual_feedback_comments SET body=?1,updated_at=?2 WHERE comment_id=?3",
-                    rusqlite::params![body, now, comment_id],
+                    "UPDATE visual_feedback_comments SET body=$1,updated_at=$2 WHERE comment_id=$3",
+                    crate::database::params![body, now, comment_id],
                 )?;
                 transaction.execute(
-                    "UPDATE visual_feedback SET updated_at=?1 WHERE feedback_id=?2",
-                    rusqlite::params![now, feedback_id],
+                    "UPDATE visual_feedback SET updated_at=$1 WHERE feedback_id=$2",
+                    crate::database::params![now, feedback_id],
                 )?;
                 append_feedback_event(
                     transaction,
@@ -1889,8 +1895,8 @@ impl TestEvidenceService {
                 )?;
                 if comment_id == feedback.root_comment_id {
                     transaction.execute(
-                        "UPDATE tasks SET title=?1,outcome=?2,updated_at=?3 WHERE task_id=?4",
-                        rusqlite::params![
+                        "UPDATE tasks SET title=$1,outcome=$2,updated_at=$3 WHERE task_id=$4",
+                        crate::database::params![
                             task_title(&body),
                             task_outcome(&body),
                             now,
@@ -1942,9 +1948,10 @@ impl TestEvidenceService {
             let now = self.timestamp()?;
             self.database
                 .transaction(move |transaction| {
+                    crate::plan::lock_repository(transaction, &feedback.repository_id)?;
                     transaction.execute(
-                        "UPDATE tasks SET status=?1,updated_at=?2 WHERE task_id=?3",
-                        rusqlite::params![target, now, feedback.task_id],
+                        "UPDATE tasks SET status=$1,updated_at=$2 WHERE task_id=$3",
+                        crate::database::params![target, now, feedback.task_id],
                     )?;
                     append_plan_event(
                         transaction,
@@ -1959,8 +1966,8 @@ impl TestEvidenceService {
                         Some("Updated from the linked screenshot discussion."),
                     )?;
                     transaction.execute(
-                        "UPDATE visual_feedback SET updated_at=?1 WHERE feedback_id=?2",
-                        rusqlite::params![now, feedback.feedback_id],
+                        "UPDATE visual_feedback SET updated_at=$1 WHERE feedback_id=$2",
+                        crate::database::params![now, feedback.feedback_id],
                     )?;
                     append_feedback_event(
                         transaction,
@@ -2004,14 +2011,15 @@ impl TestEvidenceService {
             let now = self.timestamp()?;
             self.database
                 .transaction(move |transaction| {
+                    crate::plan::lock_repository(transaction, &feedback.repository_id)?;
                     transaction.execute(
-                        "UPDATE visual_feedback SET deleted_at=?1,deleted_by=?2,updated_at=?1 WHERE feedback_id=?3",
-                        rusqlite::params![now, actor, feedback.feedback_id],
+                        "UPDATE visual_feedback SET deleted_at=$1,deleted_by=$2,updated_at=$1 WHERE feedback_id=$3",
+                        crate::database::params![now, actor, feedback.feedback_id],
                     )?;
                     if feedback.task_status != "dropped" {
                         transaction.execute(
-                            "UPDATE tasks SET status='dropped',updated_at=?1 WHERE task_id=?2",
-                            rusqlite::params![now, feedback.task_id],
+                            "UPDATE tasks SET status='dropped',updated_at=$1 WHERE task_id=$2",
+                            crate::database::params![now, feedback.task_id],
                         )?;
                         append_plan_event(
                             transaction,
@@ -2060,11 +2068,11 @@ impl TestEvidenceService {
         let worktree_id = resolved.worktree_id;
         let run_id = run_id.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 query_feedback(
                     connection,
-                    "WHERE vf.feedback_id=?1 AND vf.repository_id=?2 AND vf.worktree_id=?3 AND vf.run_id=?4",
-                    rusqlite::params![feedback_id, repository_id, worktree_id, run_id],
+                    "WHERE vf.feedback_id=$1 AND vf.repository_id=$2 AND vf.worktree_id=$3 AND vf.run_id=$4",
+                    crate::database::params![feedback_id, repository_id, worktree_id, run_id],
                 )
             })
             .map_err(database_error)?
@@ -2085,11 +2093,11 @@ impl TestEvidenceService {
         let run_id = run_id.to_owned();
         let actor = actor.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let rows = query_feedback(
                     connection,
-                    "WHERE vf.repository_id=?1 AND vf.worktree_id=?2 AND vf.run_id=?3 ORDER BY vf.created_at,vf.feedback_id LIMIT 512",
-                    rusqlite::params![repository_id, worktree_id, run_id],
+                    "WHERE vf.repository_id=$1 AND vf.worktree_id=$2 AND vf.run_id=$3 ORDER BY vf.created_at,vf.feedback_id LIMIT 512",
+                    crate::database::params![repository_id, worktree_id, run_id],
                 )?;
                 rows.into_iter()
                     .map(|row| public_feedback(connection, row, &actor))
@@ -2102,11 +2110,11 @@ impl TestEvidenceService {
         let feedback_id = feedback_id.to_owned();
         let actor = actor.to_owned();
         self.database
-            .call(move |connection| {
+            .read(move |connection| {
                 let row = query_feedback(
                     connection,
-                    "WHERE vf.feedback_id=?1",
-                    rusqlite::params![feedback_id],
+                    "WHERE vf.feedback_id=$1",
+                    crate::database::params![feedback_id],
                 )?
                 .into_iter()
                 .next()
@@ -2157,17 +2165,18 @@ struct FeedbackInsert {
 }
 
 fn insert_feedback(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &crate::database::Transaction<'_>,
     insert: FeedbackInsert,
 ) -> Result<u32, DatabaseError> {
+    crate::plan::lock_repository(transaction, &insert.repository_id)?;
     let seq: u32 = transaction.query_row(
-        "SELECT COALESCE(MAX(seq),0)+1 FROM tasks WHERE repository_id=?1",
+        "SELECT COALESCE(MAX(seq),0)+1 FROM tasks WHERE repository_id=$1",
         [&insert.repository_id],
         |row| row.get(0),
     )?;
     transaction.execute(
-        "INSERT INTO tasks(task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,created_at,created_by,updated_at) VALUES(?1,?2,NULL,NULL,?3,0,?4,?5,?6,?7,?7,?8,'user_feedback','planned',NULL,?9,?10,?9)",
-        rusqlite::params![
+        "INSERT INTO tasks(task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,unblock_condition,verification,technical_note,kind,status,estimated_loc,created_at,created_by,updated_at) VALUES($1,$2,NULL,NULL,$3,0,$4,$5,$6,$7,$7,$8,'user_feedback','planned',NULL,$9,$10,$9)",
+        crate::database::params![
             insert.task_id,
             insert.repository_id,
             seq,
@@ -2194,8 +2203,8 @@ fn insert_feedback(
         Some("Created from a marked visual test screenshot."),
     )?;
     transaction.execute(
-        "INSERT INTO visual_feedback(feedback_id,task_id,repository_id,worktree_id,run_id,check_name,phase,case_id,formal_run_id,cell_id,review_cell_key,screenshot_kind,screenshot_sha256,image_id,geometry_json,root_comment_id,created_at,created_by,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?17)",
-        rusqlite::params![
+        "INSERT INTO visual_feedback(feedback_id,task_id,repository_id,worktree_id,run_id,check_name,phase,case_id,formal_run_id,cell_id,review_cell_key,screenshot_kind,screenshot_sha256,image_id,geometry_json,root_comment_id,created_at,created_by,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$17)",
+        crate::database::params![
             insert.feedback_id,
             insert.task_id,
             insert.repository_id,
@@ -2217,8 +2226,8 @@ fn insert_feedback(
         ],
     )?;
     transaction.execute(
-        "INSERT INTO visual_feedback_comments(comment_id,feedback_id,seq,body,created_at,created_by,updated_at) VALUES(?1,?2,1,?3,?4,?5,?4)",
-        rusqlite::params![
+        "INSERT INTO visual_feedback_comments(comment_id,feedback_id,seq,body,created_at,created_by,updated_at) VALUES($1,$2,1,$3,$4,$5,$4)",
+        crate::database::params![
             insert.comment_id,
             insert.feedback_id,
             insert.body,
@@ -2240,23 +2249,23 @@ fn insert_feedback(
 }
 
 fn place_root_task(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &crate::database::Transaction<'_>,
     repository_id: &str,
     task_id: &str,
 ) -> Result<u32, DatabaseError> {
     let mut statement = transaction.prepare(
-        "SELECT task_id FROM tasks WHERE repository_id=?1 AND parent_task_id IS NULL AND release_id IS NULL AND status!='dropped' AND task_id!=?2 ORDER BY position,seq",
+        "SELECT task_id FROM tasks WHERE repository_id=$1 AND parent_task_id IS NULL AND release_id IS NULL AND status!='dropped' AND task_id!=$2 ORDER BY position,seq",
     )?;
     let mut siblings = statement
-        .query_map(rusqlite::params![repository_id, task_id], |row| {
+        .query_map(crate::database::params![repository_id, task_id], |row| {
             row.get::<_, String>(0)
         })?
         .collect::<Result<Vec<_>, _>>()?;
     siblings.push(task_id.to_owned());
     for (offset, sibling) in siblings.iter().enumerate() {
         transaction.execute(
-            "UPDATE tasks SET position=?1 WHERE task_id=?2",
-            rusqlite::params![offset as u32 + 1, sibling],
+            "UPDATE tasks SET position=$1 WHERE task_id=$2",
+            crate::database::params![offset as u32 + 1, sibling],
         )?;
     }
     Ok(bounded_u32(siblings.len()))
@@ -2264,7 +2273,7 @@ fn place_root_task(
 
 #[allow(clippy::too_many_arguments)]
 fn append_plan_event(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &crate::database::Transaction<'_>,
     repository_id: &str,
     subject_kind: &str,
     subject_id: &str,
@@ -2276,15 +2285,15 @@ fn append_plan_event(
     note: Option<&str>,
 ) -> Result<(), DatabaseError> {
     transaction.execute(
-        "INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at,note) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        rusqlite::params![repository_id, subject_kind, subject_id, event, from_value, to_value, actor, now, note],
+        "INSERT INTO plan_events(repository_id,subject_kind,subject_id,event,from_value,to_value,actor,at,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        crate::database::params![repository_id, subject_kind, subject_id, event, from_value, to_value, actor, now, note],
     )?;
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn append_feedback_event(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &crate::database::Transaction<'_>,
     feedback_id: &str,
     event: &str,
     comment_id: Option<&str>,
@@ -2294,8 +2303,8 @@ fn append_feedback_event(
     now: &str,
 ) -> Result<(), DatabaseError> {
     transaction.execute(
-        "INSERT INTO visual_feedback_events(feedback_id,event,comment_id,from_value,to_value,actor,at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-        rusqlite::params![feedback_id, event, comment_id, from_value, to_value, actor, now],
+        "INSERT INTO visual_feedback_events(feedback_id,event,comment_id,from_value,to_value,actor,at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        crate::database::params![feedback_id, event, comment_id, from_value, to_value, actor, now],
     )?;
     Ok(())
 }
@@ -2324,8 +2333,8 @@ struct FeedbackRow {
     task_status: String,
 }
 
-fn query_feedback<P: rusqlite::Params>(
-    connection: &rusqlite::Connection,
+fn query_feedback<P: crate::database::Params>(
+    connection: &crate::database::Connection,
     suffix: &str,
     params: P,
 ) -> Result<Vec<FeedbackRow>, DatabaseError> {
@@ -2362,16 +2371,16 @@ fn query_feedback<P: rusqlite::Params>(
 }
 
 fn public_feedback(
-    connection: &rusqlite::Connection,
+    connection: &crate::database::Connection,
     row: FeedbackRow,
     actor: &str,
 ) -> Result<Feedback, DatabaseError> {
     let mut statement = connection.prepare(
-        "SELECT comment_id,body,created_at,created_by,updated_at,deleted_at FROM visual_feedback_comments WHERE feedback_id=?1 ORDER BY seq LIMIT ?2",
+        "SELECT comment_id,body,created_at,created_by,updated_at,deleted_at FROM visual_feedback_comments WHERE feedback_id=$1 ORDER BY seq LIMIT $2",
     )?;
     let comments = statement
         .query_map(
-            rusqlite::params![row.feedback_id, MAX_COMMENTS as u32],
+            crate::database::params![row.feedback_id, MAX_COMMENTS as u32],
             |comment| {
                 Ok(CommentRow {
                     comment_id: comment.get(0)?,
@@ -3256,7 +3265,7 @@ mod tests {
                 .is_err()
         );
         world.database.call(|connection| {
-            connection.execute_batch("CREATE TRIGGER reject_feedback_commit BEFORE INSERT ON plan_events BEGIN SELECT RAISE(ABORT,'isolated feedback transaction failure'); END;")?;
+            connection.execute_batch("CREATE FUNCTION fixture_reject_feedback_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'isolated feedback transaction failure'; END $$; CREATE TRIGGER reject_feedback_commit BEFORE INSERT ON plan_events FOR EACH ROW EXECUTE FUNCTION fixture_reject_feedback_commit();")?;
             Ok(())
         }).unwrap();
         assert!(
@@ -3268,10 +3277,10 @@ mod tests {
             let kind = kind.to_owned();
             world
                 .database
-                .call(move |connection| {
+                .read(move |connection| {
                     connection
                         .query_row(
-                            "SELECT COUNT(*) FROM owned_events WHERE kind=?1",
+                            "SELECT COUNT(*) FROM owned_events WHERE kind=$1",
                             [kind],
                             |row| row.get::<_, i64>(0),
                         )
@@ -3284,7 +3293,7 @@ mod tests {
         world
             .database
             .call(|connection| {
-                connection.execute_batch("DROP TRIGGER reject_feedback_commit")?;
+                connection.execute_batch("DROP TRIGGER reject_feedback_commit ON plan_events; DROP FUNCTION fixture_reject_feedback_commit()")?;
                 Ok(())
             })
             .unwrap();
@@ -3360,9 +3369,9 @@ mod tests {
         }
         world
             .database
-            .call(move |connection| {
+            .read(move |connection| {
                 let count: u32 = connection.query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE repository_id=?1 AND kind='user_feedback'",
+                    "SELECT COUNT(*) FROM tasks WHERE repository_id=$1 AND kind='user_feedback'",
                     [&world.repository_id],
                     |row| row.get(0),
                 )?;
@@ -3392,8 +3401,8 @@ mod tests {
             .database
             .transaction(move |connection| {
                 connection.execute(
-                    "INSERT INTO worktrees VALUES('w2222222222222222',?1,?2,'now','now')",
-                    rusqlite::params![repository_id, copied.display().to_string()],
+                    "INSERT INTO worktrees VALUES('w2222222222222222',$1,$2,'now','now')",
+                    crate::database::params![repository_id, copied.display().to_string()],
                 )?;
                 Ok(())
             })
@@ -3578,7 +3587,7 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
         assert_eq!(error.code, ErrorCode::TestEvidenceTampered);
         let tasks = world
             .database
-            .call(|connection| {
+            .read(|connection| {
                 connection
                     .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, u32>(0))
                     .map_err(DatabaseError::from)
@@ -3826,12 +3835,12 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
         let root_comment = created.feedback.comments[0].comment_id.clone();
         let task = world
             .database
-            .call({
+            .read({
                 let task_id = created.task_id.clone();
                 move |connection| {
                     connection
                         .query_row(
-                            "SELECT kind,status,title FROM tasks WHERE task_id=?1",
+                            "SELECT kind,status,title FROM tasks WHERE task_id=$1",
                             [task_id],
                             |row| {
                                 Ok((
@@ -3934,7 +3943,7 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
         assert_eq!(deleted.feedback.task_status, TaskStatus::Dropped);
         let events = world
             .database
-            .call(|connection| {
+            .read(|connection| {
                 connection
                     .query_row("SELECT COUNT(*) FROM visual_feedback_events", [], |row| {
                         row.get::<_, u32>(0)
@@ -4094,11 +4103,11 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
         assert_eq!(result.feedback[0].comments.len(), 9);
         let sequences = world
             .database
-            .call({
+            .read({
                 let feedback_id = created.feedback_id;
                 move |connection| {
                     let mut statement = connection.prepare(
-                        "SELECT seq FROM visual_feedback_comments WHERE feedback_id=?1 ORDER BY seq",
+                        "SELECT seq FROM visual_feedback_comments WHERE feedback_id=$1 ORDER BY seq",
                     )?;
                     Ok(statement
                         .query_map([feedback_id], |row| row.get::<_, u32>(0))?

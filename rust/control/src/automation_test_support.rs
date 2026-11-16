@@ -17,6 +17,7 @@ pub(super) struct Fixture {
     pub repository: PathBuf,
     pub config: Config,
     pub service: ReviewService,
+    pub usage_peer: Option<crate::usage_api_fixture::Peer>,
 }
 
 pub(super) struct FixtureClock;
@@ -36,8 +37,8 @@ impl Fixture {
         let database = Database::open(root.join("authority.sqlite3")).unwrap();
         let path = repository.to_string_lossy().into_owned();
         database.transaction(move |transaction| {
-            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha',?1,'Project Alpha','1970-01-01T00:16:40Z',1,'1970-01-01T00:16:40Z')", [&path])?;
-            transaction.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','project-alpha',?1,'1970-01-01T00:16:40Z','1970-01-01T00:16:40Z')", [&path])?;
+            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha',$1,'Project Alpha','1970-01-01T00:16:40Z',1,'1970-01-01T00:16:40Z')", [&path])?;
+            transaction.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','project-alpha',$1,'1970-01-01T00:16:40Z','1970-01-01T00:16:40Z')", [&path])?;
             transaction.execute_batch("INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('spec','project-alpha',1,1,'Specify the workflow','Agree acceptance before implementation','improvement','in_progress','1970-01-01T00:16:40Z','fixture','1970-01-01T00:16:40Z');
                 INSERT INTO decisions(decision_id,repository_id,seq,ref,aspect,title,body,created_at,created_by) VALUES('decision-quality','project-alpha',1,'QUALITY','testing','Keep release proof','Intentional release validation and user waiting are not waste.','1970-01-01T00:16:40Z','fixture');")?;
             Ok(())
@@ -74,6 +75,7 @@ impl Fixture {
             repository,
             config,
             service,
+            usage_peer: None,
         }
     }
 }

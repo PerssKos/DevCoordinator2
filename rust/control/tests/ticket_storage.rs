@@ -312,7 +312,7 @@ fn failed_attachment_write_rolls_back_the_entire_comment_and_all_safe_checks_con
     let store = TicketStore::new(database.clone(), "upstream.example").unwrap();
     let parent = store.create(request("request"), NOW).unwrap();
     database.call(|db| {
-        db.execute_batch("CREATE TRIGGER reject_fixture_attachment BEFORE INSERT ON ticket_attachments WHEN NEW.name='rejected.pdf' BEGIN SELECT RAISE(FAIL,'fixture attachment failure'); END;")?;
+        db.execute_batch("CREATE FUNCTION reject_fixture_attachment_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture attachment failure'; END $$; CREATE TRIGGER reject_fixture_attachment BEFORE INSERT ON ticket_attachments FOR EACH ROW WHEN (NEW.name='rejected.pdf') EXECUTE FUNCTION reject_fixture_attachment_write();")?;
         Ok(())
     }).unwrap();
     let failed = AddComment {
@@ -327,7 +327,7 @@ fn failed_attachment_write_rolls_back_the_entire_comment_and_all_safe_checks_con
     };
     assert!(matches!(
         store.add_comment(failed.clone(), NOW),
-        Err(TicketError::Sqlite(_))
+        Err(TicketError::Query(_))
     ));
     assert_eq!(store.get(&parent.summary.id).unwrap(), parent);
     assert!(
@@ -349,7 +349,7 @@ fn failed_attachment_write_rolls_back_the_entire_comment_and_all_safe_checks_con
                     .get::<_, u32>(0))?,
                 1
             );
-            db.execute_batch("DROP TRIGGER reject_fixture_attachment;")?;
+            db.execute_batch("DROP TRIGGER reject_fixture_attachment ON ticket_attachments; DROP FUNCTION reject_fixture_attachment_write();")?;
             Ok(())
         })
         .unwrap();

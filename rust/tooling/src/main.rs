@@ -375,6 +375,15 @@ enum JourneyDocsCommand {
 
 #[derive(Debug, Subcommand)]
 enum InstallCommand {
+    /// Reconnect the edge to the exact installed daemon's verified source commit.
+    RepairEdgeSource {
+        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        installed_manifest: PathBuf,
+        #[arg(long, default_value = "/var/lib/devcoordinator2-sources")]
+        source_cache_dir: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Bind one existing Certbot lineage to the stable edge's renewal deploy hook.
     TlsRenewalConfigure {
         #[arg(long)]
@@ -442,6 +451,8 @@ enum InstallCommand {
             default_value = "/etc/devcoordinator2/candidate-install-manifest.json"
         )]
         candidate_manifest: PathBuf,
+        #[arg(long, default_value = "/etc/devcoordinator2/candidate-acceptance.json")]
+        candidate_acceptance: PathBuf,
         #[arg(long)]
         transaction_dir: Option<PathBuf>,
         #[arg(long)]
@@ -454,6 +465,17 @@ enum InstallCommand {
     Recover {
         #[arg(long)]
         transaction_dir: Option<PathBuf>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Retire SQLite only after the activated v3 service passes live acceptance.
+    Finalize {
+        #[arg(long)]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        live_acceptance: PathBuf,
+        #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
+        installed_manifest: PathBuf,
         #[arg(long)]
         yes: bool,
     },
@@ -487,6 +509,9 @@ struct LegacyImportArgs {
     export_file: PathBuf,
     #[arg(long)]
     state_dir: PathBuf,
+    /// Private PostgreSQL connection file; defaults to DATABASE_CONFIG env.
+    #[arg(long)]
+    database_config: Option<PathBuf>,
     #[arg(long)]
     bugs_dir: PathBuf,
     #[arg(long)]
@@ -686,8 +711,10 @@ enum PolicyCommand {
 #[derive(Debug, Subcommand)]
 enum ContractCommand {
     Export {
-        #[arg(long, default_value = "contracts/devcoordinator2-v2.schema.json")]
+        #[arg(long, default_value = "contracts/devcoordinator2-v3.schema.json")]
         output: PathBuf,
+        #[arg(long, default_value = "edge/lib/operations.json")]
+        edge_output: PathBuf,
         #[arg(long)]
         check: bool,
     },
@@ -784,8 +811,15 @@ fn main() -> ExitCode {
         Command::Audit { command } => run_audit(command),
         Command::FormalUi { command } => run_formal_ui(command),
         Command::Contract {
-            command: ContractCommand::Export { output, check },
-        } => match devcoordinator2_tooling::export_contract(&output, check) {
+            command:
+                ContractCommand::Export {
+                    output,
+                    edge_output,
+                    check,
+                },
+        } => match devcoordinator2_tooling::export_contract(&output, check)
+            .and_then(|()| devcoordinator2_tooling::export_edge_operations(&edge_output, check))
+        {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("{error}");
@@ -2159,6 +2193,23 @@ fn run_install(command: InstallCommand) -> ExitCode {
                 "agent_links": links,
             }))
         })(),
+        InstallCommand::RepairEdgeSource {
+            installed_manifest,
+            source_cache_dir,
+            yes,
+        } => (|| {
+            if !yes || rustix::process::geteuid().as_raw() != 0 {
+                return Err("install repair-edge-source requires root and --yes for the reviewed edge-only repair".to_owned());
+            }
+            let config = install::edge_source::RepairConfig {
+                installed_manifest,
+                cache_root: source_cache_dir,
+                ..Default::default()
+            };
+            let receipt = install::edge_source::repair_host(&config, &HostRunner, (0, 0))?;
+            serde_json::to_value(receipt)
+                .map_err(|_| "cannot encode edge source repair receipt".into())
+        })(),
         InstallCommand::Preflight { source_root, fetch } => {
             install::validate_live_checkout(&source_root, fetch, &HostRunner).map(|commit| {
                 serde_json::json!({
@@ -2219,6 +2270,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
         }
         InstallCommand::Activate {
             candidate_manifest,
+            candidate_acceptance,
             transaction_dir,
             canary,
             bootstrap,
@@ -2235,6 +2287,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
             }
             let config = devcoordinator2_tooling::cutover::HostCutoverConfig {
                 candidate_manifest,
+                candidate_acceptance,
                 transaction_dir: transaction_dir.unwrap_or_else(|| {
                     PathBuf::from(format!(
                         "/var/lib/devcoordinator2/cutover/activation-{}-{}",
@@ -2267,11 +2320,28 @@ fn run_install(command: InstallCommand) -> ExitCode {
                     let validated = if bootstrap && !config.database_path.exists() {
                         Vec::new()
                     } else {
-                        install::validate_registered_repository_configs(
-                            &config.database_path,
-                            &control_binary,
+                        let prior = install::read_and_verify_prior_manifest_owned(
+                            &config.installed_manifest,
                             &HostRunner,
-                        )?
+                            0,
+                        )?;
+                        if prior
+                            .binaries
+                            .iter()
+                            .any(|binary| binary.name == "devcoordinator2-migrate-authority")
+                        {
+                            install::validate_native_registered_repository_configs(
+                                &config.postgres.config_path,
+                                &control_binary,
+                                &HostRunner,
+                            )?
+                        } else {
+                            install::validate_registered_repository_configs(
+                                &config.database_path,
+                                &control_binary,
+                                &HostRunner,
+                            )?
+                        }
                     };
                     let mut host = devcoordinator2_tooling::cutover::HostCutover::new(
                         config,
@@ -2288,6 +2358,35 @@ fn run_install(command: InstallCommand) -> ExitCode {
                     }))
                 },
             )
+        }
+        InstallCommand::Finalize {
+            transaction_dir,
+            live_acceptance,
+            installed_manifest,
+            yes,
+        } => {
+            if !yes {
+                return tooling_error(
+                    "install finalize requires --yes and verified live acceptance",
+                    2,
+                );
+            }
+            if rustix::process::geteuid().as_raw() != 0 {
+                return tooling_error("install finalize must run as root", 2);
+            }
+            devcoordinator2_tooling::cutover::finalize_host(
+                &devcoordinator2_tooling::cutover::FinalizationConfig {
+                    transaction_dir,
+                    live_acceptance,
+                    installed_manifest,
+                },
+                &HostRunner,
+                (0, 0),
+            )
+            .and_then(|receipt| {
+                serde_json::to_value(receipt)
+                    .map_err(|_| "cannot encode finalization receipt".into())
+            })
         }
         InstallCommand::Recover {
             transaction_dir,
@@ -2444,6 +2543,7 @@ fn run_legacy(command: LegacyCommand) -> ExitCode {
             let options = devcoordinator2_tooling::legacy_import::ImportOptions {
                 export: args.export_file,
                 state_dir: args.state_dir,
+                database_config: args.database_config,
                 bugs_dir: args.bugs_dir,
                 live_containers: args.live_containers,
                 current_route_map: args.current_route_map,
@@ -2475,7 +2575,17 @@ fn run_planning(command: PlanningCommand) -> ExitCode {
         task_ids: task_id,
         include_identities: identities,
     };
-    match devcoordinator2_tooling::planning_backup::inspect(&request) {
+    let inspection = match devcoordinator2_control::config::Config::load()
+        .and_then(|config| config.postgres_config())
+    {
+        Ok(config) => {
+            devcoordinator2_tooling::planning_backup::inspect_configured(&config, &request)
+        }
+        // Historical SQLite snapshots remain inspectable without a running
+        // authority cluster. Native archives require the configured cluster.
+        Err(_) => devcoordinator2_tooling::planning_backup::inspect(&request),
+    };
+    match inspection {
         Ok(result) => emit_report(json!(result), true, 0),
         Err(error) => tooling_error(&error, 2),
     }
@@ -3172,6 +3282,19 @@ mod tests {
             install.command,
             Command::Install {
                 command: InstallCommand::Preflight { .. }
+            }
+        ));
+        let repair = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "install",
+            "repair-edge-source",
+            "--yes",
+        ])
+        .expect("verified prior edge source repair command");
+        assert!(matches!(
+            repair.command,
+            Command::Install {
+                command: InstallCommand::RepairEdgeSource { yes: true, .. }
             }
         ));
         let configure = Cli::try_parse_from([

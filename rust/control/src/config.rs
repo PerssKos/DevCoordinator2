@@ -164,6 +164,30 @@ impl Config {
         self.state_dir.join("authority.sqlite3")
     }
 
+    /// Only the daemon/privileged installer loads the private database endpoint.
+    /// The public Config remains credential-free for CLI/MCP clients.
+    pub fn postgres_config(&self) -> Result<crate::database::DatabaseConfig, ConfigError> {
+        Self::read_postgres_config(&self.postgres_config_path())
+    }
+
+    pub fn postgres_config_path(&self) -> PathBuf {
+        std::env::var_os("DEVCOORDINATOR2_DATABASE_CONFIG")
+            .map(PathBuf::from)
+            .or_else(|| {
+                instance_file_values()
+                    .get("DEVCOORDINATOR2_DATABASE_CONFIG")
+                    .map(PathBuf::from)
+            })
+            .unwrap_or_else(|| PathBuf::from("/etc/devcoordinator2/postgres.json"))
+    }
+
+    pub fn read_postgres_config(
+        path: &Path,
+    ) -> Result<crate::database::DatabaseConfig, ConfigError> {
+        crate::database::DatabaseConfig::from_file(path)
+            .map_err(|error| ConfigError::Invalid(error.to_string()))
+    }
+
     pub fn capacity_socket_path(&self) -> PathBuf {
         self.socket_path.with_file_name("capacity.sock")
     }

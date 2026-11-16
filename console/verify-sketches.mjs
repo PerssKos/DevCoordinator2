@@ -10,7 +10,7 @@ export async function verifySketches({ page, browser, call, request, check, base
   page.setDefaultTimeout(8000);
   page.on('console',message=>{if(message.type()==='error')fs.appendFile(path.join(out,'browser-errors.log'),message.text()+'\n');});
   const clickSave = async (locator, operation) => {
-    const response = page.waitForResponse(r=>r.url().endsWith('/api/v2/design.sketch.'+operation)&&r.request().method()==='POST');
+    const response = page.waitForResponse(r=>r.url().endsWith('/api/v3/design.sketch.'+operation)&&r.request().method()==='POST');
     await locator.click();const body=await (await response).json();assert.equal(body.ok,true,body.error?.message);return body.data;
   };
   const imagePaths=[];const imageViewports=new Map();
@@ -123,9 +123,9 @@ export async function verifySketches({ page, browser, call, request, check, base
     await page.locator('[data-edit-context]').click();let dialog=page.locator('.mockup-editor');await dialog.locator('[name=description]').fill('Discard this draft without changing the saved direction.');await dialog.locator('[data-cancel]').click();
     assert.match((await call('design.sketch.get',{repository_id,sketch_id:next[0]})).sketch.description,/accent green/);
     await page.locator('[data-edit-context]').click();dialog=page.locator('.mockup-editor');const draft='Keep the green accent and provide a compact review legend.';await dialog.locator('[name=description]').fill(draft);await dialog.locator('[name=rationale]').fill('Add a compact legend.');
-    await page.route('**/api/v2/design.sketch.description',route=>route.fulfill({status:503,json:{ok:false,error:{code:'daemon_unavailable',message:'Fixture save failure'}}}));
+    await page.route('**/api/v3/design.sketch.description',route=>route.fulfill({status:503,json:{ok:false,error:{code:'daemon_unavailable',message:'Fixture save failure'}}}));
     await dialog.locator('[type=submit]').click();await dialog.locator('[role=alert]:not([hidden])').waitFor();assert.equal(await dialog.locator('[name=description]').inputValue(),draft);
-    await page.unroute('**/api/v2/design.sketch.description');await dialog.locator('[type=submit]').click();await dialog.waitFor({state:'detached'});
+    await page.unroute('**/api/v3/design.sketch.description');await dialog.locator('[type=submit]').click();await dialog.waitFor({state:'detached'});
     assert.equal((await call('design.sketch.get',{repository_id,sketch_id:next[0]})).sketch.description,draft);
   },page);
   await check('Comments and all prior context remain searchable',async()=>{
@@ -175,7 +175,7 @@ export async function verifySketches({ page, browser, call, request, check, base
   },page);
   await check('Collapsed history loads old images only when their generation is opened',async()=>{
     const fresh=await browser.newPage({viewport:{width:1440,height:1058}});const reads=[];
-    fresh.on('request',request=>{if(request.url().endsWith('/api/v2/design.sketch.image'))reads.push(request.postDataJSON().sketch_id);});
+    fresh.on('request',request=>{if(request.url().endsWith('/api/v3/design.sketch.image'))reads.push(request.postDataJSON().sketch_id);});
     try {
       await fresh.goto(`${base}#/sketches/${repository_id}?surface=${surface_id}&sketch=${next[0]}`);
       await fresh.waitForFunction(()=>document.querySelectorAll('[data-option] img[data-loaded=true]').length===3);
