@@ -542,6 +542,7 @@ mod tests {
                 ..Discovery::default()
             },
             2,
+            None,
         )
         .unwrap();
         for _ in 0..32 {
@@ -588,6 +589,7 @@ mod tests {
                 ..Discovery::default()
             },
             2,
+            None,
         )
         .unwrap();
         for _ in 0..32 {

@@ -21,6 +21,7 @@ pub struct FinalizationConfig {
     pub transaction_dir: PathBuf,
     pub installed_manifest: PathBuf,
     pub live_acceptance: PathBuf,
+    pub retain_legacy_sources: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -45,6 +46,8 @@ pub struct FinalizationReceipt {
     pub live_acceptance_sha256: String,
     pub postgres_archive_sha256: String,
     pub retired_sources: u8,
+    #[serde(default)]
+    pub retained_sources: u8,
 }
 
 pub(super) fn private(path: &Path, owner: u32) -> Result<Value, String> {
@@ -143,12 +146,19 @@ fn finish_protection_marker(
     owner: u32,
 ) -> Result<(), String> {
     let marker = transaction.join("retirement-pending.json");
-    match marker.symlink_metadata() {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+    let retained_marker = transaction.join("retained-sources.json");
+    let retaining = receipt.retained_sources > 0;
+    let source_marker = if retaining && !marker.exists() {
+        &retained_marker
+    } else {
+        &marker
+    };
+    match source_marker.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !retaining => return Ok(()),
         Err(_) => return Err("cannot inspect finalization protection marker".into()),
         Ok(_) => {}
     }
-    let pending = private(&marker, owner)?;
+    let pending = private(source_marker, owner)?;
     if pending["source_commit"] != receipt.source_commit {
         return Err("finalization protection marker belongs to another candidate".into());
     }
@@ -156,6 +166,9 @@ fn finish_protection_marker(
         .as_array()
         .filter(|targets| targets.len() <= 32)
         .ok_or("finalization protection marker has invalid retirement targets")?;
+    if retaining && targets.len() != usize::from(receipt.retained_sources) {
+        return Err("retained source count does not match protected evidence".into());
+    }
     for target in targets {
         let path = Path::new(
             target["path"]
@@ -165,6 +178,19 @@ fn finish_protection_marker(
         if !path.is_absolute() {
             return Err("invalid retired source path".into());
         }
+        if retaining {
+            let metadata = path
+                .symlink_metadata()
+                .map_err(|_| "retained legacy source is unavailable")?;
+            if !metadata.is_file()
+                || metadata.file_type().is_symlink()
+                || metadata.uid() != owner
+                || target["sha256"].as_str() != Some(install::hash_file(path)?.as_str())
+            {
+                return Err("retained legacy source identity changed; protection remains".into());
+            }
+            continue;
+        }
         match path.symlink_metadata() {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             _ => {
@@ -172,6 +198,17 @@ fn finish_protection_marker(
                     "finalized source retirement is inconsistent; protection remains".into(),
                 );
             }
+        }
+    }
+    if retaining {
+        install::atomic_file(
+            &retained_marker,
+            &serde_json::to_vec_pretty(&pending).map_err(|_| "cannot retain source protection")?,
+            0o600,
+            None,
+        )?;
+        if source_marker == &retained_marker {
+            return Ok(());
         }
     }
     std::fs::remove_file(&marker)
@@ -325,6 +362,11 @@ pub fn finalize_host(
         live_acceptance_sha256: acceptance_sha,
         postgres_archive_sha256: install::hash_file(&archive)?,
         retired_sources: 0,
+        retained_sources: if config.retain_legacy_sources {
+            targets.len() as u8
+        } else {
+            0
+        },
     };
     install::atomic_file(
         &result_path,
@@ -332,7 +374,10 @@ pub fn finalize_host(
         0o600,
         Some(owner),
     )?;
-    for (path, _) in targets {
+    for (path, _) in targets
+        .into_iter()
+        .filter(|_| !config.retain_legacy_sources)
+    {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

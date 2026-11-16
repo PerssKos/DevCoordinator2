@@ -3214,7 +3214,6 @@ mod tests {
             "sketches",
             "storage-mount-jobs",
             "storage-recovery",
-            "install-transactions",
         ] {
             std::fs::create_dir(root.join(name)).unwrap();
             std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o755))
@@ -3262,7 +3261,6 @@ mod tests {
                 "sketches",
                 "storage-mount-jobs",
                 "storage-recovery",
-                "install-transactions",
             ] {
                 assert_eq!(
                     std::fs::metadata(root.join(name)).unwrap().mode() & 0o777,

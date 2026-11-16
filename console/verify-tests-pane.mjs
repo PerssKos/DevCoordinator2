@@ -4,6 +4,8 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   const verify = (name, condition, detail = '') => check(`tests ${theme} ${viewport.width}: ${name}`, condition, detail);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('about:blank');
+  await daemon.drain();
   daemon.setScenario({ ...scenario, testEmptyContinuation: true });
   const emptyTail = page.waitForRequest((request) => request.url().endsWith('/api/v3/test.list') && request.postDataJSON()?.after_worktree_id === 'w-empty').then(() => true, () => false);
   await page.goto(`${baseUrl}#/tests?repository=r0123456789abcdef`);

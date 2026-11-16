@@ -802,18 +802,23 @@ fn invalid_candidate_source_never_changes_the_running_deployment() {
         "dirty",
         "commit",
         "repository",
-        "worktree",
+        "undeclared-source",
         "missing-target",
         "repeat",
     ] {
-        let fixture = RouteWorld::new(if failure == "worktree" {
-            "worktree"
-        } else {
-            "checkout"
-        });
+        let fixture = RouteWorld::new("checkout");
         let first = fixture.apply().unwrap();
         let foreign = RouteWorld::new("checkout");
         fixture.change();
+        let config_path = fixture.world.worktree.join(".devcoordinator.toml");
+        let original_config = std::fs::read_to_string(&config_path).unwrap();
+        if failure == "undeclared-source" {
+            std::fs::write(
+                &config_path,
+                original_config.replace("source=\"checkout\"", "source=\"worktree\""),
+            )
+            .unwrap();
+        }
         if failure == "dirty" {
             fixture.git.snapshot.lock().unwrap().dirty = true;
         }
@@ -857,6 +862,11 @@ fn invalid_candidate_source_never_changes_the_running_deployment() {
             before,
             "{failure}"
         );
+        // Restore the declaration before the public status read; an invalid
+        // declaration is correctly rejected by that read as well as by apply.
+        if failure == "undeclared-source" {
+            std::fs::write(&config_path, original_config).unwrap();
+        }
         let after = fixture.status(&first.deployment_id);
         assert_eq!(
             after.current_generation, first.current_generation,

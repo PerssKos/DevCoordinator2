@@ -468,7 +468,7 @@ enum InstallCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Retire SQLite only after the activated v3 service passes live acceptance.
+    /// Complete live acceptance, optionally retaining protected SQLite sources.
     Finalize {
         #[arg(long)]
         transaction_dir: PathBuf,
@@ -476,6 +476,9 @@ enum InstallCommand {
         live_acceptance: PathBuf,
         #[arg(long, default_value = "/etc/devcoordinator2/install-manifest.json")]
         installed_manifest: PathBuf,
+        /// Preserve the exact legacy authority and rollback files after acceptance.
+        #[arg(long)]
+        retain_legacy_sources: bool,
         #[arg(long)]
         yes: bool,
     },
@@ -2363,6 +2366,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
             transaction_dir,
             live_acceptance,
             installed_manifest,
+            retain_legacy_sources,
             yes,
         } => {
             if !yes {
@@ -2379,6 +2383,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
                     transaction_dir,
                     live_acceptance,
                     installed_manifest,
+                    retain_legacy_sources,
                 },
                 &HostRunner,
                 (0, 0),

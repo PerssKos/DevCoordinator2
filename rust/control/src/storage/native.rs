@@ -269,6 +269,13 @@ impl Backend for HostBackend {
                 if native_backup {
                     self.native_backup_root_identity(r, root, context)?;
                     if path
+                        .join("retained-sources.json")
+                        .symlink_metadata()
+                        .is_ok()
+                    {
+                        return Err(blocked("legacy_sources_retained"));
+                    }
+                    if path
                         .join("retirement-pending.json")
                         .symlink_metadata()
                         .is_ok()

@@ -793,6 +793,14 @@ impl HostBackend {
             return Ok(());
         };
         if path
+            .join("retained-sources.json")
+            .symlink_metadata()
+            .is_ok()
+        {
+            r.blockers.push("legacy_sources_retained".into());
+            return Ok(());
+        }
+        if path
             .join("retirement-pending.json")
             .symlink_metadata()
             .is_ok()

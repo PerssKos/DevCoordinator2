@@ -89,15 +89,34 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await daemon.waitForCall('usage.repositories');
   await daemon.waitForCall('progress.repositories');
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  verify('timeline controls stay visible at both horizontal scroll limits', await page.evaluate(async () => {
+    const viewport = document.querySelector('[data-plan-viewport]');
+    const original = viewport.scrollLeft;
+    const visible = () => [...document.querySelectorAll('.plan-toolbar button')].every(button => {
+      const box = button.getBoundingClientRect();
+      const frame = viewport.getBoundingClientRect();
+      return box.left >= frame.left - 1 && box.right <= frame.right + 1 && box.width > 0;
+    });
+    let result = true;
+    for (const left of [0, viewport.scrollWidth]) {
+      viewport.scrollLeft = left;
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      result &&= visible();
+    }
+    viewport.scrollLeft = original;
+    return result;
+  }));
   verify('unchanged optional totals retain navigation content and current aspect nodes', await initialHeading.evaluate(node => node.isConnected) && await initialAspect.evaluate(node => node.isConnected));
-  const planReads = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length;
+  const initialPlanRead = call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit && !call.params.after_sequence && !call.params.after_release_sequence;
+  const planReads = daemon.calls.filter(initialPlanRead).length;
+  const refreshCallStart = daemon.calls.length;
   const previousPlan = await page.locator('.plan-context').elementHandle();
   const refreshUrl = page.url();
   const [refreshRequest] = await Promise.all([
     page.waitForRequest(request => currentDocumentRequest(request, page, refreshUrl, ['plan.overview']) && request.postDataJSON()?.repository_id === repositoryId),
     page.evaluate(() => window.render()),
   ]);
-  verify('refresh reads the current Plan again instead of reusing the consumed model', daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit).length === planReads + 1 && !await previousPlan.evaluate(node => node.isConnected));
+  verify('refresh reads the current Plan again instead of reusing the consumed model', daemon.calls.filter(initialPlanRead).length === planReads + 1 && !await previousPlan.evaluate(node => node.isConnected));
   verify('direct plan links select the same repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
   verify('one shared selector replaces page-specific pickers', await page.locator('#repository-list').count() === 1 && await page.locator('[data-project-picker], .test-repository-list').count() === 0);
   const expectedAspects = [
@@ -113,8 +132,8 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   const reads = planReadEvidence(daemon.calls);
   verify('Plan reads one metadata header page without aggregate or Tests barriers', reads.valid,
     reads.valid ? '' : JSON.stringify({ ...reads, triggerRequest: { operation: 'plan.overview', method: refreshRequest.method(), currentDocument: refreshRequest.frame() === page.mainFrame() && refreshRequest.frame().url() === refreshUrl }, document: await documentEvidence(page) }));
-  const pages = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id && !call.params.limit);
-  verify('Plan loads every page of the same revision', pages.length > 1 && pages.slice(1).every(call => (call.params.after_sequence > 0 || call.params.after_release_sequence > 0) && /^[a-f0-9]{64}$/.test(call.params.expected_revision)));
+  const pages = daemon.calls.slice(refreshCallStart).filter(call => call.operation === 'plan.overview' && call.params.repository_id === repositoryId && !call.params.limit);
+  verify('Plan loads every page of the same revision', pages.length > 1 && initialPlanRead(pages[0]) && pages.slice(1).every(call => (call.params.after_sequence > 0 || call.params.after_release_sequence > 0) && /^[a-f0-9]{64}$/.test(call.params.expected_revision) && call.params.expected_revision === pages[1].params.expected_revision));
   verify('tasks on later pages remain available', await page.locator('[data-task-row="p1111111111111106"]').count() === 1);
   await page.locator('.plan-task-select[data-select-task="p1111111111111106"]').click();
   verify('a task from a later page can be selected', await page.locator('[data-task-row="p1111111111111106"]').evaluate(row => row.classList.contains('selected')));
@@ -308,7 +327,10 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('#workspace-aspects a').filter({ hasText: 'Tests' }).click();
   await page.locator('.test-result').first().waitFor();
   if (viewport.width <= 760) {
-    verify('narrow layout puts results before the repository drawer', !await page.locator('#repository-sidebar').isVisible() && (await page.locator('.test-result').first().boundingBox()).y < 330);
+    verify('narrow layout puts results before the repository drawer', await page.locator('.test-result').first().evaluate(element => {
+      const sidebar = document.querySelector('#repository-sidebar');
+      return !sidebar.getClientRects().length && element.getBoundingClientRect().y < 330;
+    }));
     await page.click('#repository-toggle');
     verify('repository drawer focuses search', await page.locator('#repository-search:focus').count() === 1);
     verify('open phone drawer keeps background controls inactive', await page.locator('#repository-sidebar').getAttribute('role') === 'dialog' && await page.locator('.workspace-content').evaluate(element => element.inert && element.getAttribute('aria-hidden') === 'true'));

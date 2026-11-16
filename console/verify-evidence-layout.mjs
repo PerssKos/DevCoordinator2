@@ -28,14 +28,17 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   await page.locator('.plan-context').waitFor();
   daemon.setEvidenceImage(await page.screenshot({ type: 'png' }), viewport.width, viewport.height);
   // Exercise the real paginated API consumer before inspecting the existing viewer.
-  const coverageRoute = '**/api/v3/test.evidence.get';
+  const coverageRoute = /\/api\/v3\/test\.evidence\.(?:get|lookup)$/;
+  const coveragePages = [];
   await page.route(coverageRoute, async route => {
     const original = new URL(route.request().url());
     const local = new URL(original); local.hostname = '127.0.0.1';
     const response = await route.fetch({ url: local.href, headers: { ...route.request().headers(), host: original.host } });
     const payload = await response.json();
-    const bundle = payload.data.bundles[0];
+    const evidence = payload.data.evidence || payload.data;
+    const bundle = evidence.bundles[0];
     const offset = Number(route.request().postDataJSON().offset || 0);
+    coveragePages.push(offset);
     const entries = bundle.cells.map((cell, index) => ({
       requirement_id: `required-${index}`, target: cell.target_name,
       state: cell.state_name, viewport: cell.viewport.name, width: cell.viewport.width,
@@ -46,11 +49,12 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
       entries: offset ? entries : [],
     };
     if (offset) bundle.cells = [];
-    payload.data.next_offset = offset ? null : 1;
+    evidence.next_offset = offset ? null : 1;
     await route.fulfill({ response, json: payload });
   });
   await page.goto(`${baseUrl}#/tests/t20260101T000100Z-def456`);
   await page.locator('#evidence-image:not([hidden])').waitFor();
+  verify('retained coverage traverses both API pages', coveragePages.includes(0) && coveragePages.includes(1));
   verify('coverage-only pages preserve every requirement and original summary', await page.evaluate(() => {
     const bundle = state.evidenceData.bundles[0];
     const required = bundle.coverage.required_coverage;
@@ -68,6 +72,13 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   verify('details can be opened and closed independently', await page.locator('#evidence-inspector-body').isVisible()
     && await panelButton('details').getAttribute('aria-expanded') === 'true');
   await closeDetails();
+  verify('collapsed details do not cover screenshot variants', await page.evaluate(() => {
+    const inspector = document.querySelector('#evidence-inspector');
+    const toggle = inspector.querySelector('.evidence-mobile-inspector-toggle');
+    if (!toggle?.getClientRects().length) return true;
+    const panel = inspector.getBoundingClientRect();
+    return [...document.querySelectorAll('.evidence-variant')].every(element => element.getBoundingClientRect().bottom <= panel.top);
+  }));
   const collapsedPreferences = await page.evaluate(() => localStorage.getItem('dc2-evidence-panels'));
   verify('closing both panels records both choices', JSON.parse(collapsedPreferences || '{}').journey === false
     && JSON.parse(collapsedPreferences || '{}').details === false);

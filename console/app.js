@@ -2539,7 +2539,8 @@ async function loadAllTestEvidence(api, operation, params, first) {
     const next = Number(page.next_offset);
     if (!Number.isInteger(next) || next <= offset) throw new Error('Visual evidence pagination did not advance. Refresh to retry.');
     offset = next;
-    page = await api(operation, { ...params, offset, limit: 32 });
+    const response = await api(operation, { ...params, offset, limit: 32 });
+    page = response.evidence || response;
   }
   return result;
 }
@@ -3674,7 +3675,7 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   if (identity !== usageViewIdentity()) return;
   const restore = usageRefreshContext(waitForRefresh);
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
-    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range"><div class="usage-range-tools">${usageWorktreeScopeMarkup(scope)}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div></div><div class="usage-coverage">${coverageHint(data.coverage)}${window.DevCoordinatorUsageLoading.markup()}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
+    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range"><div class="usage-range-tools">${usageWorktreeScopeMarkup(scope)}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div></div><div class="usage-coverage">${coverageHint(data.coverage)}${window.DevCoordinatorUsageLoading.markup()}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
     ${usageWorktreeUnavailable(scope)}
     ${scope?.unavailable ? '' : `<div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>`}
     ${scope?.unavailable ? '' : `<div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series, data.totals.cost)}</section>${modelCostPulse(data)}</div>
@@ -4727,6 +4728,8 @@ function bindPlanWorkspace(root, model, layout) {
     alignFrame = requestAnimationFrame(alignTimelineToVisibleTask);
   };
   const applyScale = (preserveCenter = true) => {
+    workspace.style.setProperty('--plan-viewport-width', `${viewport.clientWidth}px`);
+    workspace.classList.toggle('plan-controls-compact', viewport.clientWidth < navigatorWidth() + 330);
     workspace.style.setProperty('--glabel', `${navigatorWidth()}px`);
     const oldWidth = currentChartWidth();
     const visible = visibleChartWidth();

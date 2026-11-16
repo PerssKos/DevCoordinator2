@@ -487,6 +487,48 @@ impl HostCutover {
         Ok(snapshot)
     }
 
+    fn backup_legacy_database(&mut self) -> Result<String, String> {
+        install::ensure_owned_directory(&self.config.transaction_dir, 0o700, self.expected_owner)
+            .map_err(|error| format!("cannot prepare cutover transaction: {error}"))?;
+        let backup = self.config.transaction_dir.join("authority-before.sqlite3");
+        if backup.exists() {
+            return Err("cutover database backup already exists".to_owned());
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&backup)
+            .map_err(|error| format!("cannot create private database backup: {error}"))?;
+        let connection = open_database_read_only(&self.config.database_path)?;
+        connection
+            .backup(rusqlite::MAIN_DB, &backup, None)
+            .map_err(|error| format!("cannot back up Coordinator database: {error}"))?;
+        std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("cannot protect database backup: {error}"))?;
+        if !database_integrity(&backup)? {
+            return Err("captured database backup failed integrity verification".into());
+        }
+        drop(connection);
+        self.frozen_source_sha256 = Some(install::hash_file(&self.config.database_path)?);
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let path = PathBuf::from(format!("{}{}", self.config.database_path.display(), suffix));
+            if let Ok(metadata) = path.symlink_metadata() {
+                if metadata.file_type().is_symlink()
+                    || !metadata.is_file()
+                    || metadata.uid() != self.expected_owner.0
+                {
+                    return Err("frozen SQLite companion is not an owned regular file".into());
+                }
+                self.frozen_companions
+                    .push((path.clone(), install::hash_file(&path)?));
+            }
+        }
+
+        self.verified_backup_sha256 = Some(install::hash_file(&backup)?);
+        path_text(&backup)
+    }
+
     pub fn bootstrap(&mut self) -> Result<CutoverReceipt, String> {
         if !self.config.canary {
             return Err("first installation requires --canary".to_owned());
@@ -579,7 +621,9 @@ impl HostCutover {
             if self.deployment_is_applying()? {
                 return Err("bootstrap blocked while a deployment is applying".to_owned());
             }
-            self.backup_database()?
+            // Bootstrap has no installed services to guard. The absent-unit
+            // checks and exclusive endpoint lease above protect this read.
+            self.backup_legacy_database()?
         } else {
             install::ensure_owned_directory(
                 &self.config.transaction_dir,
@@ -590,6 +634,24 @@ impl HostCutover {
         };
         let snapshot = self.capture_installation_for(true)?;
         let activation = (|| {
+            // The candidate must not admit writes before its first verified
+            // activation, even though there is no old daemon socket to rename.
+            let fence = self.config.runtime_dir.join("daemon.pre-cutover.sock");
+            let _fence_listener = std::os::unix::net::UnixListener::bind(&fence)
+                .map_err(|error| format!("cannot fence bootstrap write admission: {error}"))?;
+            std::fs::set_permissions(&fence, std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("cannot protect bootstrap admission fence: {error}"))?;
+            let binding = serde_json::json!({
+                "schema": 1,
+                "source_commit": self.manifest.source_commit,
+                "fence": owned_fence_binding(&fence, self.expected_owner.0)?,
+            });
+            install::atomic_file(
+                &self.config.transaction_dir.join("bootstrap-fence.json"),
+                &serde_json::to_vec(&binding).map_err(|_| "cannot retain bootstrap fence")?,
+                0o600,
+                Some(self.expected_owner),
+            )?;
             self.install_rust()?;
             drop(endpoint_lock);
             self.start_rust()?;
@@ -605,6 +667,11 @@ impl HostCutover {
                 checks,
             }),
             Err(error) => {
+                if self.admitted {
+                    return Err(format!(
+                        "bootstrap committed PostgreSQL authority; preserve it for native recovery: {error}"
+                    ));
+                }
                 let cleanup = cleanup_bootstrap_units(
                     self.runner.as_ref(),
                     &self.config.systemctl,
@@ -614,6 +681,12 @@ impl HostCutover {
                     return Err(combine(error, "stop new services", cleanup));
                 }
                 self.restore_installation(&snapshot)?;
+                release_bootstrap_fence(
+                    &self.config.transaction_dir,
+                    &self.config.runtime_dir,
+                    &snapshot.candidate_commit,
+                    self.expected_owner.0,
+                )?;
                 self.finish_rollback(&snapshot)?;
                 Err(format!(
                     "bootstrap failed: {error}; new installation removed; database and private backup preserved"
@@ -1101,7 +1174,7 @@ impl HostCutover {
         Ok(())
     }
 
-    fn retain_activation_commit(&self, snapshot: &InstallationSnapshot) -> Result<(), String> {
+    fn retain_activation_commit(&mut self, snapshot: &InstallationSnapshot) -> Result<(), String> {
         self.verify_candidate_binaries()?;
         let mut retirement_targets = self.inherited_retirement_targets.clone();
         if self.authority == AuthorityKind::LegacySqlite {
@@ -1181,6 +1254,9 @@ impl HostCutover {
             Some(self.expected_owner),
         )?;
         write_snapshot(&native, "committed", self.expected_owner)?;
+        // Once this record is durable, recovery must keep PostgreSQL even if
+        // publishing the current-authority marker fails before fence removal.
+        self.admitted = true;
         let current = serde_json::json!({"schema":1,"source_commit":self.manifest.source_commit,"transaction_dir":self.config.transaction_dir,"database_name":self.config.postgres.database_name,"activated_at_ms":activated_at_ms});
         install::atomic_file(
             &self.authority_marker_path,
@@ -1305,43 +1381,7 @@ impl CutoverAdapter for HostCutover {
             )?);
             return path_text(&self.config.transaction_dir.join("authority-before.pgdump"));
         }
-        let backup = self.config.transaction_dir.join("authority-before.sqlite3");
-        if backup.exists() {
-            return Err("cutover database backup already exists".to_owned());
-        }
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&backup)
-            .map_err(|error| format!("cannot create private database backup: {error}"))?;
-        let connection = open_database_read_only(&self.config.database_path)?;
-        connection
-            .backup(rusqlite::MAIN_DB, &backup, None)
-            .map_err(|error| format!("cannot back up Coordinator database: {error}"))?;
-        std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("cannot protect database backup: {error}"))?;
-        if !database_integrity(&backup)? {
-            return Err("captured database backup failed integrity verification".into());
-        }
-        drop(connection);
-        self.frozen_source_sha256 = Some(install::hash_file(&self.config.database_path)?);
-        for suffix in ["-wal", "-shm", "-journal"] {
-            let path = PathBuf::from(format!("{}{}", self.config.database_path.display(), suffix));
-            if let Ok(metadata) = path.symlink_metadata() {
-                if metadata.file_type().is_symlink()
-                    || !metadata.is_file()
-                    || metadata.uid() != self.expected_owner.0
-                {
-                    return Err("frozen SQLite companion is not an owned regular file".into());
-                }
-                self.frozen_companions
-                    .push((path.clone(), install::hash_file(&path)?));
-            }
-        }
-
-        self.verified_backup_sha256 = Some(install::hash_file(&backup)?);
-        path_text(&backup)
+        self.backup_legacy_database()
     }
 
     fn capture_installation(&mut self) -> Result<Self::InstallationSnapshot, String> {
@@ -1981,6 +2021,30 @@ fn release_committed_fence(runtime: &Path, pending: &Value, owner: u32) -> Resul
     Ok(())
 }
 
+fn release_bootstrap_fence(
+    transaction: &Path,
+    runtime: &Path,
+    candidate: &str,
+    owner: u32,
+) -> Result<(), String> {
+    let record = transaction.join("bootstrap-fence.json");
+    match record.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return match runtime.join("daemon.pre-cutover.sock").symlink_metadata() {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err("unrecorded bootstrap fence must be preserved".into()),
+            };
+        }
+        Err(_) => return Err("cannot inspect bootstrap fence record".into()),
+        Ok(_) => {}
+    }
+    let binding = finalize::private(&record, owner)?;
+    if binding["schema"] != 1 || binding["source_commit"] != candidate {
+        return Err("bootstrap fence belongs to another candidate".into());
+    }
+    release_committed_fence(runtime, &binding, owner)
+}
+
 fn retryable_v3_ping(response: &Value) -> bool {
     response.get("protocol").and_then(Value::as_u64) == Some(3)
         && response.get("ok") == Some(&Value::Bool(false))
@@ -2087,6 +2151,12 @@ pub fn recover_host(
             restore_entry(entry)?;
         }
         run_systemctl(runner, &config.systemctl, &["daemon-reload"])?;
+        release_bootstrap_fence(
+            &config.transaction_dir,
+            &config.runtime_dir,
+            &snapshot.candidate_commit,
+            expected_owner.0,
+        )?;
         end_drain(&bootstrap_drain)?;
         write_snapshot(&snapshot, "recovered", expected_owner)?;
         return Ok(RecoveryReceipt {
@@ -4368,10 +4438,6 @@ mod tests {
     fn bootstrap_preserves_imported_database_on_success_and_failure() {
         for fail_ping in [false, true] {
             let mut world = host_world();
-            Connection::open(&world.config.database_path)
-                .unwrap()
-                .execute("UPDATE meta SET value='16' WHERE key='schema_version'", [])
-                .unwrap();
             world.config.canary = true;
             std::fs::remove_file(world.config.runtime_dir.join(ACTIVITY_FILE)).unwrap();
             for path in [
@@ -4396,6 +4462,20 @@ mod tests {
                     .unwrap();
             let result = host.bootstrap();
             assert_eq!(result.is_err(), fail_ping, "{result:?}");
+            assert!(
+                world
+                    .config
+                    .transaction_dir
+                    .join("bootstrap-fence.json")
+                    .is_file()
+            );
+            assert!(
+                !world
+                    .config
+                    .runtime_dir
+                    .join("daemon.pre-cutover.sock")
+                    .exists()
+            );
             assert!(!world.config.runtime_dir.join(ACTIVITY_FILE).exists());
             assert_eq!(
                 std::fs::read(&world.config.database_path).unwrap(),
@@ -4437,7 +4517,7 @@ mod tests {
                 assert!(
                     recover_host(&recovery, runner.as_ref(), world.expected_owner)
                         .unwrap_err()
-                        .contains("not an in-progress")
+                        .contains("exact committed activation fence is unavailable")
                 );
                 assert!(world.config.daemon_unit_path.exists());
                 assert_eq!(
@@ -4490,6 +4570,12 @@ mod tests {
 
     #[test]
     fn concrete_host_adapter_installs_verified_files_and_commits_snapshot() {
+        for retain_legacy_sources in [false, true] {
+            verify_host_adapter_finalization(retain_legacy_sources);
+        }
+    }
+
+    fn verify_host_adapter_finalization(retain_legacy_sources: bool) {
         let mut world = host_world();
         let transactions = world
             .config
@@ -4675,6 +4761,7 @@ mod tests {
             transaction_dir: world.config.transaction_dir.clone(),
             installed_manifest: world.config.installed_manifest.clone(),
             live_acceptance: world.config.transaction_dir.join("live-acceptance.json"),
+            retain_legacy_sources,
         };
         assert!(finalize_host(&finalization, runner.as_ref(), world.expected_owner).is_err());
         assert!(world.config.database_path.is_file());
@@ -4719,9 +4806,29 @@ mod tests {
         let finalized =
             finalize_host(&finalization, runner.as_ref(), world.expected_owner).unwrap();
         assert_eq!(finalized.status, "finalized");
-        assert_eq!(finalized.retired_sources, 2);
-        assert!(!world.config.database_path.exists());
-        assert!(!Path::new(&receipt.backup).exists());
+        assert_eq!(
+            finalized.retired_sources,
+            if retain_legacy_sources { 0 } else { 2 }
+        );
+        assert_eq!(
+            finalized.retained_sources,
+            if retain_legacy_sources { 2 } else { 0 }
+        );
+        assert_eq!(world.config.database_path.exists(), retain_legacy_sources);
+        assert_eq!(Path::new(&receipt.backup).exists(), retain_legacy_sources);
+        if retain_legacy_sources {
+            assert_eq!(
+                retained_sha,
+                install::hash_file(&world.config.database_path).unwrap()
+            );
+            assert!(
+                world
+                    .config
+                    .transaction_dir
+                    .join("retained-sources.json")
+                    .is_file()
+            );
+        }
         assert!(
             !world
                 .config
@@ -4729,6 +4836,16 @@ mod tests {
                 .join("retirement-pending.json")
                 .exists()
         );
+        if retain_legacy_sources {
+            assert_eq!(
+                finalize_host(&finalization, runner.as_ref(), world.expected_owner).unwrap(),
+                finalized
+            );
+            let saved_source = std::fs::read(&world.config.database_path).unwrap();
+            std::fs::write(&world.config.database_path, b"changed retained source").unwrap();
+            assert!(finalize_host(&finalization, runner.as_ref(), world.expected_owner).is_err());
+            std::fs::write(&world.config.database_path, saved_source).unwrap();
+        }
         // A crash after the terminal receipt but before removing the marker
         // must finish that last exact cleanup on an idempotent retry.
         install::atomic_file(
@@ -4786,6 +4903,7 @@ mod tests {
             live_acceptance_sha256: "1".repeat(64),
             postgres_archive_sha256: "2".repeat(64),
             retired_sources: 0,
+            retained_sources: 0,
         };
         let prior_finalization = world.config.transaction_dir.join("finalization.json");
         install::atomic_file(
@@ -5325,6 +5443,39 @@ mod tests {
         std::fs::remove_file(&record).unwrap();
         std::fs::create_dir(&record).unwrap();
         assert!(host.commit_activation(&snapshot).is_err());
+        assert!(
+            world
+                .config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .exists()
+        );
+
+        // A failure after the durable commit must never select SQLite again.
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            fragment: world.config.daemon_unit_path.clone(),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+        host.stop_legacy().unwrap();
+        host.backup_database().unwrap();
+        let snapshot = host.capture_installation().unwrap();
+        host.fence_legacy_socket().unwrap();
+        host.install_rust().unwrap();
+        host.start_rust().unwrap();
+        host.verify_live().unwrap();
+        std::fs::create_dir(&host.authority_marker_path).unwrap();
+        assert!(host.commit_activation(&snapshot).is_err());
+        assert!(host.writes_admitted());
+        assert_eq!(
+            read_snapshot(&world.config.transaction_dir, world.expected_owner.0)
+                .unwrap()
+                .status,
+            "committed"
+        );
         assert!(
             world
                 .config

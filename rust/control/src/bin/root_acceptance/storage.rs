@@ -2637,6 +2637,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
         ("native-nested", "committed"),
         ("native-link", "committed"),
         ("native-pending", "committed"),
+        ("native-retained", "committed"),
     ];
     for (index, (name, status)) in generations.iter().enumerate() {
         let generation = cutover.join(name);
@@ -2682,6 +2683,10 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
     write_private_json(
         &cutover.join("native-pending/retirement-pending.json"),
         &json!({"status":"awaiting_acceptance"}),
+    )?;
+    write_private_json(
+        &cutover.join("native-retained/retained-sources.json"),
+        &json!({"status":"owner_required_retention"}),
     )?;
     fs::write(cutover.join("native-extra/.env"), "PRIVATE_EXTRA_FILE")
         .map_err(|e| e.to_string())?;
@@ -2758,6 +2763,7 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
         "native-nested",
         "native-link",
         "native-pending",
+        "native-retained",
         "generic-disguise",
     ] {
         ensure!(
@@ -2787,6 +2793,22 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
     ensure!(
         protected_plan["ready"] == false,
         "native recovery pin was bypassed"
+    );
+    let retained = row("native-retained")?;
+    ensure!(
+        retained["reasons"]
+            .as_array()
+            .is_some_and(|reasons| reasons.contains(&json!("legacy_sources_retained"))),
+        "explicit legacy source retention was not reported"
+    );
+    let retained_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[retained["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        retained_plan["ready"] == false,
+        "owner-retained legacy authority became removable"
     );
     drop(active);
 

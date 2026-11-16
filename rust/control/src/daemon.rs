@@ -655,7 +655,7 @@ fn set_socket_mode(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devcoordinator2_api::{ClientContext, ResponseEnvelope};
+    use devcoordinator2_api::{ClientContext, PROTOCOL_VERSION, ResponseEnvelope};
     use std::sync::Mutex;
     use tempfile::tempdir;
 
@@ -691,7 +691,7 @@ mod tests {
 
     fn wait_frame(operation: &str) -> Vec<u8> {
         let mut frame = serde_json::to_vec(&serde_json::json!({
-            "protocol":2,"id":"wait","operation":operation,"params":wait_params(operation),"client":{}
+            "protocol":PROTOCOL_VERSION,"id":"wait","operation":operation,"params":wait_params(operation),"client":{}
         })).unwrap();
         frame.push(b'\n');
         frame

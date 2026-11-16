@@ -379,6 +379,21 @@ mod tests {
             "test.wait",
             "deployment.wait",
         ] {
+            let deadline = "2100-01-01T00:00:00Z";
+            let params = match operation {
+                "deployment.apply" => serde_json::json!({"deployment_id":"fixture"}),
+                "event.wait" => {
+                    serde_json::json!({"filters":[{"filter_id":"fixture","deadline_at":deadline}]})
+                }
+                "test.admission.wait" => serde_json::json!({"deadline_at":deadline}),
+                "test.wait" => {
+                    serde_json::json!({"path":"/fixture","run_id":"fixture","deadline_at":deadline})
+                }
+                "deployment.wait" => {
+                    serde_json::json!({"deployment_id":"fixture","state":"ready","deadline_at":deadline})
+                }
+                _ => unreachable!(),
+            };
             let temporary = tempfile::tempdir().unwrap();
             let socket = temporary.path().join("daemon.sock");
             let listener = UnixListener::bind(&socket).unwrap();
@@ -402,15 +417,9 @@ mod tests {
                     .await
                     .unwrap();
             });
-            let result = call(
-                &socket,
-                operation,
-                serde_json::json!({}),
-                ClientContext::default(),
-            )
-            .await;
-            server.await.unwrap();
+            let result = call(&socket, operation, params, ClientContext::default()).await;
             assert!(result.unwrap().is_ok());
+            server.await.unwrap();
         }
     }
 

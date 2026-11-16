@@ -43,7 +43,7 @@ window.DevCoordinatorPerformance = (() => {
       const componentMarkup = hasComponents
         ? `<dl>${rows.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${value == null ? 'Unavailable' : integer(value)}</dd></div>`).join('')}</dl><dl class="performance-cost-detail">${costs.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${value == null ? 'Unavailable' : usd(value)}</dd></div>`).join('')}</dl>`
         : '<p class="performance-token-popover-empty">Component details unavailable for this breakdown.</p>';
-      return `<span class="performance-token-detail"><button type="button" class="performance-token-detail-button" data-performance-token-detail="${id}" aria-expanded="false" aria-controls="${id}" aria-label="Show token breakdown for ${esc(label)}">${amount(measurement)}</button><span class="performance-token-popover" id="${id}" role="dialog" aria-label="Token breakdown" hidden><strong>${esc(label)}</strong>${componentMarkup}<small>${esc(costState(cost))} · API-equivalent Standard basis</small></span></span>`;
+      return `<span class="performance-token-detail"><button type="button" class="performance-token-detail-button" data-performance-token-detail="${id}" aria-expanded="false" aria-controls="${id}" aria-label="Show token breakdown for ${esc(label)}">${amount(measurement)}</button><span class="performance-token-popover" id="${id}" role="dialog" aria-label="Token breakdown" tabindex="-1" data-ui-contextual-overlay="An opened token breakdown temporarily covers the surrounding totals" hidden><strong data-ui-continuation-anchor>${esc(label)}</strong>${componentMarkup}<small>${esc(costState(cost))} · API-equivalent Standard basis</small></span></span>`;
     }
     const costAmount = cost => usd(cost?.estimated_usd_micros);
     const totalSource = usage => usage?.totals || usage?.outcomes?.totals?.cost || null;
@@ -214,15 +214,47 @@ window.DevCoordinatorPerformance = (() => {
         } else { root.querySelector('.performance-workspace').append(reader); root.querySelector('.performance-inline-reader')?.remove(); }
       }
       window.addEventListener('resize', placeReader, { signal });
+      const closeTokenDetails = (restoreFocus = false) => {
+        root.querySelectorAll('.performance-token-popover:not([hidden])').forEach(item => {
+          item.hidden = true;
+          item.previousElementSibling?.setAttribute('aria-expanded', 'false');
+          if (restoreFocus) item.previousElementSibling?.focus({ preventScroll: true });
+        });
+      };
+      const placeTokenDetails = () => {
+        root.querySelectorAll('.performance-token-popover:not([hidden])').forEach(popover => {
+          const anchor = popover.previousElementSibling.getBoundingClientRect();
+          const width = document.documentElement.clientWidth;
+          const height = window.innerHeight;
+          const box = popover.getBoundingClientRect();
+          popover.style.left = `${Math.max(12, Math.min(anchor.left, width - box.width - 12))}px`;
+          const below = anchor.bottom + 8;
+          const above = anchor.top - box.height - 8;
+          popover.style.top = `${Math.max(12, Math.min(below + box.height <= height - 12 ? below : above, height - box.height - 12))}px`;
+        });
+      };
+      window.addEventListener('resize', placeTokenDetails, { signal });
+      document.addEventListener('pointerdown', event => {
+        if (!event.target.closest('.performance-token-detail')) closeTokenDetails();
+      }, { signal });
+      root.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && root.querySelector('.performance-token-popover:not([hidden])')) {
+          event.preventDefault(); closeTokenDetails(true);
+        }
+      }, { signal });
+      document.addEventListener('scroll', event => {
+        if (!event.target.closest?.('.performance-token-popover')) placeTokenDetails();
+      }, { signal, capture: true });
       root.addEventListener('click', event => {
         const button = event.target.closest('[data-performance-token-detail]');
         if (!button) return;
         const popover = root.querySelector('#' + CSS.escape(button.dataset.performanceTokenDetail));
         if (!popover) return;
         const open = !popover.hidden;
-        root.querySelectorAll('.performance-token-popover:not([hidden])').forEach(item => { item.hidden = true; item.previousElementSibling?.setAttribute('aria-expanded', 'false'); });
+        closeTokenDetails();
         popover.hidden = open;
         button.setAttribute('aria-expanded', String(!open));
+        if (!open) { placeTokenDetails(); popover.focus({ preventScroll: true }); }
       }, { signal });
       const showCoverage = usage => { window.DevCoordinatorI18n.bind(find('coverage'), () => `${coverageStatusText(usage.coverage)}${usage.outcomes.unattributed.operations ? ' · ' + window.DevCoordinatorI18n.t("performance.unattributedWork") : ''}`); };
       function showUsage(usage, append = false) {

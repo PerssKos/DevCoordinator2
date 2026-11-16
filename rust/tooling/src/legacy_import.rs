@@ -1459,7 +1459,7 @@ mod tests {
             &_fixture.fixture().unwrap().config,
             &path,
             "example.test",
-            "t4",
+            "2026-11-16T00:00:00Z",
         )
         .unwrap();
         let published = read_json(&path).unwrap();

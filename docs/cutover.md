@@ -142,6 +142,15 @@ temporary migration backup. It is idempotent and retains a finalization receipt.
 Unrelated databases, repository test state, open bug files and external usage
 collectors are never retirement targets. PostgreSQL recovery backups remain.
 
+When the owner requires keeping the legacy files, pass
+`--retain-legacy-sources` to `install finalize`. All live and recovery checks
+still run, but the exact SQLite source and rollback copy remain unchanged.
+The finalization receipt records the retained count, and a private
+`retained-sources.json` manifest keeps their containing backup generation out
+of automatic and manual cleanup. Idempotent finalization verifies those hashes
+again. Later upgrades may proceed; deleting these retained files requires a
+separate owner decision.
+
 The following sections describe deployment proofs and historical snapshot inspection;
 protocol-v3 calls use `devcoordinator2 call <operation> --params JSON` or a bounded
 `--params-file FILE`.

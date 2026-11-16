@@ -84,7 +84,12 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   const tokenPopover = tokenBadge.locator('..').locator('.performance-token-popover');
   const tokenPopoverText = await tokenPopover.innerText();
   verify('token detail popovers retain provider components', tokenPopoverText.includes('Cached input') && !/Cached input\s+—/.test(tokenPopoverText));
-  await tokenBadge.click();
+  verify('token breakdown fits the viewport and receives focus', await tokenPopover.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight && document.activeElement === element;
+  }));
+  await page.keyboard.press('Escape');
+  verify('Escape closes the token breakdown and restores its trigger', await tokenPopover.isHidden() && await tokenBadge.evaluate(element => document.activeElement === element));
   daemon.setScenario({ ...scenario, delayMs: 1600, delayOperations: ['performance.overview'] });
   await page.goto('about:blank');
   const delayedTokenRequest = page.waitForRequest(request => request.url().endsWith('/performance.overview'));

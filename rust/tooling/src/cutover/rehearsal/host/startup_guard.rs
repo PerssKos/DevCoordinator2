@@ -1615,6 +1615,9 @@ mod tests {
     impl CommandRunner for ForeignOwner<'_> {
         fn run(&self, request: &CommandRequest) -> Result<install::CommandOutput, String> {
             let mut request = request.clone();
+            // Shared clones can skip Git's ownership check when they only
+            // write an alternates file. Exercise the checked copy path too.
+            request.args.retain(|arg| arg != "--shared");
             request
                 .environment
                 .insert("GIT_TEST_ASSUME_DIFFERENT_OWNER".into(), "1".into());
@@ -1629,14 +1632,12 @@ mod tests {
     fn check_clone(source: &Path, root: &Path, runner: &Recorder, foreign_owner: bool) {
         let forced = ForeignOwner(runner);
         let clone_runner: &dyn CommandRunner = if foreign_owner { &forced } else { runner };
-        let failed = root.join("outer-only-source");
+        let failed = root.join("untrusted-source");
         assert!(
             required(
                 clone_runner,
                 Path::new("/usr/bin/git"),
                 vec![
-                    "-c".into(),
-                    "safe.directory=*".into(),
                     "clone".into(),
                     "--shared".into(),
                     "--no-hardlinks".into(),
