@@ -465,7 +465,7 @@ test("non-scrollable clipped content stays critical", async () => {
     }
     assert.equal(report.findings.filter((finding) => finding.selector === "#hidden-label").length, 0,
       "a nested label inside a zero-area CSS clip does not paint");
-    assert(report.metrics.hiddenTextLike.zeroSize >= 2, "hidden parent and child remain counted");
+    assert(report.metrics.hiddenTextLike.fullyClipped >= 2, "fully clipped parent and child remain counted");
     assert.equal(report.findings.filter((finding) => finding.selector === "#inactive-clip").length, 0,
       "clip on a static box does not hide a visible descendant");
     for (const variant of ["fixed", "absolute", "contents-absolute", "static-absolute"]) {
@@ -635,7 +635,7 @@ test("retained candidate CLI verifies the rendered editor at both widths", () =>
   const config = path.join(evidence, "config.json");
   const reportPath = path.join(evidence, "report.json");
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  fs.writeFileSync(fixture, editorFixture());
+  fs.writeFileSync(fixture, `${editorFixture()}<span style="position:absolute;width:1px;height:1px;clip:rect(0,0,0,0);overflow:hidden"><span>Hidden coverage label</span></span>`);
   fs.writeFileSync(config, JSON.stringify({
     repoRoot: root,
     targetDefaults: {
@@ -665,5 +665,16 @@ test("retained candidate CLI verifies the rendered editor at both widths", () =>
   assert.equal(report.pages.length, 2);
   assert.equal(occlusions(report).length, 0);
   assert(!report.findings.some((finding) => finding.severity === "critical"));
+  const coverageRows = fs.readFileSync(path.join(evidence, "report.md"), "utf8")
+    .split("\n").filter(line => line.startsWith("| pinned-source ("));
+  assert.equal(coverageRows.length, report.pages.length);
+  for (const page of report.pages) {
+    const hidden = page.metrics.hiddenTextLike;
+    assert(hidden.fullyClipped >= 2, "nested clipped label is measured in every viewport");
+    const row = coverageRows.find(line => line.startsWith(`| pinned-source (${page.viewport.name}) |`));
+    assert(row, `missing coverage row for ${page.viewport.name}`);
+    assert.equal(Number(row.split("|")[6].trim()), Object.values(hidden).reduce((sum, count) => sum + count, 0),
+      "Markdown hidden coverage includes every measured category");
+  }
   process.stdout.write(`Retained CLI proof: ${evidence}\n`);
 });

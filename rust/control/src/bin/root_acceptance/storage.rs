@@ -1651,7 +1651,7 @@ fn mcp(world: &World, name: &str, arguments: Value) -> Result<Value, String> {
     let response = mcp_result(world, name, arguments)?;
     ensure!(
         response["isError"] != true,
-        "MCP storage operation failed: {}",
+        "MCP storage operation {name} failed: {}",
         bounded_json(&response)
     );
     let result = response["structuredContent"].clone();
@@ -2261,32 +2261,9 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         "bounded ignored worktree registration did not preserve blockers: {}",
         bounded_json(&ignored_intent)
     );
-    let history_path = trees[4].join(".devcoordinator/test/history.json");
-    fs::write(&history_path, "[\"changed\"]\n").map_err(|e| e.to_string())?;
-    let changed_inventory = scanned(world, &repo, "changed-reviewed-metadata")?;
-    let changed_worktree = changed_inventory["artifacts"]
-        .as_array()
-        .and_then(|rows| rows.iter().find(|row| row["name"] == "metadata-worktree"))
-        .cloned()
-        .ok_or("changed metadata worktree missing")?;
-    ensure!(
-        reason_codes(&changed_worktree).contains(&json!("ignored_review_file_changed"))
-            || reason_codes(&changed_worktree).contains(&json!("unreviewed_ignored_files")),
-        "changed reviewed metadata was accepted: {}",
-        bounded_json(&changed_worktree)
-    );
-    fs::write(&history_path, "[]\n").map_err(|e| e.to_string())?;
-    let refreshed = mcp(
-        world,
-        "storage_register",
-        json!({"artifact_id":changed_worktree["artifact_id"],"expected_revision":changed_worktree["revision"],"repository_id":repo,"effect":"source_worktree","reviewed_ignored_files":metadata.iter().map(|(path,body)| json!({"path":path,"sha256":sha256_hex(body.as_bytes())})).collect::<Vec<_>>(),"reason":"Refresh changed metadata review"}),
-    )?;
-    ensure!(
-        refreshed["deletable"] == json!(false)
-            && reason_codes(&refreshed).contains(&json!("ignored_review_pending")),
-        "changed metadata review was not invalidated before rescanning: {}",
-        bounded_json(&refreshed)
-    );
+    // Finish supported retention before checking a changed file's digest.
+    // Otherwise Git's warning about the deliberately unreadable log directory
+    // correctly stops verification before any individual file can be checked.
     let database = world.authority()?;
     let logs = devcoordinator2_control::test_logs::TestLogService::new(
         database.clone(),
@@ -2302,6 +2279,33 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
             break;
         }
     }
+    let history_path = trees[4].join(".devcoordinator/test/history.json");
+    fs::write(&history_path, "[\"changed\"]\n").map_err(|e| e.to_string())?;
+    let changed_inventory = scanned(world, &repo, "changed-reviewed-metadata")?;
+    let changed_worktree = changed_inventory["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"] == "metadata-worktree"))
+        .cloned()
+        .ok_or("changed metadata worktree missing")?;
+    ensure!(
+        changed_worktree["deletable"] == json!(false)
+            && (reason_codes(&changed_worktree).contains(&json!("ignored_review_file_changed"))
+                || reason_codes(&changed_worktree).contains(&json!("unreviewed_ignored_files"))),
+        "changed reviewed metadata was accepted: {}",
+        bounded_json(&changed_worktree)
+    );
+    fs::write(&history_path, "[]\n").map_err(|e| e.to_string())?;
+    let refreshed = mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":changed_worktree["artifact_id"],"expected_revision":changed_worktree["revision"],"repository_id":repo,"effect":"source_worktree","reviewed_ignored_files":metadata.iter().map(|(path,body)| json!({"path":path,"sha256":sha256_hex(body.as_bytes())})).collect::<Vec<_>>(),"reason":"Refresh changed metadata review"}),
+    )?;
+    ensure!(
+        refreshed["deletable"] == json!(false)
+            && reason_codes(&refreshed).contains(&json!("ignored_review_pending")),
+        "changed metadata review was not invalidated before rescanning: {}",
+        bounded_json(&refreshed)
+    );
     let inventory = scanned(world, &repo, "reviewed-metadata-after-retention")?;
     let rows = inventory["artifacts"]
         .as_array()
@@ -2461,28 +2465,60 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
         "existing cleanup-owned source-worktree intent was not bounded: {}",
         bounded_json(&renewed)
     );
-    fs::write(trees[0].join("source.txt"), "dirty after intent\n").map_err(|e| e.to_string())?;
     let guarded_plan = mcp(
         world,
         "storage_cleanup_plan",
         json!({"artifact_ids":[clean["artifact_id"]],"include_persistent_data":true}),
     )?;
-    let guarded_job = mcp(
+    ensure!(
+        guarded_plan["ready"] == json!(true),
+        "clean worktree plan was not ready before the source changed: {}",
+        bounded_json(&guarded_plan)
+    );
+    fs::write(trees[0].join("source.txt"), "dirty after intent\n").map_err(|e| e.to_string())?;
+    let dirty_plan = mcp(
         world,
-        "storage_cleanup_start",
-        json!({"plan_id":guarded_plan["plan_id"],"idempotency_key":"reject-changed-worktree-after-intent"}),
-    )?;
-    let guarded_result = wait_job(
-        world,
-        guarded_job["job_id"]
-            .as_str()
-            .ok_or("guarded cleanup job missing")?,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[clean["artifact_id"]],"include_persistent_data":true}),
     )?;
     ensure!(
-        matches!(guarded_result["state"].as_str(), Some("failed" | "partial")) && trees[0].exists(),
-        "final worktree validation did not reject dirty data after intent: {}",
-        bounded_json(&guarded_result)
+        dirty_plan["ready"] == json!(false)
+            && dirty_plan["items"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["artifact_id"] == clean["artifact_id"]
+                        && item["blockers"]
+                            .as_array()
+                            .is_some_and(|blockers| blockers.contains(&json!("dirty_worktree")))
+                })
+            }),
+        "planning did not reject dirty data after intent: {}",
+        bounded_json(&dirty_plan)
     );
+    for (plan, reason, key) in [
+        (
+            &dirty_plan,
+            "plan_has_blockers",
+            "reject-dirty-worktree-plan",
+        ),
+        (
+            &guarded_plan,
+            "dirty_worktree",
+            "reject-changed-worktree-after-plan",
+        ),
+    ] {
+        let refused = world.call(
+            "storage.cleanup.start",
+            json!({"plan_id":plan["plan_id"],"idempotency_key":key}),
+        )?;
+        ensure!(
+            error_code(&refused) == Some("storage_blocked")
+                && refused["error"]["message"] == reason
+                && fs::read_to_string(trees[0].join("source.txt")).map_err(|e| e.to_string())?
+                    == "dirty after intent\n",
+            "cleanup did not preserve changed data for {key}: {}",
+            bounded_json(&refused)
+        );
+    }
     fs::write(
         trees[0].join("source.txt"),
         "authoritative fixture source\n",
@@ -2815,11 +2851,22 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
     let expect_blocked =
         |world: &World, plan: &Value, key: &str, code: &str| -> Result<(), String> {
             require_ready_cleanup_plan(plan, key)?;
-            let job = mcp(
-                world,
-                "storage_cleanup_start",
+            let started = world.call(
+                "storage.cleanup.start",
                 json!({"plan_id":plan["plan_id"],"idempotency_key":key}),
             )?;
+            // Start revalidates a prepared plan before queueing it. A changed
+            // source may therefore be refused before any job is created.
+            if started["ok"] == false {
+                ensure!(
+                    error_code(&started) == Some("storage_blocked")
+                        && started["error"]["message"] == code,
+                    "changed native backup had an unexpected refusal for {key}: {}",
+                    bounded_json(&started)
+                );
+                return Ok(());
+            }
+            let job = data(&started)?;
             let result = wait_job(
                 world,
                 job["job_id"]

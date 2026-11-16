@@ -2218,8 +2218,6 @@ fn retained_artifact_capacity_after_run(world: &mut World, run_id: &str) -> Resu
                     .ok_or("candidate path is not UTF-8")?,
                 "--client",
                 "codex",
-                "test",
-                "artifact",
                 "materialize",
                 world.repo.to_str().ok_or("repository path is not UTF-8")?,
                 "--run-id",

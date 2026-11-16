@@ -3513,7 +3513,7 @@ function pageVerifier() {
   const visuallyHiddenAncestor = (el) => {
     for (let node = el; node; node = composedParent(node)) {
       const style = cs(node);
-      if (!["absolute", "fixed"].includes(style.position) ||
+      if (style.display === "contents" || !["absolute", "fixed"].includes(style.position) ||
           !["hidden", "clip"].includes(style.overflowX) || !["hidden", "clip"].includes(style.overflowY)) continue;
       const rect = nowRect(node);
       if (rect.width > 1 || rect.height > 1) continue;
@@ -6831,7 +6831,7 @@ function markdownReport(report) {
     const discoveredShadow = notInspected ? notInspected.discoveredOpenShadowRoots || inspectedShadow : 0;
     const inspectedIframes = notInspected ? notInspected.inspectedIframes || 0 : 0;
     const discoveredIframes = notInspected ? notInspected.discoveredIframes || inspectedIframes + iframes : 0;
-    const hiddenTotal = (hidden.displayNone || 0) + (hidden.visibilityHidden || 0) + (hidden.zeroOpacity || 0) + (hidden.zeroSize || 0);
+    const hiddenTotal = (hidden.displayNone || 0) + (hidden.visibilityHidden || 0) + (hidden.zeroOpacity || 0) + (hidden.zeroSize || 0) + (hidden.fullyClipped || 0);
     const scrollNote = scroll && !scroll.skipped
       ? `scrolled to ${scroll.scrolledTo}px over ${scroll.scrollPasses} pass(es)${scroll.capped ? " (capped)" : ""}`
       : "scroll off";
