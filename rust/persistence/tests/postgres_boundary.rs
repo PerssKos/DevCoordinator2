@@ -6,6 +6,48 @@ use devcoordinator2_persistence::{
 };
 use std::time::{Duration, Instant};
 
+// Only the checkpointer discovered through this test's private cluster is
+// paused. A pidfd prevents PID reuse from ever targeting another process;
+// the guard resumes it even if the timer thread unwinds.
+fn pause_owned_checkpointer(pid: i32) -> std::thread::JoinHandle<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    struct Resume(OwnedFd);
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.0.as_raw_fd(),
+                    libc::SIGCONT,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                );
+            }
+        }
+    }
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    assert!(fd >= 0, "open owned fixture checkpointer pidfd");
+    let resume = Resume(unsafe { OwnedFd::from_raw_fd(fd as i32) });
+    assert_eq!(
+        unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                resume.0.as_raw_fd(),
+                libc::SIGSTOP,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        },
+        0,
+        "pause only the owned fixture checkpointer"
+    );
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(18));
+        drop(resume);
+    })
+}
+
 fn request_index_upgrade_preserves_native_rows(cluster: &FixtureCluster) {
     use devcoordinator2_persistence::schema::MIGRATIONS;
     use sha2::{Digest, Sha256};
@@ -505,6 +547,48 @@ fn authority_schema_pools_timeouts_rollback_and_restart() {
             )
             .unwrap()
             .is_none()
+    );
+    // DROP DATABASE requires a checkpoint. Real disk sync exceeded the old
+    // 15-second cleanup deadline under load; reproduce that wait without
+    // weakening fsync or granting the authority role signalling privileges.
+    let mut checkpoint_release = None;
+    let mut delayed_name = String::new();
+    let delayed_cleanup = backup::with_snapshot::<_, Error, _>(&config, &archive, |connection| {
+        delayed_name = connection.query_row("SELECT current_database()", [], |r| r.get(0))?;
+        let checkpointer: i32 = cluster
+            .client("postgres")?
+            .query_one(
+                "SELECT pid FROM pg_stat_activity WHERE backend_type='checkpointer'",
+                &[],
+            )?
+            .get(0);
+        checkpoint_release = Some(pause_owned_checkpointer(checkpointer));
+        assert_eq!(
+            database.read::<_, Error, _>(|client| client.query_row(
+                "SELECT value FROM meta WHERE key='durable'",
+                [],
+                |row| row.get::<_, String>(0)
+            ))?,
+            "kept",
+            "authority reads remain available during the owned checkpoint wait"
+        );
+        connection.query_row("SELECT value FROM meta WHERE key='durable'", [], |r| {
+            r.get::<_, String>(0)
+        })
+    });
+    checkpoint_release.unwrap().join().unwrap();
+    assert_eq!(delayed_cleanup.unwrap(), "kept");
+    assert!(
+        cluster
+            .client("postgres")
+            .unwrap()
+            .query_opt(
+                "SELECT 1 FROM pg_database WHERE datname=$1",
+                &[&delayed_name]
+            )
+            .unwrap()
+            .is_none(),
+        "delayed cleanup must remove its exact owned snapshot"
     );
     let mut blocked_name = String::new();
     let mut blocker = config

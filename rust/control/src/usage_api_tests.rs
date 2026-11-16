@@ -17,6 +17,36 @@ fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
     let mut cap = capability();
     cap["version"] = json!(2);
     assert!(validate_capability(&json!({"localUsageAccounting":cap})).is_err());
+    let negotiated = crate::usage_api_fixture::retained_default_capability();
+    validate_capability(&json!({"localUsageAccounting":negotiated})).unwrap();
+    for (field, invalid) in [
+        ("source", json!("retained_sqlite")),
+        ("storage", json!("retained-sqlite")),
+        ("includesCurrentStore", json!(false)),
+        ("supportsWorkContextBindings", json!(false)),
+        ("supportsWorkstreamOutcomes", json!(false)),
+        ("snapshotRetentionMs", json!(0)),
+    ] {
+        let mut invalid_cap = negotiated.clone();
+        invalid_cap["contracts"][0][field] = invalid;
+        assert!(
+            validate_capability(&json!({"localUsageAccounting":invalid_cap})).is_err(),
+            "{field}"
+        );
+    }
+    for contracts in [
+        json!(null),
+        json!([]),
+        json!([negotiated["contracts"][1]]),
+        json!([negotiated["contracts"][0], negotiated["contracts"][0]]),
+    ] {
+        let mut invalid_cap = capability();
+        invalid_cap["contracts"] = contracts;
+        assert!(
+            validate_capability(&json!({"localUsageAccounting":invalid_cap})).is_err(),
+            "malformed explicit contracts must not fall back to the default"
+        );
+    }
     let params = json!({"repositoryKey":KEY,"fromAt":10,"toAt":20});
     let value = response(&params, 20, 135);
     let summary: Summary = serde_json::from_value(value.clone()).unwrap();

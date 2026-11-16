@@ -198,7 +198,11 @@ impl OwnedSnapshot {
         snapshot_stage(
             "cleanup_settings",
             client
-                .batch_execute("SET statement_timeout='15s'; SET lock_timeout='5s'")
+                // Dropping a database waits for a cluster checkpoint. Real
+                // data-file sync can exceed an ordinary request deadline;
+                // keep cleanup finite without treating that progress as a
+                // lock conflict or changing the short lock-wait limit.
+                .batch_execute("SET statement_timeout='60s'; SET lock_timeout='5s'")
                 .map_err(Error::from),
         )?;
         // All clients owned by the inspection are already closed. Ordinary

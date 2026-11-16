@@ -14,6 +14,15 @@ before calling `localUsage/summary`. A successful transport alone does not make
 a collector available: the response must also have the negotiated version,
 format, scope, exact UTC window and consistent snapshot metadata.
 
+Both summary and repository identity requests explicitly select
+`contractVersion: 1`. A producer may advertise retained-history contract 2 as
+its default and list the current contract separately in `contracts`. In that
+case Coordinator requires exactly one version-1 entry naming `usage-v2` as
+both source and storage, current-store inclusion, work-context and outcome
+support, and a positive bounded snapshot retention time. Original version-1
+advertisements without the array remain supported. A malformed or ambiguous
+array is refused; it never causes a fallback to retained history or mixed totals.
+
 `localUsage/repositoryIdentity` resolves the producer's opaque repository key
 for a registered local checkout. The path travels only as private IPC input;
 it is not retained in normal usage records or returned in reports. Existing

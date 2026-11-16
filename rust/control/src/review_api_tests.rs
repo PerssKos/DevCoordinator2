@@ -549,7 +549,12 @@ fn review_prepare_uses_authorized_operation_context_over_real_transport_with_leg
     let mut fixture = Fixture::new();
     let root = fixture._temporary.path();
     let home = root.join("fresh");
-    let peer = Peer::start(root, &home, |params| response(params, START + WEEK, 135));
+    let peer = Peer::with_capability(
+        root,
+        &home,
+        Some(crate::usage_api_fixture::retained_default_capability()),
+        |params| response(params, START + WEEK, 135),
+    );
     let legacy = root.join("retired");
     std::fs::create_dir_all(legacy.join("usage")).unwrap();
     let sentinel = legacy.join("usage/usage.sqlite3");

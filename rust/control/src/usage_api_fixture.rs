@@ -54,6 +54,24 @@ pub(crate) fn capability() -> Value {
     json!({"version":1,"supportedVersions":[1],"methods":["localUsage/summary","localUsage/repositoryIdentity"],"storage":"usage-v2","supportsWorkContextBindings":true,"supportsWorkstreamOutcomes":true,"snapshotRetentionMs":5000})
 }
 
+pub(crate) fn retained_default_capability() -> Value {
+    let mut current = capability();
+    current["source"] = json!("usage-v2");
+    current["includesCurrentStore"] = json!(true);
+    current.as_object_mut().unwrap().remove("methods");
+    current.as_object_mut().unwrap().remove("supportedVersions");
+    let retained = json!({"version":2,"source":"retained_sqlite","storage":"retained-sqlite","supportsWorkContextBindings":false,"supportsWorkstreamOutcomes":false,"snapshotRetentionMs":0,"includesCurrentStore":false});
+    let mut cap = capability();
+    cap["version"] = json!(2);
+    cap["supportedVersions"] = json!([1, 2]);
+    cap["storage"] = json!("retained-sqlite");
+    cap["supportsWorkContextBindings"] = json!(false);
+    cap["supportsWorkstreamOutcomes"] = json!(false);
+    cap["snapshotRetentionMs"] = json!(0);
+    cap["contracts"] = json!([current, retained]);
+    cap
+}
+
 pub(crate) fn response(params: &Value, generated: u64, tokens: u64) -> Value {
     let mut value: Value = serde_json::from_str(include_str!(
         "../../../test-fixtures/usage-v2-bound-response.json"

@@ -1067,17 +1067,53 @@ fn validate_capability(initialize: &Value) -> Result<(), String> {
         .get("methods")
         .and_then(Value::as_array)
         .ok_or("api_contract_unsupported")?;
-    if cap.get("version").and_then(Value::as_u64) != Some(1)
-        || !cap
-            .get("supportedVersions")
-            .and_then(Value::as_array)
-            .is_some_and(|v| v.iter().any(|v| v.as_u64() == Some(1)))
-        || cap.get("storage").and_then(Value::as_str) != Some("usage-v2")
-        || cap
+    let versions = cap
+        .get("supportedVersions")
+        .and_then(Value::as_array)
+        .ok_or("api_contract_unsupported")?;
+    let default_version = cap
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or("api_contract_unsupported")?;
+    if !versions.iter().any(|v| v.as_u64() == Some(1))
+        || !versions.iter().any(|v| v.as_u64() == Some(default_version))
+    {
+        return Err("api_contract_unsupported".into());
+    }
+    // The deployed legacy default and the current collector have different
+    // contracts. Every request below explicitly selects version 1; inspect
+    // that advertised entry rather than mistaking default history for current
+    // data. Original author-only advertisements remain supported.
+    let contract = match cap.get("contracts") {
+        None if default_version == 1 => cap,
+        Some(Value::Array(contracts)) => {
+            let mut selected = contracts
+                .iter()
+                .filter(|entry| entry.get("version").and_then(Value::as_u64) == Some(1));
+            let selected_contract = selected.next().ok_or("api_contract_unsupported")?;
+            if selected.next().is_some()
+                || selected_contract.get("source").and_then(Value::as_str) != Some("usage-v2")
+                || selected_contract
+                    .get("includesCurrentStore")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+                || !selected_contract
+                    .get("snapshotRetentionMs")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|value| value > 0 && value <= u64::from(u32::MAX))
+            {
+                return Err("api_contract_unsupported".into());
+            }
+            selected_contract
+        }
+        _ => return Err("api_contract_unsupported".into()),
+    };
+    if contract.get("storage").and_then(Value::as_str) != Some("usage-v2")
+        || contract
             .get("supportsWorkContextBindings")
             .and_then(Value::as_bool)
             != Some(true)
-        || cap
+        || contract
             .get("supportsWorkstreamOutcomes")
             .and_then(Value::as_bool)
             != Some(true)
