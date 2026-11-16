@@ -1,5 +1,5 @@
 //! Scan continuations keep filesystem enumeration and measurement off request turns.
-use super::HostBackend;
+use super::{HostBackend, git_bytes};
 use crate::storage::{
     blocked, fs,
     model::{Context, Discovery},
@@ -63,6 +63,31 @@ struct SourceCursor {
     pending: Option<(Candidate, fs::MeasurementCursor)>,
     candidates: usize,
     had_gap: bool,
+}
+
+fn tracked_source_directory(
+    root: &SourceRoot,
+    path: &std::path::Path,
+    context: &Context,
+) -> Result<bool, ProtocolError> {
+    let Some(git) = root.git.as_ref() else {
+        return Ok(false);
+    };
+    let checkout = if root.worktree { &root.path } else { git };
+    let path = path.to_str().ok_or_else(|| blocked("non_utf8_path"))?;
+    Ok(!git_bytes(checkout, &["ls-files", "-z", "--", path], context)?.is_empty())
+}
+
+fn classify_unconfigured_directory(
+    name: &str,
+    tracked_source: Option<bool>,
+) -> Option<(api::Kind, bool)> {
+    match name {
+        "dist" | "build" | "bazel-out" | ".next" => tracked_source
+            .filter(|tracked| !tracked)
+            .map(|_| (api::Kind::BuildOutput, false)),
+        _ => None,
+    }
 }
 
 impl SourceCursor {
@@ -265,14 +290,17 @@ impl SourceCursor {
                 }
                 continue;
             }
-            let (root, stack) = self.current.as_mut().expect("selected source root");
-            let Some((parent, directory, depth)) = stack.last_mut() else {
-                self.current = None;
-                continue;
-            };
-            let Some(entry) = directory.next() else {
-                stack.pop();
-                continue;
+            let (root, parent, depth, entry) = {
+                let (root, stack) = self.current.as_mut().expect("selected source root");
+                let Some((parent, directory, depth)) = stack.last_mut() else {
+                    self.current = None;
+                    continue;
+                };
+                let Some(entry) = directory.next() else {
+                    stack.pop();
+                    continue;
+                };
+                (root.clone(), parent.clone(), *depth, entry)
             };
             entries += 1;
             let entry = match entry {
@@ -286,6 +314,7 @@ impl SourceCursor {
             if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
+            let entry_path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if root.kind.is_none()
@@ -301,6 +330,7 @@ impl SourceCursor {
             {
                 continue;
             }
+            let mut discovery_gap = false;
             let selected = if let Some(kind) = root.kind {
                 Some((kind, kind != api::Kind::Unknown))
             } else {
@@ -308,35 +338,49 @@ impl SourceCursor {
                     "target" => Some((
                         api::Kind::BuildOutput,
                         parent.join("Cargo.toml").is_file()
-                            && entry.path().join(".rustc_info.json").is_file(),
+                            && entry_path.join(".rustc_info.json").is_file(),
                     )),
                     "node_modules" => Some((
                         api::Kind::DependencyCache,
                         parent.join("package.json").is_file()
-                            && (entry.path().join(".package-lock.json").is_file()
-                                || entry.path().join(".modules.yaml").is_file()),
+                            && (entry_path.join(".package-lock.json").is_file()
+                                || entry_path.join(".modules.yaml").is_file()),
                     )),
                     ".venv" | ".venv-v3" | "venv" => Some((
                         api::Kind::DependencyCache,
-                        entry.path().join("pyvenv.cfg").is_file(),
+                        entry_path.join("pyvenv.cfg").is_file(),
                     )),
                     ".pytest_cache" | ".ruff_cache" => Some((
                         api::Kind::DependencyCache,
-                        entry.path().join("CACHEDIR.TAG").is_file(),
+                        entry_path.join("CACHEDIR.TAG").is_file(),
                     )),
                     "dist" | "build" | "bazel-out" | ".next" => {
-                        Some((api::Kind::BuildOutput, false))
+                        let tracked_source =
+                            match tracked_source_directory(&root, &entry_path, context) {
+                                Ok(tracked) => Some(tracked),
+                                Err(_) => {
+                                    discovery_gap = true;
+                                    None
+                                }
+                            };
+                        if tracked_source == Some(true) {
+                            out.tracked_source_directories.insert(entry_path.clone());
+                        }
+                        classify_unconfigured_directory(name.as_ref(), tracked_source)
                     }
                     _ => None,
                 }
             };
+            if discovery_gap {
+                self.gap(out, "source_discovery_incomplete");
+            }
             if let Some((kind, recognized)) = selected {
                 let mut selected_root = root.clone();
                 if selected_root.git.is_none() {
                     selected_root.git = context
                         .repositories
                         .iter()
-                        .find(|repository| entry.path().starts_with(&repository.root))
+                        .find(|repository| entry_path.starts_with(&repository.root))
                         .map(|repository| repository.root.clone());
                 }
                 if self.candidates >= 10_000 {
@@ -345,7 +389,7 @@ impl SourceCursor {
                 self.prepare(
                     Candidate {
                         root: selected_root,
-                        path: entry.path(),
+                        path: entry_path,
                         kind,
                         recognized,
                     },
@@ -353,12 +397,15 @@ impl SourceCursor {
                 );
                 continue;
             }
-            if *depth >= 8 || entry.path().join(".git").exists() {
+            if depth >= 8 || entry_path.join(".git").exists() {
                 continue;
             }
-            let child_depth = *depth + 1;
-            match std::fs::read_dir(entry.path()) {
-                Ok(directory) => stack.push((entry.path(), directory, child_depth)),
+            let child_depth = depth + 1;
+            match std::fs::read_dir(&entry_path) {
+                Ok(directory) => {
+                    let (_, stack) = self.current.as_mut().expect("selected source root");
+                    stack.push((entry_path, directory, child_depth));
+                }
                 Err(_) => {
                     self.had_gap = true;
                     out.coverage_gaps.push("source_discovery_incomplete".into());
@@ -489,5 +536,142 @@ impl HostBackend {
             }
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::automation_test_support::Fixture;
+    use crate::storage::model::Repository;
+    use std::process::Command;
+
+    fn git(path: &std::path::Path, args: &[&str]) {
+        assert!(
+            Command::new("git")
+                .current_dir(path)
+                .args(args)
+                .status()
+                .expect("git available")
+                .success(),
+            "git {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn tracked_build_named_directory_stays_source() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repo");
+        std::fs::create_dir_all(repository.join("build")).unwrap();
+        std::fs::write(repository.join("build/source.txt"), "tracked source\n").unwrap();
+        git(&repository, &["init", "--quiet", "--initial-branch=main"]);
+        git(&repository, &["add", "build/source.txt"]);
+        git(
+            &repository,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "tracked build directory",
+            ],
+        );
+
+        let context = Context {
+            repositories: vec![Repository {
+                id: "fixture".into(),
+                name: "Fixture".into(),
+                root: repository.clone(),
+                execution_uid: unsafe { libc::geteuid() },
+            }],
+            ..Context::default()
+        };
+        let root = SourceRoot {
+            path: repository.clone(),
+            git: Some(repository.clone()),
+            repository_id: Some("fixture".into()),
+            repository_name: Some("Fixture".into()),
+            kind: None,
+            group_id: None,
+            group_name: None,
+            worktree: false,
+        };
+
+        assert!(tracked_source_directory(&root, &repository.join("build"), &context,).unwrap());
+        let linked = temporary.path().join("linked");
+        git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                linked.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let linked_context = Context {
+            worktrees: vec![("fixture".into(), linked.clone())],
+            ..context.clone()
+        };
+        let linked_root = SourceRoot {
+            path: linked.clone(),
+            git: Some(repository.clone()),
+            repository_id: Some("fixture".into()),
+            repository_name: Some("Fixture".into()),
+            kind: None,
+            group_id: None,
+            group_name: None,
+            worktree: true,
+        };
+        assert!(
+            tracked_source_directory(&linked_root, &linked.join("build"), &linked_context,)
+                .unwrap()
+        );
+        assert_eq!(classify_unconfigured_directory("build", Some(true)), None);
+        assert_eq!(
+            classify_unconfigured_directory("build", Some(false)),
+            Some((api::Kind::BuildOutput, false))
+        );
+        assert_eq!(classify_unconfigured_directory("build", None), None);
+
+        let fixture = Fixture::new();
+        let backend = HostBackend::new(fixture.config.clone(), fixture.database.clone());
+        let mut scan_context = context;
+        scan_context.discovering = true;
+        let mut cursor = SourceCursor::new(&scan_context);
+        let mut discovery = Discovery::default();
+        for _ in 0..64 {
+            if cursor
+                .step(
+                    &backend,
+                    &mut scan_context,
+                    &mut discovery,
+                    DiscoveryBudget {
+                        entries: 256,
+                        elapsed: Duration::from_millis(100),
+                    },
+                )
+                .unwrap()
+            {
+                break;
+            }
+        }
+        assert!(
+            discovery
+                .tracked_source_directories
+                .contains(&repository.join("build"))
+        );
+        assert!(discovery.records.iter().all(|record| {
+            !matches!(
+                &record.locator,
+                crate::storage::model::Locator::Directory { path, .. }
+                    if path == &repository.join("build")
+            )
+        }));
     }
 }

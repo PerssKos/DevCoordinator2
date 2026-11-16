@@ -240,7 +240,7 @@ impl UsageCache {
                                     .keys()
                                     .all(|r| r == "mapping_unavailable")))
                 });
-            if let Ok(report) = result
+            if let Ok(report) = &result
                 && (usable || (room && entry.updated_at_ms.is_none()))
             {
                 if usable {
@@ -252,9 +252,16 @@ impl UsageCache {
                         .or(Some(report.generated_at_ms));
                 }
                 entry.bytes = bytes.unwrap_or(0);
-                entry.report = report;
+                entry.report = report.clone();
+            } else if let Ok(report) = &result {
+                // Preserve the last measured report while replacing its
+                // transient loading state with this attempt's metadata.
+                entry.report.coverage.loading = report.coverage.loading.clone();
             }
             entry.refresh_failed = !usable && !pending;
+            if !pending && !usable {
+                entry.report.coverage.loading = None;
+            }
             entry.refreshing = false;
             // A foreground pending response is not a completed display
             // snapshot. The next read must consult the source query cache
@@ -462,6 +469,60 @@ mod tests {
                 .total_tokens,
             None
         );
+    }
+
+    #[test]
+    fn retained_measurements_update_and_clear_query_loading() {
+        use devcoordinator2_api::results::UsageLoading;
+        let cache = UsageCache::default();
+        let loading = |elapsed| UsageLoading {
+            state: "reading".into(),
+            elapsed_ms: elapsed,
+            estimated_remaining_ms: Some(1_000 - elapsed),
+            estimate_samples: 3,
+            estimate_basis: Some("recent_comparable_source_reads".into()),
+        };
+        cache.get("key".into(), report(None), || Ok(report(Some(100))));
+        cache.wait(None);
+        expire(&cache, "key");
+        cache.get("key".into(), report(None), move || {
+            let mut pending = report(None);
+            pending.coverage.configured_collectors = 1;
+            pending
+                .coverage
+                .unavailable_reasons
+                .insert("api_refresh_pending".into(), 1);
+            pending.coverage.loading = Some(loading(100));
+            Ok(pending)
+        });
+        cache.wait(None);
+        let saved = cache.get("key".into(), report(None), move || {
+            let mut failed = report(None);
+            failed.coverage.configured_collectors = 1;
+            failed
+                .coverage
+                .unavailable_reasons
+                .insert("api_read_failed".into(), 1);
+            Ok(failed)
+        });
+        assert_eq!(saved.totals.total_tokens, Some(100));
+        assert!(
+            saved.coverage.loading.is_some(),
+            "retaining measurements must not drop newer pending metadata"
+        );
+        cache.wait(None);
+        let failed = cache.get("key".into(), report(None), || panic!("failure cooldown"));
+        assert_eq!(failed.totals.total_tokens, Some(100));
+        assert_eq!(
+            failed.coverage.loading, None,
+            "a terminal read error clears an old countdown"
+        );
+        expire(&cache, "key");
+        cache.get("key".into(), report(None), || Ok(report(Some(200))));
+        cache.wait(None);
+        let completed = cache.get("key".into(), report(None), || panic!("fresh result"));
+        assert_eq!(completed.totals.total_tokens, Some(200));
+        assert_eq!(completed.coverage.loading, None);
     }
 
     #[test]

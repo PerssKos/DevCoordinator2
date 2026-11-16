@@ -187,6 +187,309 @@ fn source_loading_reports_unknown_estimate_overrun_and_completion_for_exact_scop
 }
 
 #[test]
+fn loading_waiters_never_inherit_a_trained_running_estimate() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            response_gate.wait();
+            response(params, 20, 135)
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_millis(50)
+        )
+        .err()
+        .as_deref(),
+        Some("api_refresh_pending")
+    );
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            0,
+            20,
+            Instant::now() + Duration::from_millis(50)
+        )
+        .err()
+        .as_deref(),
+        Some("api_source_busy")
+    );
+    let profile = profile_key(&peer.source, Some(KEY), None, true, None, &[], 0, 20).unwrap();
+    {
+        let mut state = api.0.0.lock().unwrap();
+        state.profiles.insert(
+            profile,
+            ProfileHistory {
+                samples: (0..3).map(|_| (Instant::now(), 60_000)).collect(),
+            },
+        );
+        state.cold_waiters.values_mut().next().unwrap().first_seen =
+            Instant::now() - Duration::from_secs(2);
+    }
+    let queued = api
+        .loading_for(&peer.source, Some(KEY), None, true, None, &[], 0, 20)
+        .unwrap();
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    assert_eq!(queued.state, "waiting_for_source");
+    assert_eq!(queued.estimated_remaining_ms, None);
+    assert_eq!(queued.estimate_samples, 0);
+    assert_eq!(queued.estimate_basis, None);
+}
+
+#[test]
+fn loading_ignores_expired_samples_without_waiting_for_another_completion() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            response_gate.wait();
+            response(params, 20, 135)
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    let _ = api.summary(
+        &peer.source,
+        Some(KEY),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + Duration::from_millis(50),
+    );
+    let profile = profile_key(&peer.source, Some(KEY), None, true, None, &[], 10, 20).unwrap();
+    api.0.0.lock().unwrap().profiles.insert(
+        profile,
+        ProfileHistory {
+            samples: (0..3)
+                .map(|_| {
+                    (
+                        Instant::now() - PROFILE_RETENTION - Duration::from_secs(1),
+                        1_000,
+                    )
+                })
+                .collect(),
+        },
+    );
+    let loading = api
+        .loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+        .unwrap();
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    assert_eq!(loading.estimate_samples, 0);
+    assert_eq!(loading.estimated_remaining_ms, None);
+    assert_eq!(loading.estimate_basis, None);
+}
+
+#[test]
+fn loading_profiles_separate_lifetime_windows_and_exact_key_revalidation() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    let directory = tempfile::tempdir().unwrap();
+    let gates = [ResponseGate::default(), ResponseGate::default()];
+    let response_gates = gates.clone();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            let call = observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            response_gates[call].wait();
+            response(params, 20, 135)
+        },
+    );
+    let releases = gates
+        .iter()
+        .map(ResponseGate::release_on_drop)
+        .collect::<Vec<_>>();
+    let api = CollectorApi::default();
+    let _ = api.summary(
+        &peer.source,
+        Some(KEY),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + Duration::from_millis(50),
+    );
+    let cold_profile = api
+        .0
+        .0
+        .lock()
+        .unwrap()
+        .inflight
+        .values()
+        .next()
+        .unwrap()
+        .profile
+        .clone();
+    let mut releases = releases.into_iter();
+    releases.next().unwrap().release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    expire_completed_summaries(&api);
+    let _ = api.summary(
+        &peer.source,
+        Some(KEY),
+        None,
+        true,
+        10,
+        20,
+        Instant::now() + Duration::from_millis(50),
+    );
+    let warm_profile = api
+        .0
+        .0
+        .lock()
+        .unwrap()
+        .inflight
+        .values()
+        .next()
+        .unwrap()
+        .profile
+        .clone();
+    releases.next().unwrap().release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    assert_eq!(
+        cold_profile, warm_profile,
+        "the exact query scope remains stable across its revalidation"
+    );
+    let lifetime = profile_key(
+        &peer.source,
+        Some(KEY),
+        None,
+        true,
+        None,
+        &[],
+        0,
+        100 * 86_400_000,
+    )
+    .unwrap();
+    let long = profile_key(
+        &peer.source,
+        Some(KEY),
+        None,
+        true,
+        None,
+        &[],
+        1,
+        100 * 86_400_000,
+    )
+    .unwrap();
+    assert_ne!(
+        lifetime, long,
+        "all recorded history is a distinct query kind"
+    );
+}
+
+#[test]
+fn performance_loading_keeps_unknown_sources_unknown_and_clears_after_publication_pending() {
+    use crate::automation_test_support::{Fixture, FixtureClock, START, WEEK};
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    let mut fixture = Fixture::new();
+    let root = fixture._temporary.path();
+    let gates = [ResponseGate::default(), ResponseGate::default()];
+    let mut peers = Vec::new();
+    for (index, gate) in gates.iter().enumerate() {
+        let path = root.join(format!("source-{index}"));
+        std::fs::create_dir(&path).unwrap();
+        let gate = gate.clone();
+        peers.push(Peer::start(&path, &path.join("home"), move |params| {
+            gate.wait();
+            let mut value = response(params, START + WEEK, 135);
+            value["snapshot"]["pendingEntries"] = json!(97);
+            value["snapshot"]["freshness"] = json!("stale");
+            value
+        }));
+    }
+    let releases = gates
+        .iter()
+        .map(ResponseGate::release_on_drop)
+        .collect::<Vec<_>>();
+    fixture.config.codex_usage_sources = peers.iter().map(|peer| peer.source.clone()).collect();
+    let usage = UsageService::with_clock(
+        fixture.config.clone(),
+        fixture.database.clone(),
+        Registry::new(fixture.database.clone()),
+        Arc::new(FixtureClock),
+    );
+    let repository = RepositoryRecord {
+        repository_id: "project-alpha".into(),
+        display_name: "Project Alpha".into(),
+        root_path: fixture.repository.clone(),
+    };
+    let read = || {
+        usage
+            .performance_window(
+                &repository,
+                None,
+                START,
+                START + WEEK,
+                Instant::now() + Duration::from_millis(300),
+            )
+            .unwrap()
+    };
+    let _ = read();
+    let profile = usage
+        .usage
+        .api
+        .0
+        .0
+        .lock()
+        .unwrap()
+        .inflight
+        .values()
+        .find(|flight| flight.source == *peers[0].source.api_socket.as_ref().unwrap())
+        .unwrap()
+        .profile
+        .clone();
+    usage.usage.api.0.0.lock().unwrap().profiles.insert(
+        profile,
+        ProfileHistory {
+            samples: (0..3).map(|_| (Instant::now(), 60_000)).collect(),
+        },
+    );
+    let pending = read();
+    for release in releases {
+        release.release();
+    }
+    assert!(usage.wait_for_collector_refresh(Instant::now() + Duration::from_secs(2)));
+    let loading = pending.coverage.loading.unwrap();
+    assert_eq!(
+        loading.estimated_remaining_ms, None,
+        "one trained source cannot establish completion for an untrained sibling"
+    );
+    assert_eq!(loading.estimate_samples, 0);
+    let complete = read();
+    assert_eq!(complete.totals.total_tokens, Some(270));
+    assert!(
+        complete.coverage.snapshot.unwrap().refreshing,
+        "publication backlog stays separate from query work"
+    );
+    assert_eq!(complete.coverage.loading, None);
+}
+
+#[test]
 fn source_projection_keeps_unknown_only_tokens_unknown_and_preserves_snapshot() {
     let mut value = response(&json!({"repositoryKey":KEY,"fromAt":10,"toAt":20}), 20, 135);
     let summary: Summary = serde_json::from_value(value.clone()).unwrap();

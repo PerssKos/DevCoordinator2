@@ -578,7 +578,7 @@ async function startFakeDaemon(dir) {
         }
         socket.end(JSON.stringify({ protocol: 3, id: req.id, ...payload }) + '\n', markSettled);
       };
-      if (!draining && scenario.delayMs && (!scenario.delayRepository || scenario.delayRepository === req.params.repository_id)
+      if (!draining && scenario.delayMs && !mutable.cacheReleased && (!scenario.delayRepository || scenario.delayRepository === req.params.repository_id)
         && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))
         && !scenario.delayExceptOperations?.includes(req.operation)) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
@@ -1126,12 +1126,20 @@ async function main() {
 
   if (process.env.CONSOLE_VERIFY_USAGE_ONLY) {
     try {
-      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true });
+      daemon.setScenario({ ...SCENARIOS.populated, workspaceLongList: true, delayMs: 1600, delayRepository: REPO, delayOperations: ['usage.repository'] });
       const context = await browser.newContext({ viewport: VIEWPORTS.wide, reducedMotion: 'reduce', colorScheme: 'light' });
       const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
       await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
       const page = await context.newPage();
       page.setDefaultTimeout(8000);
+      const delayedUsageRequest = page.waitForRequest(request => request.url().endsWith('/usage.repository'));
+      await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
+      await delayedUsageRequest;
+      await page.locator('[data-usage-loading]').waitFor({ state: 'visible', timeout: 5000 });
+      check('usage-only: slow repository reads show progress after one second', await page.locator('[data-usage-loading]').isVisible() && (await page.locator('[data-usage-loading]').innerText()).includes('Loading token usage'));
+      daemon.releaseDelayed();
+      await page.waitForSelector('.usage-phase-chart');
+      check('usage-only: repository progress clears after completion', await page.locator('[data-usage-loading]').isHidden());
       await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
       await page.waitForSelector('.usage-phase-chart');
       check('usage-only: scope control renders for the canonical repository', await page.locator('[data-usage-worktree-scope-toggle]').innerText() === 'Worktree scope · All worktrees');

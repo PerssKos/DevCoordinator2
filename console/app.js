@@ -3260,10 +3260,23 @@ function usageWorktreeUnavailable(scope) {
 }
 
 const usageRefreshTimers = new Map();
+let usageLoadingController = null;
+let usageLoadingSignal = null;
+function currentUsageLoadingController() {
+  if (!usageLoadingController || usageLoadingSignal !== viewAbort?.signal) {
+    usageLoadingSignal = viewAbort?.signal;
+    usageLoadingController = window.DevCoordinatorUsageLoading.create({
+      target: () => main.querySelector('[data-usage-loading]'),
+      signal: viewAbort?.signal || new AbortController().signal,
+    });
+  }
+  return usageLoadingController;
+}
 function continueUsageRefresh(coverages, refresh) {
   const identity = usageViewIdentity();
   const scheduled = usageRefreshTimers.get(identity);
-  if (!coverages.some((coverage) => coverage?.snapshot?.refreshing)) {
+  const pending = coverages.some((coverage) => coverage?.snapshot?.refreshing || window.DevCoordinatorUsageLoading.pending(coverage));
+  if (!pending) {
     if (scheduled) window.clearTimeout(scheduled);
     usageRefreshTimers.delete(identity);
     return;
@@ -3614,11 +3627,15 @@ function toolOutcomeRows(data) {
 
 const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
   const identity = usageViewIdentity();
-  if (!waitForRefresh) main.innerHTML = `${pageHeading('Codex Usage', '#/usage')}${skeleton(5)}`;
-  const result = await api('usage.repositories', { range: state.codexUsageRange, ...(waitForRefresh ? { wait_for_refresh: true } : {}) });
+  const loading = currentUsageLoadingController();
+  const loadingKey = 'usage.repositories';
+  if (!waitForRefresh) main.innerHTML = `${pageHeading('Codex Usage', '#/usage')}${window.DevCoordinatorUsageLoading.markup()}${skeleton(5)}`;
+  loading.begin(loadingKey);
+  const result = await api('usage.repositories', { range: state.codexUsageRange, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }).catch(error => { loading.finish(loadingKey); throw error; });
   if (identity !== usageViewIdentity()) return;
   const restore = usageRefreshContext(waitForRefresh);
   const rows = result.repositories || [];
+  loading.update(loadingKey, rows.map(row => row.coverage));
   const measured = (row) => ['complete', 'partial'].includes(row.coverage.state)
     || Number(row.coverage.contributing_collectors || 0) > 0;
   const collectionCoverage = rows.find((row) => row.coverage?.snapshot)?.coverage;
@@ -3633,12 +3650,16 @@ const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
 
 const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   const identity = usageViewIdentity();
-  if (!waitForRefresh) main.innerHTML = `<div class="usage-loading">${pageHeading('Codex Usage', '#/usage')}${skeleton(8)}</div>`;
+  const loading = currentUsageLoadingController();
+  const loadingKey = `usage.repository:${repositoryId}`;
+  if (!waitForRefresh) main.innerHTML = `<div class="usage-loading">${pageHeading('Codex Usage', '#/usage')}${window.DevCoordinatorUsageLoading.markup()}${skeleton(8)}</div>`;
+  loading.begin(loadingKey);
   const [data, projectList, repositoryList] = await Promise.all([
-    api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...usageWorktreeRequest(repositoryId), ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
+    api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...usageWorktreeRequest(repositoryId), ...(waitForRefresh ? { wait_for_refresh: true } : {}) }).catch(error => { loading.finish(loadingKey); throw error; }),
     workspace.active ? {} : api('plan.overview', {}),
     api('repository.list', { repository_id: repositoryId }),
   ]);
+  loading.update(loadingKey, data.coverage);
   const projects = [...(projectList.repositories || []), {
     repository_id: repositoryId, display_name: data.display_name,
   }];
@@ -3653,7 +3674,7 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   if (identity !== usageViewIdentity()) return;
   const restore = usageRefreshContext(waitForRefresh);
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
-    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range"><div class="usage-range-tools">${usageWorktreeScopeMarkup(scope)}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div></div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
+    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range"><div class="usage-range-tools">${usageWorktreeScopeMarkup(scope)}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div></div><div class="usage-coverage">${coverageHint(data.coverage)}${window.DevCoordinatorUsageLoading.markup()}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
     ${usageWorktreeUnavailable(scope)}
     ${scope?.unavailable ? '' : `<div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>`}
     ${scope?.unavailable ? '' : `<div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series, data.totals.cost)}</section>${modelCostPulse(data)}</div>

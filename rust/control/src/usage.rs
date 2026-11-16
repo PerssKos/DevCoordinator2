@@ -889,8 +889,8 @@ impl CodexUsage {
                             }
                         }
                         Err(reason) => {
-                            if loading.is_none() && collector_api::is_pending(&reason) {
-                                loading = self.api.loading_for(
+                            if collector_api::is_pending(&reason) {
+                                let candidate = self.api.loading_for(
                                     source,
                                     Some(&key),
                                     selection
@@ -906,6 +906,21 @@ impl CodexUsage {
                                     start_ms,
                                     end_ms,
                                 );
+                                loading = match (loading.take(), candidate) {
+                                    (None, candidate) => candidate,
+                                    (Some(existing), Some(candidate)) => Some(UsageLoading {
+                                        state: if existing.state == candidate.state {
+                                            existing.state
+                                        } else {
+                                            "reading".into()
+                                        },
+                                        elapsed_ms: existing.elapsed_ms.max(candidate.elapsed_ms),
+                                        estimated_remaining_ms: None,
+                                        estimate_samples: 0,
+                                        estimate_basis: None,
+                                    }),
+                                    (existing, None) => existing,
+                                };
                             }
                             increment(&mut failures, &reason)
                         }

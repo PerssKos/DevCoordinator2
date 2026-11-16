@@ -33,6 +33,7 @@ struct ScanJob {
     service: StorageService,
     id: String,
     cursor: std::sync::Mutex<Option<ScanCursor>>,
+    terminal_error: std::sync::Mutex<Option<ProtocolError>>,
 }
 
 #[cfg(test)]
@@ -46,6 +47,7 @@ pub(super) fn scan_job_for_test(
         service,
         id,
         cursor: std::sync::Mutex::new(cursor),
+        terminal_error: std::sync::Mutex::new(None),
     })
 }
 
@@ -91,15 +93,46 @@ impl crate::maintenance::Job for ScanJob {
             Ok(false) => JobStatus::Continue {
                 cursor: self.id.clone(),
             },
-            Err(error) => JobStatus::Retry {
-                reason: error.message,
-            },
+            Err(error) => {
+                let reason = error.message.clone();
+                // Busy ownership contention and a temporary authority-database
+                // outage keep the resumable cursor alive. Other errors have
+                // already passed through reconciliation and are terminal for
+                // this accepted scan.
+                if !Self::is_transient_error(&error) {
+                    *self
+                        .terminal_error
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner()) = Some(error);
+                    return JobResult {
+                        status: JobStatus::Failed { reason },
+                        rows: budget.rows(),
+                        bytes: budget.bytes(),
+                    };
+                }
+                JobStatus::Retry { reason }
+            }
         };
         JobResult {
             status,
             rows: budget.rows(),
             bytes: budget.bytes(),
         }
+    }
+}
+
+impl ScanJob {
+    fn is_transient_error(error: &ProtocolError) -> bool {
+        error.code == devcoordinator2_api::ErrorCode::Busy
+            || (error.code == devcoordinator2_api::ErrorCode::StorageUnavailable
+                && error.message == "storage_database_unavailable")
+    }
+
+    fn take_terminal_error(&self) -> Option<ProtocolError> {
+        self.terminal_error
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
     }
 }
 
@@ -746,6 +779,7 @@ impl StorageService {
                                 service,
                                 id,
                                 cursor: std::sync::Mutex::new(None),
+                                terminal_error: std::sync::Mutex::new(None),
                             });
                             let mut continuation = None;
                             let mut retry_events = scheduler.retry_events();
@@ -794,6 +828,15 @@ impl StorageService {
                                             continue;
                                         }
                                         crate::maintenance::JobStatus::Retry { .. } => None,
+                                        crate::maintenance::JobStatus::Failed { reason } => {
+                                            if let Some(error) = scan.take_terminal_error() {
+                                                break Ok(Err(error));
+                                            }
+                                            break Ok(Err(ProtocolError::new(
+                                                devcoordinator2_api::ErrorCode::StorageUnavailable,
+                                                reason,
+                                            )));
+                                        }
                                     },
                                     Err(_) => {
                                         // A full queue, a database outage or another live
@@ -1552,6 +1595,109 @@ mod tests {
         )
     }
 
+    struct FailureBackend {
+        code: devcoordinator2_api::ErrorCode,
+        message: &'static str,
+    }
+
+    impl super::super::native::Backend for FailureBackend {
+        fn discover(&self, _context: &Context) -> Result<Discovery, ProtocolError> {
+            Err(ProtocolError::new(self.code, self.message))
+        }
+
+        fn discover_step(
+            &self,
+            _context: &Context,
+            _cursor: &mut super::super::native::DiscoveryCursor,
+            _budget: super::super::native::DiscoveryBudget,
+        ) -> Result<Option<Discovery>, ProtocolError> {
+            Err(ProtocolError::new(self.code, self.message))
+        }
+
+        fn validate(
+            &self,
+            _record: &super::super::model::Record,
+            _context: &Context,
+            _selected: &[String],
+        ) -> Result<(), ProtocolError> {
+            Ok(())
+        }
+
+        fn validate_disposal_intent(
+            &self,
+            _record: &super::super::model::Record,
+            _repository_id: &str,
+            _now_ms: u64,
+            _reviewed_ignored_files: Option<&[api::IgnoredFileReview]>,
+        ) -> Result<(String, Option<super::super::model::IgnoredReview>), ProtocolError> {
+            Ok(("fixture".into(), None))
+        }
+
+        fn remove(
+            &self,
+            _record: &super::super::model::Record,
+            _context: &Context,
+            _selected: &[String],
+            _job_id: &str,
+        ) -> Result<(), ProtocolError> {
+            Ok(())
+        }
+
+        fn absent(
+            &self,
+            _record: &super::super::model::Record,
+            _context: &Context,
+        ) -> Result<bool, ProtocolError> {
+            Ok(true)
+        }
+
+        fn save_recovery(
+            &self,
+            _record: &super::super::model::Record,
+            _job_id: &str,
+        ) -> Result<(), ProtocolError> {
+            Ok(())
+        }
+
+        fn resume(
+            &self,
+            _record: &super::super::model::Record,
+            _context: &Context,
+            _selected: &[String],
+            _job_id: &str,
+        ) -> Result<(), ProtocolError> {
+            Ok(())
+        }
+
+        fn legacy_group(
+            &self,
+            _deployment_id: &str,
+            _records: &[super::super::model::Record],
+            _context: &Context,
+        ) -> Result<Vec<String>, ProtocolError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn failure_scan_service(
+        fixture: &Fixture,
+        code: devcoordinator2_api::ErrorCode,
+        message: &'static str,
+    ) -> StorageService {
+        StorageService::with_backend(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Arc::new(FixtureClock),
+            crate::capacity::CapacityBroker::new(
+                fixture.database.clone(),
+                fixture.config.socket_path.clone(),
+            )
+            .unwrap(),
+            crate::events::EventService::new(fixture.database.clone()).unwrap(),
+            Arc::new(FailureBackend { code, message }),
+        )
+    }
+
     #[test]
     fn cancelled_storage_scan_stops_before_another_native_step() {
         let fixture = Fixture::new();
@@ -1608,6 +1754,94 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn permanent_discovery_error_finishes_scan_with_terminal_state() {
+        let fixture = Fixture::new();
+        let service = failure_scan_service(
+            &fixture,
+            devcoordinator2_api::ErrorCode::StorageUnavailable,
+            "fixture_discovery_failed",
+        );
+        let caller = system_caller();
+        let scan = service
+            .scan(
+                api::Scan {
+                    repository_id: None,
+                    idempotency_key: "permanent-discovery-error".into(),
+                },
+                &caller,
+            )
+            .unwrap();
+        let scheduler =
+            Arc::new(crate::maintenance::Scheduler::new(fixture.database.clone(), 1, 4).unwrap());
+        service.set_maintenance_scheduler(Arc::downgrade(&scheduler));
+        let (_stop, shutdown) = tokio::sync::watch::channel(false);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            service.run_job(scan.clone(), caller.uid, shutdown),
+        )
+        .await
+        .expect("permanent discovery failure must finish the accepted scan");
+        scheduler.shutdown_and_join();
+        let job = service.job(&scan.job_id).unwrap();
+        assert!(matches!(job.state, api::JobState::Failed));
+        assert_eq!(job.error_code.as_deref(), Some("fixture_discovery_failed"));
+        let key = format!("storage:{}", scan.job_id);
+        assert_eq!(
+            fixture
+                .database
+                .read(|connection| Ok(connection.query_row(
+                    "SELECT count(*) FROM coordinator_maintenance WHERE job_key=$1",
+                    [&key],
+                    |row| row.get::<_, u64>(0),
+                )?))
+                .unwrap(),
+            0,
+            "terminal scan failure must remove its maintenance cursor"
+        );
+    }
+
+    #[test]
+    fn database_unavailable_scan_error_remains_retryable() {
+        let fixture = Fixture::new();
+        let service = failure_scan_service(
+            &fixture,
+            devcoordinator2_api::ErrorCode::StorageUnavailable,
+            "storage_database_unavailable",
+        );
+        let caller = system_caller();
+        let scan = service
+            .scan(
+                api::Scan {
+                    repository_id: None,
+                    idempotency_key: "database-unavailable-scan".into(),
+                },
+                &caller,
+            )
+            .unwrap();
+        let job = scan_job_for_test(service.clone(), scan.job_id.clone(), None);
+        let mut saw_retry = false;
+        for _ in 0..100 {
+            let result = job.run(
+                &mut crate::maintenance::Budget::new(Duration::from_millis(25), 256, 256 * 1024),
+                None,
+            );
+            match result.status {
+                crate::maintenance::JobStatus::Continue { .. } => {}
+                crate::maintenance::JobStatus::Retry { .. } => {
+                    saw_retry = true;
+                    break;
+                }
+                status => panic!("database outage must not terminalize scan: {status:?}"),
+            }
+        }
+        assert!(saw_retry);
+        assert!(matches!(
+            service.job(&scan.job_id).unwrap().state,
+            api::JobState::Running
+        ));
     }
 
     // The real storage worker, native discovery and maintenance scheduler use

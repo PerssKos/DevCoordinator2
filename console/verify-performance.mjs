@@ -90,17 +90,17 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   const delayedTokenRequest = page.waitForRequest(request => request.url().endsWith('/performance.overview'));
   await page.goto(`${baseUrl}#/performance/${REPO}`);
   await delayedTokenRequest;
-  await page.waitForTimeout(1100);
-  verify('slow token reads show inline progress after one second', await page.locator('[data-performance-loading-progress]').isVisible() && (await page.locator('[data-performance-loading-progress]').innerText()).includes('Loading token usage'));
+  await page.locator('[data-usage-loading]').waitFor({ state: 'visible', timeout: 5000 });
+  verify('slow token reads show inline progress after one second', await page.locator('[data-usage-loading]').isVisible() && (await page.locator('[data-usage-loading]').innerText()).includes('Loading token usage'));
   daemon.releaseDelayed();
   await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4'), null, { timeout: 15000 });
-  verify('inline progress clears after token measurements complete', await page.locator('[data-performance-loading-progress]').isHidden());
+  verify('inline progress clears after token measurements complete', await page.locator('[data-usage-loading]').isHidden());
   daemon.setScenario({ ...scenario, performancePendingByWindow: true, performanceLoadingEstimate: true });
   await page.goto('about:blank');
   await page.goto(`${baseUrl}#/performance/${REPO}`);
   await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
-  await page.waitForTimeout(1100);
-  verify('pending measurements show an evidence-based remaining-time estimate', await page.locator('[data-performance-loading-progress]').isVisible() && (await page.locator('[data-performance-loading-progress]').innerText()).includes('Estimated remaining: about 2 min'));
+  await page.locator('[data-usage-loading]').waitFor({ state: 'visible', timeout: 5000 });
+  verify('pending measurements show an evidence-based remaining-time estimate', await page.locator('[data-usage-loading]').isVisible() && (await page.locator('[data-usage-loading]').innerText()).includes('Estimated remaining: about 2 min'));
   verify('pending measurements do not claim unavailable or empty data', (await page.locator('[data-performance-charts]').innerText()).includes('Loading token breakdowns') && (await page.locator('[data-performance-outcomes]').innerText()).includes('Loading outcomes') && (await page.locator('[data-performance-period-total]').innerText()).includes('Loading') && (await page.locator('[data-performance-lifetime]').innerText()).includes('Loading'));
   const initialQueries = daemon.calls.filter(call => call.operation === 'performance.overview').map(call => call.params);
   const initialWindow = initialQueries.find(params => !params.totals_only), initialLifetime = initialQueries.find(params => params.totals_only);
@@ -148,9 +148,12 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('both grouping charts and outcome composition are visible', await page.locator('.performance-distribution').count() === 2 && await page.locator('.performance-outcome-table .performance-stack').count() === 3);
   for (const chart of await page.locator('.performance-distribution').all()) {
     const group = chart.locator('.performance-legend .performance-token-detail').first();
-    await group.locator('button').click();
-    verify('group details do not borrow repository token components', (await group.locator('dd').allInnerTexts()).every(value => value === '—'));
-    await group.locator('button').click();
+    if (await group.count()) {
+      await group.locator('button').click();
+      const details = await group.locator('.performance-token-popover').innerText();
+      verify('group details show same-scope provider components when supplied', details.includes('Cached input') && !/Cached input\s+—/.test(details));
+      await group.locator('button').click();
+    } else verify('group details omit unavailable component popovers', true);
   }
   verify('cost matrix shows API-equivalent estimates', await page.locator('.performance-cost-matrix').count() === 1 && (await page.locator('.performance-cost-matrix').innerText()).includes('API-equivalent USD'));
   await page.locator('.performance-exact summary').first().click();
@@ -176,9 +179,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('workstream review keeps scoped totals without a repository activity table', (await page.locator('[data-performance-scope-total]').innerText()).includes('1M') && await page.locator('.performance-cost-matrix').count() === 0);
   for (const selector of ['[data-performance-scope-total]', '.performance-distribution .performance-section-head strong', '.performance-outcome-table tfoot']) {
     const detail = page.locator(selector).first().locator('.performance-token-detail');
-    await detail.locator('button').click();
-    verify('workstream totals keep unavailable components unknown', (await detail.locator('dd').allInnerTexts()).every(value => value === '—'));
-    await detail.locator('button').click();
+    verify('workstream totals omit unavailable component popovers', await detail.count() === 0);
   }
   await page.locator('[data-performance-outcomes-more] button').click();
   await page.locator('.performance-outcome-table tbody tr').filter({ hasText: 'Verification coverage' }).waitFor();
